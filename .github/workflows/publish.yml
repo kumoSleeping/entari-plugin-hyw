@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - 'pyproject.toml'  # 监听 pyproject.toml 文件变动
-      - 'plugins/**'  # 监听源代码变动
+      - 'src/**'  # 监听源代码变动
   workflow_dispatch:  # 允许手动触发
 
 permissions:

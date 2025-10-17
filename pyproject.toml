@@ -40,4 +40,4 @@ where = ["src"]
 include = ["entari_plugin_hyw*"]
 
 [tool.setuptools.package-data]
-"*" = ["*.txt", "*.md"]
+entari_plugin_hyw = ["*.txt", "*.md"]
