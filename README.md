@@ -1,11 +1,15 @@
-# 🤖 entari-plugin-hyw
+# entari-plugin-hyw
 
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)![License](https://img.shields.io/badge/License-MIT-green.svg)![Version](https://img.shields.io/badge/Version-0.1.1-orange.svg)![Platform](https://img.shields.io/badge/Platform-Entari-purple.svg)![PyPI]()
+![License](https://img.shields.io/badge/License-MIT-green.svg) ![PyPI](https://img.shields.io/badge/PyPI-Available-brightgreen.svg)
 
 **使用大语言模型在聊天环境解释大家的hyw**
 
-</div>
+### 目前的局限
+
+> 目前仅支持 satori-python-adapter-onebot11 使用此插件, 更多适配请等一会...
+
+> 目前没有考虑 video , 链接 , 小程序 等复杂消息类型的处理
 
 
 ## 🚀 快速开始
@@ -16,17 +20,13 @@
 pip install entari-plugin-hyw
 ```
 
-### 支持适配器
-
-> 目前仅支持 satori-python-adapter-onebot11 使用此插件, 更多适配请等一会...
-
-### 基础配置
+### 配置
 
 在你的 `entari.yml` 配置文件中根据您的情况添加以下配置：
 
 ```yaml
 plugins:
-  src.entari_plugin_hyw:
+  entari_plugin_hyw:
     hyw_command_name: ["/hyw", "hyw"]
     
     # 文本模型配置
@@ -44,26 +44,18 @@ plugins:
 
 ## 📖 使用方法
 
-文本问答
-
 ```
 hyw 什么是人工智能？
-```
-
-
-发送图片并使用命令：
-
-```
 hyw [图片]
 ```
 
-引用一条消息然后使用命令：
 
 ```
-hyw [引用消息[图片, 文字]]
+[引用消息[图片, 文字]] hyw
+[引用消息[图片, 文字]] [At] hyw 什么是人工智能？ [图片]
 ```
 
-> 触发将会自动屏蔽 At 元素
+> 自动屏蔽 At 元素
 
 ## ⚙️ 配置参数
 
