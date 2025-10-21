@@ -17,7 +17,7 @@ from arclet.entari import BasicConfModel
 from loguru import logger
 import urllib.parse
 
-from .utils import duck_search_real
+from .utils import universal_search, SearchEngine
 
 
 class HywConfig(BasicConfModel):
@@ -36,6 +36,16 @@ class HywConfig(BasicConfModel):
     vision_llm_temperature: float = 0.4
     vision_llm_enable_search: bool = False
     
+    search_engine: str = "auto"
+    
+
+# 全局搜索引擎配置，由 AgentService 设置
+_global_search_engine = SearchEngine.AUTO
+
+def set_global_search_engine(engine: SearchEngine):
+    """设置全局搜索引擎"""
+    global _global_search_engine
+    _global_search_engine = engine
 
 # 智能搜索工具
 @tool
@@ -43,7 +53,8 @@ async def smart_search(queries: List[str]) -> str:
     """智能搜索工具，自动判断查询类型并选择最适合的搜索方式, 返回JSON格式文本结果"""
     
     logger.info(f"智能搜索查询: {queries}")
-    
+    # 使用全局配置的搜索引擎，避免在工具内部初始化配置
+    engine = _global_search_engine
     def is_exact_word(query: str) -> bool:
         """判断是否为需要精确搜索的词汇"""
         query = query.strip()
@@ -89,11 +100,11 @@ async def smart_search(queries: List[str]) -> str:
         # 执行精确搜索
         if exact_queries:
             logger.info(f"执行精确搜索: {exact_queries}")
-            exact_results = await duck_search_real(
+            exact_results = await universal_search(
                 keywords=exact_queries,
                 max_results=5,
-                region="zh-cn",
-                exact_search=True
+                exact_search=True,
+                engine=engine
             )
             
             # 按关键词分组精确搜索结果
@@ -116,11 +127,11 @@ async def smart_search(queries: List[str]) -> str:
         # 执行一般搜索
         if web_queries:
             logger.info(f"执行一般搜索: {web_queries}")
-            web_results = await duck_search_real(
+            web_results = await universal_search(
                 keywords=web_queries,
                 max_results=5,
-                region="zh-cn",
-                exact_search=False
+                exact_search=False,
+                engine=engine
             )
             
             # 按关键词分组一般搜索结果
@@ -238,9 +249,24 @@ class AgentService:
         self._text_llm: Optional[ChatOpenAI] = None
         self._vision_llm: Optional[ChatOpenAI] = None
         self._planning_agent: Optional[Any] = None
-                
+        
+        # 设置全局搜索引擎配置
+        self._set_search_engine()
         self._init_models()
         self._init_agents()
+    
+    def _set_search_engine(self):
+        """设置搜索引擎配置"""
+        if self.config.search_engine == "bing_cn":
+            set_global_search_engine(SearchEngine.BING_CN)
+        elif self.config.search_engine == "duckduckgo":
+            set_global_search_engine(SearchEngine.DUCKDUCKGO)
+        elif self.config.search_engine == "auto":
+            logger.info("设置全局搜索引擎为自动选择")
+            set_global_search_engine(SearchEngine.AUTO)
+        else:
+            logger.warning(f"未知搜索引擎配置: {self.config.search_engine}, 使用默认配置")
+            set_global_search_engine(SearchEngine.AUTO)
     
     def _init_models(self):
         """初始化LLM模型"""
@@ -348,7 +374,7 @@ class AgentService:
 
 [关于智能决策使用工具]
 - 先使用 smart_search 工具获取准确知识, 在进行回复
-- smart_search 推荐每次搜索传入两种内容, 一种是关键词或专有名词等需要精确搜索的内容, 另一种是一般查询内容 例如: ["Python" "Python 学习 新手"]
+- smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"] , 不推荐传入啰嗦, 口语化表述, 如 ["Python 是什么" "Python 学习 新手"]
 - 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，优先使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
 - 请智能决策应该专注于描述哪些内容
 - 禁止为了噪音信息而调用工具
