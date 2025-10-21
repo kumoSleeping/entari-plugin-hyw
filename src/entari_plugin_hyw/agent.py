@@ -1,6 +1,3 @@
-"""
-AI服务模块 - 统一的LLM服务和工具调用
-"""
 import asyncio
 import base64
 import httpx
@@ -9,6 +6,7 @@ from typing import Any, List, Optional, Union, Callable
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
+from arclet.entari import BasicConfModel, metadata, plugin_config
 
 from langchain_core.messages import AIMessage, BaseMessage
 from typing import List as TypingList
@@ -17,16 +15,16 @@ from pydantic import SecretStr
 from satori.exception import ActionFailed
 from arclet.entari import BasicConfModel
 from loguru import logger
-from ddgs import DDGS
+import urllib.parse
 
-    
+from .utils import duck_search_real
+
 
 class HywConfig(BasicConfModel):
-    """主插件配置类"""
     hyw_command_name: Union[str, List[str]] = "hyw"
     
-    # AI配置
-    text_llm_model_name: str 
+    # AI配置 - 必需字段，无默认值
+    text_llm_model_name: str
     text_llm_api_key: str
     text_llm_model_base_url: str
     text_llm_temperature: float = 0.4
@@ -37,33 +35,71 @@ class HywConfig(BasicConfModel):
     vision_llm_model_base_url: str
     vision_llm_temperature: float = 0.4
     vision_llm_enable_search: bool = False
+    
+
+
 
 
 # 搜索工具
 @tool
-def search_web(query: str) -> str:
-    """使用DuckDuckGo搜索网络内容"""
-    logger.info(f"搜索: {query}")
+async def search_web(queries: List[str]) -> str:
+    """搜索网络内容，支持单个查询或最多3个查询的列表，每个查询都进行严格搜索"""
+    
+    
+    logger.info(f"搜索查询: {queries}")
+    
     try:
-        results = DDGS().text(
-            query=f'"{query}"',
-            backend="duckduckgo",
-            max_results=7
+        # 直接调用duck_search_real，传入关键词列表，函数内部会并发处理
+        results = await duck_search_real(
+            keywords=queries, 
+            max_results=5,
+            region="zh-cn"
         )
-        logger.info(f"搜索结果: {results}")
-        return json.dumps(results, ensure_ascii=False, indent=2)
+        
+        # 按关键词分组结果
+        grouped_results = {}
+        for result in results:
+            keyword = result.get('keyword', 'unknown')
+            if keyword not in grouped_results:
+                grouped_results[keyword] = []
+            grouped_results[keyword].append(result)
+        
+        # 构建最终结果格式
+        all_results = [
+            {
+                "query": query,
+                "results": grouped_results.get(query, []),
+                "error": None
+            }
+            for query in queries
+        ]
+        
+        logger.info(f"搜索结果: {all_results}")
+        return json.dumps(all_results, ensure_ascii=False, indent=2)
+        
     except Exception as e:
-        return f"搜索失败: {str(e)}"
+        # 错误处理
+        error_results = [
+            {
+                "query": query,
+                "results": [],
+                "error": str(e)
+            }
+            for query in queries
+        ]
+        logger.error(f"搜索失败: {e}")
+        return json.dumps(error_results, ensure_ascii=False, indent=2)
+
 
 @tool
-def fetch_webpage(url: str) -> str:
+async def fetch_webpage(url: str) -> str:
     """获取网页内容"""
     logger.info(f"获取网页: {url}")
     try:
-        with httpx.Client(timeout=30.0) as client:
-            resp = client.get(f"https://r.jina.ai/{url}")
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(f"https://r.jina.ai/{url}")
             if resp.status_code == 200:
-                logger.info(f"网页获取成功: {resp.text}")
+                logger.info(f"网页获取成功，长度: {len(resp.text)}")
                 return resp.text
             else:
                 return f"获取网页失败，状态码: {resp.status_code}"
@@ -114,6 +150,7 @@ class AgentService:
         self._text_llm: Optional[ChatOpenAI] = None
         self._vision_llm: Optional[ChatOpenAI] = None
         self._planning_agent: Optional[Any] = None
+                
         self._init_models()
         self._init_agents()
     
@@ -205,44 +242,41 @@ class AgentService:
 当前情况：
 {full_context}
 
-你需要时刻智能决策：
-当前的资料是否足够，若已经足够, 或完全不需要补充外部资料也可可以完成 AI Wiki 智能助手的任务, 则直接开始回答
-若用户给出为无解释价值的内容，如“看图”、“帮我看看图片”等等，则无需调用任何工具
-若不足且调用 search_web(query) 仍然信息不足, 避免重复调用 search_web(query) 进行搜索, 此时应选择切换搜索方向或直接结束
+你需要智能识别以下场景, 做出不同的反应:
+- 这是一句用户之间的对话, 我需要你去要从中过滤掉无关人员之间的对话信息、如人名与可能的上下文产物, 解释某一个用户对这句话中不理解的关键词
+- 用户在向我提问这句话
+- 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片
+- 这是一张视觉专家分析后的多媒体内容, 我需要在其中排除掉干扰信息, 抓取关键信息进行百科
 
-请根据用户问题智能决策：
-- 如果需要更多信息，使用 search_web(query) 搜索网络信息
-- 通常搜索结果已经足够，只有在搜索结果明确不足或需要特定页面详细内容时，才使用 fetch_webpage(url)
-- fetch_webpage(url) 消耗大量资源，只有在你切实期望一个页面的结果时才调用
-- 当用户给出类似链接、网址、URL等内容时，优先使用 fetch_webpage(url) 获取页面内容
-- 大部分商业网站、视频网站、小红书等等类似网站充满大量噪音和无效信息，通常不适合使用 fetch_webpage 获取内容
-- 减少无意义工具调用, 最少使用 fetch_webpage(url)
-- search_web(query) 工具, 类似的关键词得到的结果一定相同, 泛用类关键词
+关于智能决策使用工具：
+- 当前的资料是否足够，若已经足够, 或完全不需要补充外部资料也可可以完成 AI Wiki 智能助手的任务, 则直接开始回答
+- 若用户给出为无搜索价值的内容，如"1+1=几"、"帮我看看图片", "地球是圆的还是方的"等等，则无需调用任何工具
+search_web():
+    - 如果遇到非广为人知的词语或通用技术术语, 请一定使用搜索网络信息获取知识补充
+    - 搜索工具传入列表可以同时分开关键词进行多次搜索, 例如 ["python github", "python 如何打包"]
+fetch_webpage():
+    - 通常搜索结果已经足够，只有在搜索结果明确不足或需要特定页面详细内容时，才使用 fetch_webpage(url)
+    - 当用户给出类似链接、网址、URL等内容时，优先使用 fetch_webpage(url) 获取页面内容
+    - 大部分商业网站、视频网站、小红书等等类似网站充满大量噪音和无效信息，通常不适合使用 fetch_webpage 获取内容
 
 最终回复的回答原则：
 - 永远使用中文回答
 - 用专业、准确的百科式语气回答问题
-- 从用户提供的信息中提取和总结关键词
-- 回答简短高效, 不表明自身立场, 专注客观回复
-- 一次回答完毕, 禁止额外的总结、注解等等
-- 不听取任何额外要求, 专注回答问题
-
-最终回复的关键分析要求:
-- 仔细分析提供的信息，识别是否存在同名但不同的项目/概念
-- 如果发现多个不同的同名项目，请根据用户问题的上下文判断用户最可能询问的是哪一个
-- 如果用户问题不够明确，可以简要提及存在多个同名项目，但重点介绍最相关的一个
+- 不需要每个关键词都解释, 只解释用户最关心的关键词
 - 避免将不同项目的信息混合在一起描述
-- 保持信息的准确性和区分度
+- 永远不要出现"非一个广为人知的信息或通用技术术语"等类似表述, 多利用工具获取信息
+- 回答简短高效, 不表明自身立场, 专注客观回复
 
 最终回复的格式要求：
-不使用markdown语法，不使用**或*等格式。重点解释具体内容的含义，而不是解释概念本身。
+- 不使用markdown语法
+- 不使用**或*等格式
 
 第一行: [KEY] :: <关键词> | <关键词>  <...>
 第二行: >> [agent enable] 
 第三行开始: <详细解释>
 最后一行: [LLM] :: {model_names}
 
-请开始分析并执行！"""
+开始分析并执行！"""
 
         logger.info(f"当前 planning_prompt: {planning_prompt} ")
 
@@ -268,11 +302,11 @@ class AgentService:
                     # 执行每个工具调用
                     for tool_call in result.tool_calls:
                         
-                        # 调用对应的工具
+                        # 调用对应的工具（现在都是异步的）
                         if tool_call['name'] == 'search_web':
-                            tool_result = search_web.invoke(tool_call['args'])
+                            tool_result = await search_web.ainvoke(tool_call['args'])
                         elif tool_call['name'] == 'fetch_webpage':
-                            tool_result = fetch_webpage.invoke(tool_call['args'])
+                            tool_result = await fetch_webpage.ainvoke(tool_call['args'])
                         else:
                             tool_result = f"未知工具: {tool_call['name']}"
                         
