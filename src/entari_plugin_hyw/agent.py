@@ -186,28 +186,24 @@ async def jina_fetch_webpage(url: str) -> str:
         return f"获取网页失败: {str(e)}"
 
 
-# @tool
-# async def nbnhhsh(text: str) -> str:
-#     """
-#     用于复原网络用语中的缩写
+@tool
+async def nbnhhsh(text: str) -> str:
+    """
+    用于复原一个缩写的所有可能性
     
-#     注意: 此工具客观存在很多污染
-
-#     你只有以下两种情况需要使用此工具:
-#     - 用户明确要求使用缩写查询
-#     - 你已经使用 smart_search 等工具查询过该内容
-#     - 此缩写过于毫无意义, 如 "xehd" "27djw" 等等
-#     否则禁止使用此工具
-#     """
-#     try:
-#         async with httpx.AsyncClient(timeout=15.0) as client:
-#             resp = await client.post("https://lab.magiconch.com/api/nbnhhsh/guess", json={"text": text})
-#             if resp.status_code == 200:
-#                 return json.dumps(resp.json(), ensure_ascii=False, indent=2)
-#             else:
-#                 return f"API请求失败: {resp.status_code}"
-#     except Exception as e:
-#         return f"解释失败: {str(e)}"
+    注意: 此工具客观存在很多污染, 请谨慎使用
+    """
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post("https://lab.magiconch.com/api/nbnhhsh/guess", json={"text": text})
+            if resp.status_code == 200:
+                _res =  json.dumps(resp.json(), ensure_ascii=False, indent=2)
+                logger.info(f"nbnhhsh 解释成功: {_res}")
+                return _res
+            else:
+                return f"API请求失败: {resp.status_code}"
+    except Exception as e:
+        return f"解释失败: {str(e)}"
 
 # 添加视觉专家工具
 async def _vision_expert_analysis(vision_llm: ChatOpenAI, image_data: bytes, query: str = "") -> str:
@@ -309,7 +305,7 @@ class AgentService:
         smart_search.name = self._search_tool_name
         
         # 为规划专家绑定所有工具，使用新的智能搜索工具
-        all_tools = [smart_search, jina_fetch_webpage]
+        all_tools = [smart_search, jina_fetch_webpage, nbnhhsh]
         self._planning_agent = planning_llm.bind_tools(all_tools)
 
     @staticmethod
@@ -379,15 +375,20 @@ class AgentService:
 - 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片
 - 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片, 我需要减少转述损耗, 尽可能把视觉专家的分析内容完整的传达给用户
 
-[关于智能决策使用工具]
+[智能决策使用工具]
 - 先使用 smart_search 工具获取准确知识, 在进行回复
+- 遇到你无法理解的, 明显是某项小圈子内部缩写, 使用 nbnhhsh 工具进行尝试得到该缩写的所有可能含义, 然后结合上下文进行解释
 - smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"]
 - smart_search 不推荐如何口语化表达 如 ["xxx是什么意思" "xxx是什么"]
 - 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，优先使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
-- 请智能决策应该专注于描述哪些内容
-- 禁止为了噪音信息而调用工具
-- 如果遇到非广为人知的词语或通用技术术语, 请一定使用搜索网络信息获取知识补充
-- 大部分商业网站 视频网站 小红书等等类似网站充满大量噪音和无效信息，通常不适合使用 jina_fetch_webpage 获取内容
+
+[信息渠道]
+- smart_search 与 jina_fetch_webpage 会带有搜索引擎、网页广告等大量噪音, 可以考虑使用智能方式获取信息,例如:
+    - 使用较为官方的百科网站获取信息,如: 维基百科 萌娘百科 是较为可靠的百科网站
+    - 构建精巧的分布搜索计划, 例如先通过wiki搜索一部分内容, 再使用内容构建更精确的搜索关键词进行二次搜索
+    
+- 禁止为了噪音信息而调用工具, 注意甄别信息的可靠性:
+    - 大部分商业网站 视频网站 小红书等等类似网站充满大量噪音和无效信息，通常不适合使用 jina_fetch_webpage 获取内容
 
 [使用工具]
 尝试纠正用户可能的拼写错误或语法错误, 以确保准确理解查询意图, 但确保不改变原意.
@@ -436,7 +437,13 @@ class AgentService:
             result = None
             
             while iteration < max_iterations:
-                iteration += 1                
+                iteration += 1
+                
+                # 如果是最后一轮（距离最大轮次还有1轮），添加提醒消息
+                if iteration == max_iterations - 1:
+                    reminder_message = SystemMessage(content="注意：这是最后一轮工具调用机会。请直接给出最终答案。")
+                    messages.append(reminder_message)
+                
                 result = await self._planning_agent.ainvoke(messages)                
                 # 将AI响应添加到消息历史
                 messages.append(result)
@@ -459,8 +466,8 @@ class AgentService:
                             tool_result = await smart_search.ainvoke(tool_call['args'])
                         elif tool_name == 'jina_fetch_webpage':
                             tool_result = await jina_fetch_webpage.ainvoke(tool_call['args'])
-                        # elif tool_name == 'nbnhhsh':
-                            # tool_result = await nbnhhsh.ainvoke(tool_call['args'])
+                        elif tool_name == 'nbnhhsh':
+                            tool_result = await nbnhhsh.ainvoke(tool_call['args'])
                         else:
                             tool_result = f"未知工具: {tool_name}"
                         
@@ -501,7 +508,7 @@ class AgentService:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
                     else:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
-                tool_stats_line = f"[use tools] :: {' '.join(stats_parts)}"
+                tool_stats_line = f"[use tools] :: {', '.join(stats_parts)}"
             
             # 检查最终结果
             if result and hasattr(result, 'content') and result.content:
@@ -546,7 +553,7 @@ class AgentService:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
                     else:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
-                tool_stats_line = f"[use tools] :: {' '.join(stats_parts)}"
+                tool_stats_line = f"[use tools] :: {', '.join(stats_parts)}"
             
             stats_parts = []
             if tool_stats_line:
