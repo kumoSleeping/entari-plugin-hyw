@@ -9,6 +9,14 @@ from arclet.entari import MessageCreatedEvent, Session
 from arclet.entari import BasicConfModel, metadata, plugin_config
 from loguru import logger
 import asyncio
+from arclet.alconna import (
+    Args,
+    Alconna,
+    AllParam,
+    MultiVar,
+    CommandMeta,
+)
+from arclet.entari import MessageChain, Session, command
 
 # 导入AI服务模块
 from .agent import  AgentService, HywConfig
@@ -29,14 +37,19 @@ agent_service = AgentService(conf)
 @leto.on(MessageCreatedEvent)
 async def on_message_created(message_chain: MessageChain, session: Session[MessageEvent]):
     command_name_list = [conf.hyw_command_name] if isinstance(conf.hyw_command_name, str) else conf.hyw_command_name
-    if not any(message_chain.get(Text).strip().startswith(cmd) for cmd in command_name_list):
+    if session.reply:
+        try:
+            message_chain.extend(session.reply.origin.message)
+        except Exception:
+            pass
+    message_chain = message_chain.get(Text) + message_chain.get(Image)
+
+    alc = Alconna(command_name_list, Args["all_param;?", AllParam], meta=CommandMeta(compact=True,))
+    res = alc.parse(message_chain)
+    if not res.matched:
         return
-    message_chain = message_chain.exclude(At) if message_chain.get(At) else message_chain
-    for command_name in command_name_list:
-        message_chain = message_chain.strip().removeprefix(command_name).strip()
-    
-    if str(message_chain) == "" and (str(session.reply.origin.message) == "" if session.reply else True):
-        return
+
+    mc = MessageChain(res.all_param) # type: ignore
     
     async def react(code: str):
         try:
@@ -51,33 +64,25 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             pass
             
     try:
-        if session.reply:
-            try:
-                # 将引用消息内容添加到当前content中 反正最后会只取出 Text 和 Image
-                message_chain.extend(session.reply.origin.message)
-            except Exception:
-                # 引用消息获取失败时忽略，继续处理原消息
-                pass
         # 文本消息(全部)
-        msg = message_chain.get(Text).strip()
+        msg = mc.get(Text).strip()
         
         images = None
-        if message_chain.get(Image):
+        if mc.get(Image):
             # 下载图片
-            urls = message_chain[Image].map(lambda x: x.src)
+            urls = mc[Image].map(lambda x: x.src)
             tasks = [agent_service.download_image(url) for url in urls]
             images = await asyncio.gather(*tasks)
         
         # 使用统一入口，传递react函数让AI服务内部处理反应
-        res = await agent_service.unified_completion(str(msg), images, react)
+        res_agent = await agent_service.unified_completion(str(msg), images, react)
         await react("128051")  # 🐳
-        logger.info(f"hyw unified response: {res}")
         
         # 安全检查：处理空回复或被审查的情况
-        response_content = str(res.content) if hasattr(res, 'content') else ""
+        response_content = str(res_agent.content) if hasattr(res_agent, 'content') else ""
         if not response_content.strip():
             # 检查是否有工具调用但没有内容
-            if hasattr(res, 'tool_calls') and res.tool_calls:
+            if hasattr(res_agent, 'tool_calls') and res_agent.tool_calls:
                 response_content = "[KEY] :: 信息处理 | 内容获取\n>> [search enable]\n抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。\n[LLM] :: 安全过滤"
                 raise ValueError("内容被安全过滤，无法显示完整结果。")
             else:
