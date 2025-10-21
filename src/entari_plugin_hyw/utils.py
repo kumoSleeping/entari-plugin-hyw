@@ -12,6 +12,7 @@ from enum import Enum
 class SearchEngine(Enum):
     """搜索引擎枚举"""
     BING_CN = "bing_cn"  # 必应中国
+    # BING = "bing"  # 必应国际版（暂时不可用）
     DUCKDUCKGO = "duckduckgo"  # DuckDuckGo
     AUTO = "auto"  # 自动选择（优先必应中国）
 
@@ -37,23 +38,25 @@ async def universal_search(
     if not keywords:
         return []
     
-    # 自动选择引擎时，优先使用必应中国
+    # 自动选择引擎时，优先使用必应中国，最后 DuckDuckGo
     if engine == SearchEngine.AUTO:
-        # 先尝试必应中国
-        results = await _bing_search(keywords, max_results, exact_search)
-        if results:
-            return results
-        # 必应失败时回退到DuckDuckGo
+        # 1) 必应中国（解析稳定，优先）
+        cn_results = await _bing_cn_search(keywords, max_results, exact_search)
+        if cn_results:
+            return cn_results
+        # 2) 回退到 DuckDuckGo（保证至少有结果）
         return await _duckduckgo_search(keywords, max_results, exact_search)
     elif engine == SearchEngine.BING_CN:
-        return await _bing_search(keywords, max_results, exact_search)
+        return await _bing_cn_search(keywords, max_results, exact_search)
+    # elif engine == SearchEngine.BING:
+    #     return await _bing_intl_search(keywords, max_results, exact_search)
     elif engine == SearchEngine.DUCKDUCKGO:
         return await _duckduckgo_search(keywords, max_results, exact_search)
     else:
         return []
 
 
-async def _bing_search(keywords: List[str], max_results: int, exact_search: bool) -> List[Dict[str, str]]:
+async def _bing_cn_search(keywords: List[str], max_results: int, exact_search: bool) -> List[Dict[str, str]]:
     """
     必应中国搜索实现
     """
@@ -138,6 +141,95 @@ async def _bing_search(keywords: List[str], max_results: int, exact_search: bool
         return []
 
 
+# async def _bing_intl_search(keywords: List[str], max_results: int, exact_search: bool) -> List[Dict[str, str]]:
+#     """
+#     必应国际版搜索实现（暂时不可用）
+#     """
+#     all_results = []
+#     url = "https://www.bing.com/search"
+#     
+#     headers = {
+#         'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36',
+#         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+#         'Accept-Language': 'en-US,en;q=0.9',
+#         # 仅声明 gzip，避免 br/brotli 需要额外解码器
+#         'Accept-Encoding': 'gzip',
+#         'Connection': 'keep-alive',
+#         'Upgrade-Insecure-Requests': '1'
+#     }
+#     
+#     async def search_single_keyword(client, keyword):
+#         if exact_search:
+#             query = f'"{keyword.strip()}"'
+#         else:
+#             query = f"{keyword.strip()} -csdn -gitcode"
+#         
+#         params = {"q": query}
+#         
+#         try:
+#             response = await client.get(url, params=params)
+#             if response.status_code != 200:
+#                 return []
+#             
+#             content = response.text
+#             keyword_results = []
+#             
+#             # 必应搜索结果解析
+#             # 必应的li标签格式: <li class="b_algo" data-id iid=SERP.5330>
+#             result_blocks = re.findall(r'<li class="b_algo"[^>]*>(.*?)</li>', content, re.DOTALL)
+#             
+#             for block in result_blocks[:max_results]:
+#                 # 必应的标题格式：<h2><a target="_blank" href="...">title</a></h2>
+#                 title_match = re.search(r'<h2[^>]*><a[^>]*href="(http[^"]*?)"[^>]*>(.*?)</a></h2>', block, re.DOTALL)
+#                 
+#                 if title_match:
+#                     href, title_html = title_match.groups()
+#                     
+#                     # 清理标题中的HTML标签（如<strong>等）
+#                     title = re.sub(r'<[^>]+>', '', title_html).strip()
+#                     # HTML实体解码
+#                     title = title.replace('&#183;', '·').replace('&', '&').replace('<', '<').replace('>', '>').replace('"', '"')
+#                     
+#                     # 提取描述
+#                     snippet = ""
+#                     snippet_match = re.search(r'<p[^>]*>([^<]+)</p>', block)
+#                     if snippet_match:
+#                         snippet = snippet_match.group(1).strip()
+#                     
+#                     # 提取域名
+#                     domain_match = re.search(r'https?://([^/]+)', href)
+#                     domain = domain_match.group(1) if domain_match else ""
+#                     
+#                     keyword_results.append({
+#                         'title': title.strip(),
+#                         'url': href,
+#                         'snippet': snippet,
+#                         'domain': domain,
+#                         'type': 'search_result',
+#                         'keyword': keyword,
+#                         'engine': 'bing'
+#                     })
+#             
+#             return keyword_results
+#             
+#         except Exception:
+#             return []
+#     
+#     try:
+#         async with httpx.AsyncClient(timeout=15.0, headers=headers, follow_redirects=True) as client:
+#             tasks = [search_single_keyword(client, keyword) for keyword in keywords]
+#             results_list = await asyncio.gather(*tasks, return_exceptions=True)
+#             
+#             for results in results_list:
+#                 if isinstance(results, list):
+#                     all_results.extend(results)
+#             
+#             return all_results
+#             
+#     except Exception:
+#         return []
+
+
 async def _duckduckgo_search(keywords: List[str], max_results: int, exact_search: bool) -> List[Dict[str, str]]:
     """
     DuckDuckGo搜索实现
@@ -220,4 +312,3 @@ async def _duckduckgo_search(keywords: List[str], max_results: int, exact_search
             
     except Exception:
         return []
-

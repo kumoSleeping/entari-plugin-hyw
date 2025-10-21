@@ -249,6 +249,7 @@ class AgentService:
         self._text_llm: Optional[ChatOpenAI] = None
         self._vision_llm: Optional[ChatOpenAI] = None
         self._planning_agent: Optional[Any] = None
+        self._search_tool_name: Optional[str] = None  # 保存动态生成的搜索工具名称
         
         # 设置全局搜索引擎配置
         self._set_search_engine()
@@ -261,6 +262,8 @@ class AgentService:
             set_global_search_engine(SearchEngine.BING_CN)
         elif self.config.search_engine == "duckduckgo":
             set_global_search_engine(SearchEngine.DUCKDUCKGO)
+        # elif self.config.search_engine == "bing":
+        #     set_global_search_engine(SearchEngine.BING)
         elif self.config.search_engine == "auto":
             logger.info("设置全局搜索引擎为自动选择")
             set_global_search_engine(SearchEngine.AUTO)
@@ -300,6 +303,10 @@ class AgentService:
             temperature=0.2,  # 较低温度，保持规划的一致性
             extra_body={"enable_search": False}
         )
+        
+        # 根据配置动态设置工具名称
+        self._search_tool_name = f"smart_search[{self.config.search_engine}]"
+        smart_search.name = self._search_tool_name
         
         # 为规划专家绑定所有工具，使用新的智能搜索工具
         all_tools = [smart_search, jina_fetch_webpage]
@@ -374,7 +381,8 @@ class AgentService:
 
 [关于智能决策使用工具]
 - 先使用 smart_search 工具获取准确知识, 在进行回复
-- smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"] , 不推荐传入啰嗦, 口语化表述, 如 ["Python 是什么" "Python 学习 新手"]
+- smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"]
+- smart_search 不推荐如何口语化表达 如 ["xxx是什么意思" "xxx是什么"]
 - 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，优先使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
 - 请智能决策应该专注于描述哪些内容
 - 禁止为了噪音信息而调用工具
@@ -392,6 +400,7 @@ class AgentService:
 - 当有视觉解释, 视觉内容解释优先度最高
 - 回答简短高效, 不表明自身立场, 专注客观回复
 - 不需要每个关键词都解释, 只解释用户最关心的关键词
+- 围绕结果可以展开一些拓展内容, 但不要偏离主题
 - 避免将不同项目的信息混合在一起描述
 
 [严格禁止的行为]
@@ -446,7 +455,7 @@ class AgentService:
                             tool_stats[tool_name] = {'count': 0, 'total_time': 0}
                         
                         # 调用对应的工具（现在都是异步的）
-                        if tool_name == 'smart_search':
+                        if tool_name == self._search_tool_name:
                             tool_result = await smart_search.ainvoke(tool_call['args'])
                         elif tool_name == 'jina_fetch_webpage':
                             tool_result = await jina_fetch_webpage.ainvoke(tool_call['args'])
@@ -487,8 +496,12 @@ class AgentService:
             if tool_stats:
                 stats_parts = []
                 for tool_name, stats in tool_stats.items():
-                    stats_parts.append(f"[{tool_name}: {stats['count']}]")
-                tool_stats_line = f"[use tools] :: {' | '.join(stats_parts)}"
+                    # 只有搜索工具需要加中括号，其他工具直接显示名称
+                    if tool_name.startswith('smart_search['):
+                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                    else:
+                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                tool_stats_line = f"[use tools] :: {' '.join(stats_parts)}"
             
             # 检查最终结果
             if result and hasattr(result, 'content') and result.content:
@@ -528,8 +541,12 @@ class AgentService:
             if tool_stats:
                 stats_parts = []
                 for tool_name, stats in tool_stats.items():
-                    stats_parts.append(f"[{tool_name}: {stats['count']}]")
-                tool_stats_line = f"[use tools] :: {' | '.join(stats_parts)}"
+                    # 只有搜索工具需要加中括号，其他工具直接显示名称
+                    if tool_name.startswith('smart_search['):
+                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                    else:
+                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                tool_stats_line = f"[use tools] :: {' '.join(stats_parts)}"
             
             stats_parts = []
             if tool_stats_line:
@@ -548,5 +565,3 @@ class AgentService:
                 fallback_content = f"[KEY] :: 系统异常 | 执行错误\n>> [agent enable]\n系统处理异常: {error_msg}{stats_text}\n[LLM] :: {model_names}"
             
             return AIMessage(content=fallback_content)
-    
-
