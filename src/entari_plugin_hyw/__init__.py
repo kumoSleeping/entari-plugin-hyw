@@ -7,7 +7,7 @@ from arclet.entari import MessageChain, At, Image, Quote, Text
 import arclet.letoderea as leto
 from arclet.entari import MessageCreatedEvent, Session
 from arclet.entari import BasicConfModel, metadata, plugin_config
-from loguru import logger
+import httpx
 import asyncio
 from arclet.alconna import (
     Args,
@@ -31,8 +31,19 @@ metadata(
 )
 
 conf = plugin_config(HywConfig)
-
 agent_service = AgentService(conf)
+
+async def download_image(url: str) -> bytes:
+    """下载图片"""
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                return resp.content
+            else:
+                raise ActionFailed(f"下载图片失败，状态码: {resp.status_code}")
+    except Exception as e:
+        raise ActionFailed(f"下载图片失败: {url}, 错误: {str(e)}")
     
 @leto.on(MessageCreatedEvent)
 async def on_message_created(message_chain: MessageChain, session: Session[MessageEvent]):
@@ -71,7 +82,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
         if mc.get(Image):
             # 下载图片
             urls = mc[Image].map(lambda x: x.src)
-            tasks = [agent_service.download_image(url) for url in urls]
+            tasks = [download_image(url) for url in urls]
             images = await asyncio.gather(*tasks)
         
         # 使用统一入口，传递react函数让AI服务内部处理反应
@@ -81,6 +92,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
         # 安全检查：处理空回复或被审查的情况
         response_content = str(res_agent.content) if hasattr(res_agent, 'content') else ""
         if not response_content.strip():
+            # 检查是否有工具调用但没有内容
             response_content = "[KEY] :: 信息处理 | 内容获取\n>> [search enable]\n抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。\n[LLM] :: 安全过滤"
         await session.send([Quote(session.event.message.id), response_content])
     except Exception as e:
