@@ -17,8 +17,6 @@ from arclet.entari import BasicConfModel
 from loguru import logger
 import urllib.parse
 
-from .utils import universal_search, SearchEngine
-
 
 class HywConfig(BasicConfModel):
     hyw_command_name: Union[str, List[str]] = "hyw"
@@ -35,14 +33,13 @@ class HywConfig(BasicConfModel):
     vision_llm_model_base_url: str
     vision_llm_temperature: float = 0.4
     vision_llm_enable_search: bool = False
-    
-    search_engine: str = "auto"
-    
 
-# 全局搜索引擎配置，由 AgentService 设置
-_global_search_engine = SearchEngine.AUTO
+    search_engine: str = "bing"
 
-def set_global_search_engine(engine: SearchEngine):
+
+_global_search_engine = "bing"
+
+def set_global_search_engine(engine: str):
     """设置全局搜索引擎"""
     global _global_search_engine
     _global_search_engine = engine
@@ -50,106 +47,62 @@ def set_global_search_engine(engine: SearchEngine):
 # 智能搜索工具
 @tool
 async def smart_search(queries: List[str]) -> str:
-    """智能搜索工具，自动判断查询类型并选择最适合的搜索方式, 返回JSON格式文本结果"""
-    
-    logger.info(f"智能搜索查询: {queries}")
-    # 使用全局配置的搜索引擎，避免在工具内部初始化配置
-    engine = _global_search_engine
-    def is_exact_word(query: str) -> bool:
-        """判断是否为需要精确搜索的词汇"""
-        query = query.strip()
+    """
+    智能搜索工具，自动判断查询类型并选择最适合的搜索方式, 返回JSON格式文本结果
+    queries: 搜索关键词列表
+    """
+
+    async def ddsg_search(keyword: str, backend: str) -> List[dict]:
+        """文本搜索"""
+        from ddgs import DDGS
         
-        # 如果包含空格，通常不是单词
-        if ' ' in query:
-            return False
+        def _sync_search():
+            """同步搜索函数，在线程池中执行"""
+            logger.info(f"使用 DDGS 搜索: 关键词='{keyword}', 引擎='{backend}'")
+            return DDGS().text(
+                keyword,
+                safesearch="off",
+                timelimit="y",
+                page=1,
+                backend=backend,
+            )
         
-        # 如果包含中文和英文混合，可能是特定术语
-        has_chinese = any('\u4e00' <= char <= '\u9fff' for char in query)
-        has_english = any('a' <= char.lower() <= 'z' for char in query)
-        
-        # 纯英文单词且长度适中，适合精确搜索
-        if not has_chinese and has_english and 3 <= len(query) <= 20:
-            return True
-            
-        # 看起来像专有名词 品牌名 技术术语等
-        # 例如: bestdori, GitHub, API, Python等
-        if not has_chinese and (query.islower() or query.isupper() or query.istitle()):
-            return True
-            
-        # 包含数字和字母的组合，可能是版本号 型号等
-        if any(char.isdigit() for char in query) and any(char.isalpha() for char in query):
-            return True
-            
-        return False
-    
+        # 使用 asyncio.to_thread 在线程池中运行同步操作，不阻塞事件循环
+        results = await asyncio.to_thread(_sync_search)
+        return results
+
     try:
         # 将查询分为精确搜索和一般搜索两组
         exact_queries = []
         web_queries = []
         
         for query in queries:
-            if is_exact_word(query):
-                exact_queries.append(query)
+            if ' ' not in query:
+                exact_queries.append(f'"{query}"')
                 logger.info(f"'{query}' 判定为精确搜索")
             else:
                 web_queries.append(query)
                 logger.info(f"'{query}' 判定为一般搜索")
         
-        all_results = []
+        # 执行搜索 - 并发执行所有搜索任务
+        async def search_task(query: str, backend: str, search_type: str):
+            """搜索任务"""
+            results = await ddsg_search(query, backend=backend)
+            return {
+                "query": query,
+                "results": results,
+                "search_type": search_type
+            }
         
-        # 执行精确搜索
-        if exact_queries:
-            logger.info(f"执行精确搜索: {exact_queries}")
-            exact_results = await universal_search(
-                keywords=exact_queries,
-                max_results=5,
-                exact_search=True,
-                engine=engine
-            )
-            
-            # 按关键词分组精确搜索结果
-            exact_grouped = {}
-            for result in exact_results:
-                keyword = result.get('keyword', 'unknown')
-                if keyword not in exact_grouped:
-                    exact_grouped[keyword] = []
-                exact_grouped[keyword].append(result)
-            
-            # 添加到最终结果
-            for query in exact_queries:
-                all_results.append({
-                    "query": query,
-                    "results": exact_grouped.get(query, []),
-                    "search_type": "exact",
-                    "error": None
-                })
+        # 构建所有搜索任务 - 同时构建精确搜索和一般搜索任务
+        search_tasks = (
+            [search_task(query, backend=_global_search_engine, search_type="exact") for query in exact_queries] +
+            [search_task(query, backend=_global_search_engine, search_type="web") for query in web_queries]
+        )
         
-        # 执行一般搜索
-        if web_queries:
-            logger.info(f"执行一般搜索: {web_queries}")
-            web_results = await universal_search(
-                keywords=web_queries,
-                max_results=5,
-                exact_search=False,
-                engine=engine
-            )
-            
-            # 按关键词分组一般搜索结果
-            web_grouped = {}
-            for result in web_results:
-                keyword = result.get('keyword', 'unknown')
-                if keyword not in web_grouped:
-                    web_grouped[keyword] = []
-                web_grouped[keyword].append(result)
-            
-            # 添加到最终结果
-            for query in web_queries:
-                all_results.append({
-                    "query": query,
-                    "results": web_grouped.get(query, []),
-                    "search_type": "web",
-                    "error": None
-                })
+        # 并发执行所有搜索任务
+        all_results = await asyncio.gather(*search_tasks) if search_tasks else []
+    
         
         logger.info(f"智能搜索结果: {all_results}")
         return json.dumps(all_results, ensure_ascii=False, indent=2)
@@ -178,7 +131,7 @@ async def jina_fetch_webpage(url: str) -> str:
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(f"https://r.jina.ai/{url}")
             if resp.status_code == 200:
-                logger.info(f"网页获取成功 {resp.text}")
+                # logger.info(f"网页获取成功 {resp.text}")
                 return resp.text
             else:
                 return f"获取网页失败，状态码: {resp.status_code}"
@@ -190,8 +143,7 @@ async def jina_fetch_webpage(url: str) -> str:
 async def nbnhhsh(text: str) -> str:
     """
     用于复原一个缩写的所有可能性
-    
-    注意: 此工具客观存在很多污染, 请谨慎使用
+    注意: 此工具会缩写推演所有可能性, 客观存在很多污染
     """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -220,7 +172,6 @@ async def _vision_expert_analysis(vision_llm: ChatOpenAI, image_data: bytes, que
 
 - 一大段话详尽的描述主要内容, 
 - 如果出现文字, 请给出所有文字内容
-- 如果用户有提出具体内容补充，同样作为描述主要内容的一部分
 
 输出格式：
 第一张图描述了... 此外...
@@ -246,6 +197,7 @@ class AgentService:
         self._vision_llm: Optional[ChatOpenAI] = None
         self._planning_agent: Optional[Any] = None
         self._search_tool_name: Optional[str] = None  # 保存动态生成的搜索工具名称
+        self._compressor_llm: Optional[ChatOpenAI] = None  # 用于压缩内容的LLM
         
         # 设置全局搜索引擎配置
         self._set_search_engine()
@@ -254,18 +206,8 @@ class AgentService:
     
     def _set_search_engine(self):
         """设置搜索引擎配置"""
-        if self.config.search_engine == "bing_cn":
-            set_global_search_engine(SearchEngine.BING_CN)
-        elif self.config.search_engine == "duckduckgo":
-            set_global_search_engine(SearchEngine.DUCKDUCKGO)
-        # elif self.config.search_engine == "bing":
-        #     set_global_search_engine(SearchEngine.BING)
-        elif self.config.search_engine == "auto":
-            logger.info("设置全局搜索引擎为自动选择")
-            set_global_search_engine(SearchEngine.AUTO)
-        else:
-            logger.warning(f"未知搜索引擎配置: {self.config.search_engine}, 使用默认配置")
-            set_global_search_engine(SearchEngine.AUTO)
+        set_global_search_engine(self.config.search_engine)
+
     
     def _init_models(self):
         """初始化LLM模型"""
@@ -284,6 +226,15 @@ class AgentService:
             temperature=self.config.vision_llm_temperature,
             extra_body={"enable_search": self.config.vision_llm_enable_search}
         )
+        
+        # 初始化压缩器LLM - 使用较低温度保证压缩质量
+        self._compressor_llm = ChatOpenAI(
+            model=self.config.text_llm_model_name,
+            api_key=SecretStr(self.config.text_llm_api_key),
+            base_url=self.config.text_llm_model_base_url,
+            temperature=0.1,  # 低温度，保证压缩的一致性和准确性
+            extra_body={"enable_search": False}
+        )
     
     def _init_agents(self):
         """初始化专家Agent系统"""
@@ -300,9 +251,8 @@ class AgentService:
             extra_body={"enable_search": False}
         )
         
-        # 根据配置动态设置工具名称
-        self._search_tool_name = f"smart_search[{self.config.search_engine}]"
-        smart_search.name = self._search_tool_name
+        # 设置搜索工具名称
+        self._search_tool_name = "smart_search"
         
         # 为规划专家绑定所有工具，使用新的智能搜索工具
         all_tools = [smart_search, jina_fetch_webpage, nbnhhsh]
@@ -320,6 +270,52 @@ class AgentService:
                     raise ActionFailed(f"下载图片失败，状态码: {resp.status_code}")
         except Exception as e:
             raise ActionFailed(f"下载图片失败: {url}, 错误: {str(e)}")
+    
+    async def _compress_webpage(self, webpage_content: str, url: str) -> str:
+        """使用LLM压缩网页内容"""
+        if self._compressor_llm is None:
+            raise RuntimeError("压缩器LLM未初始化")
+        
+        logger.info(f"[压缩器] 开始压缩网页内容，原始长度: {len(webpage_content)} 字符")
+        logger.debug(f"[压缩器] 网页URL: {url}")
+        
+        compress_prompt = f"""你是网页内容提取专家，需要从网页中提取核心信息。
+
+[任务]
+从以下网页内容中提取主要信息，去除导航、广告、样板文字等噪音。
+
+[网页URL]
+{url}
+
+[网页内容]
+{webpage_content[:10000]}  # 限制输入长度
+
+[提取要求]
+1. 提取网页的主要内容和核心信息
+2. 保留关键段落、标题、列表
+3. 去除导航栏、页脚、广告、社交媒体按钮等
+4. 保留重要的数据、日期、引用
+5. 如果是新闻/文章，提取标题、作者、发布时间、正文摘要
+6. 如果是百科，提取定义、关键属性、分类信息
+7. 保持信息的逻辑结构
+
+[输出格式]
+网页: {url}
+---
+<压缩后的核心内容>
+"""
+        
+        logger.info(f"[压缩器] 调用LLM压缩，prompt长度: {len(compress_prompt)} 字符")
+        result = await self._compressor_llm.ainvoke([
+            SystemMessage(content=compress_prompt)
+        ])
+        
+        compressed = str(result.content) if hasattr(result, 'content') else str(result)
+        logger.info(f"[压缩器] 压缩完成: {len(webpage_content)} -> {len(compressed)} 字符 (压缩率: {100 - len(compressed)*100//len(webpage_content)}%)")
+        logger.debug(f"[压缩器] 压缩结果预览: {compressed[:300]}...")
+        return compressed
+
+
     
     
     async def unified_completion(self, content: str, images: Optional[List[bytes]] = None, react_func: Optional[Callable[[str], Any]] = None) -> Any:
@@ -350,10 +346,10 @@ class AgentService:
                     vision_result = await _vision_expert_analysis(self._vision_llm, image_data, content)
                 expert_info.append(f"视觉专家分析{i+1}: {vision_result}")
             vision_time = time.time() - vision_start_time
-            
             if react_func:
                 await react_func("10024")  # ✨ 开始智能规划
             full_context = "\n".join([f"图片{i+1}分析结果: {res}" for i, res in enumerate(expert_info)]) + f"\n对话携带信息: {content}"
+            logger.info("content:", content)
         else:
             if react_func:
                 await react_func("10024")  # ✨ 开始智能规划
@@ -368,53 +364,63 @@ class AgentService:
         # 3. 使用 LangChain 自动工具执行机制
         planning_prompt = f"""你是一个大语言模型驱动的智能解释器, 需要使用工具获取准确信息, 回答用户的问题.
 
-[你需要智能识别以下场景, 做出不同的反应]
+[任务类型]
 - 这是一句用户之间的对话, 我需要你去要从中过滤掉无关人员之间的对话信息 如人名与可能的上下文产物, 解释某一个用户对这句话中不理解的关键词
-- 用户在向我提问这句话
-- 用户希望我查询一些东西, 完成操作进行解释
-- 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片
-- 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片, 我需要减少转述损耗, 尽可能把视觉专家的分析内容完整的传达给用户
-
-[智能决策使用工具]
-- 先使用 smart_search 工具获取准确知识, 在进行回复
-- 遇到你无法理解的, 明显是某项小圈子内部缩写, 使用 nbnhhsh 工具进行尝试得到该缩写的所有可能含义, 然后结合上下文进行解释
-- smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"]
-- smart_search 不推荐如何口语化表达 如 ["xxx是什么意思" "xxx是什么"]
-- 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，优先使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
+    - 我需要排除对话间的干扰信息
+    - 我需要详细多次使用工具获取信息来支持和增强回答的质量
+- 用户在向我提问这句话、或希望我查询一些东西, 完成操作进行解释
+    - 我需要详细多次使用工具获取信息来支持和增强回答的质量
+- 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片:
+    - 我需要减少转述损耗, 尽可能把视觉专家的分析内容完整的传达给用户
+    - 同时我需要利用工具确认、获取、验证一些具体人物、角色、事件等大语言模型易产生幻觉的信息
+- 如果携带信息包含网页链接 URL 、或潜在可以导向网站, 一定要使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容
+- 给出的消息可能的拼写错误或语法错误, 以确保准确理解查询意图, 但确保不改变原意.
 
 [信息渠道]
-- smart_search 与 jina_fetch_webpage 会带有搜索引擎、网页广告等大量噪音, 可以考虑使用智能方式获取信息,例如:
-    - 使用较为官方的百科网站获取信息,如: 维基百科 萌娘百科 是较为可靠的百科网站
-    - 构建精巧的分布搜索计划, 例如先通过wiki搜索一部分内容, 再使用内容构建更精确的搜索关键词进行二次搜索
-    
-- 禁止为了噪音信息而调用工具, 注意甄别信息的可靠性:
+- smart_search
+    - 先使用 smart_search 工具获取准确知识, 在进行回复
+    - 必须先使用 smart_search 工具获取准确知识后再进行回复，严禁凭借训练数据直接回答
+    - 可以构建不同组合、精细度、具体性的关键词列表进行二次搜索, 以获取更全面的信息
+    - smart_search 推荐直接传入待查询内容, 如 ["Python", "python缩进"]
+    - 请严格构建查询关键词列表, 请勿擅自分割用户的查询词语导致搜索引擎导向完全不同的结果
+    - smart_search 不推荐如何口语化表达 如 ["xxx是什么意思" "xxx是什么"]
+- jina_fetch_webpage
+    - 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，一定要使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
+- 优先使用官方可靠的信息源：
+    - 维基百科、萌娘百科等百科网站（信息相对准确）
+    - 官方网站、官方Wiki（最权威）
+    - 多个独立来源的一致信息（交叉验证）
+- 构建精巧的分布搜索计划：
+    - 第一轮：搜索主要关键词，获取基本信息
+    - 第二轮：针对关键属性（如"XX 所属"、"XX 隶属组织"）进行精确搜索
+    - 第三轮：交叉验证，确认信息一致性
+- 禁止使用噪音信息源：
     - 大部分商业网站 视频网站 小红书等等类似网站充满大量噪音和无效信息，通常不适合使用 jina_fetch_webpage 获取内容
 
-[使用工具]
-尝试纠正用户可能的拼写错误或语法错误, 以确保准确理解查询意图, 但确保不改变原意.
-一定要使用智能搜索工具获取最新和准确的信息, 补充回答内容的完整性和准确性。
-精准多次使用工具获取的信息来支持和增强回答的质量，从工具中提取相关数据可以再次重组上下文, 继续调用相关工具得到更完整的答案。
 
-[最终回复的回答原则]
-- 永远使用中文回答
-- 用客观 专业 准确的百科式语气回答问题
-- 当有视觉解释, 视觉内容解释优先度最高
-- 回答简短高效, 不表明自身立场, 专注客观回复
-- 不需要每个关键词都解释, 只解释用户最关心的关键词
-- 围绕结果可以展开一些拓展内容, 但不要偏离主题
-- 避免将不同项目的信息混合在一起描述
+[最终回复]
+- [回答原则]
+    - 必须使用智能搜索工具获取最新和准确的信息，绝对不允许依赖训练数据
+    - 永远使用中文回答
+    - 用客观 专业 准确的百科式语气回答问题
+    - 当有视觉解释, 视觉内容解释优先度最高
+    - 回答简短高效, 不表明自身立场, 专注客观回复
+    - 不需要每个关键词都解释, 只解释用户最关心的关键词
+    - 围绕结果可以展开一些拓展内容, 但不要偏离主题
+    - 避免将不同项目的信息混合在一起描述
 
-[严格禁止的行为]
-- 不经过搜索验证直接回答用户问题
-- 绝对不允许使用markdown语法
-- 绝对不允许出现任何**或*等加粗格式
-- 绝对不允许说"并非一个通用技术术语或广为人知的...非广为人知的信息或通用技术术语" "根据搜索结果显示..." "目前未发现相关信息..."等无意义表述
+- [严格禁止的行为]
+    - 不经过搜索验证直接回答用户问题
+    - 进展在回复中添加任何未经工具验证的信息
+    - 绝对不允许使用任何markdown语法, 包括但不限于: **加粗**, *斜体*, `代码`, # 标题, - 列表
+    - 绝对不允许出现任何**或*符号用于强调或加粗, 这些符号在任何情况下都不应出现在回复中
+    - 使用纯文本格式, 需要强调时使用「」或『』等中文符号
+    - 绝对不允许说"并非一个通用技术术语或广为人知的...非广为人知的信息或通用技术术语" "根据搜索结果显示..." "目前未发现相关信息..."等无意义表述
 
-[最终回复的格式要求]
-第一行: [KEY] :: <关键词> | <关键词>  <...>
-第二行: >> [agent enable] 
-第三行开始: <详细解释>
-最后一行: [LLM] :: {model_names}
+- [格式要求]
+    第一行: [Key] :: <关键词> | <关键词>  <...>
+    第二行: >> [LLM Agent] :: {model_names}
+    第三行开始: <详细解释>
 
 [开始]
 开始分析并执行！
@@ -430,24 +436,33 @@ class AgentService:
         try:
             # 使用 LangChain 的消息循环自动执行工具
             messages: TypingList[BaseMessage] = [SystemMessage(content=planning_prompt)]
+            logger.info(f"[开始对话] 初始化消息列表，prompt长度: {len(planning_prompt)} 字符")
             
             # 持续执行直到没有工具调用或达到最大轮次
-            max_iterations = 15
+            max_iterations = 10
             iteration = 0
             result = None
             
             while iteration < max_iterations:
                 iteration += 1
+                logger.info(f"========== 第 {iteration} 轮迭代开始 ==========")
                 
                 # 如果是最后一轮（距离最大轮次还有1轮），添加提醒消息
                 if iteration == max_iterations - 1:
                     reminder_message = SystemMessage(content="注意：这是最后一轮工具调用机会。请直接给出最终答案。")
                     messages.append(reminder_message)
+                    logger.warning(f"[最后一轮] 添加提醒消息")
+                
+                # 计算当前上下文大小
+                context_size = sum(len(str(m.content)) for m in messages if hasattr(m, 'content'))
+                logger.info(f"[第 {iteration} 轮] 当前上下文大小: {context_size} 字符, 消息数: {len(messages)}")
                 
                 result = await self._planning_agent.ainvoke(messages)                
                 # 将AI响应添加到消息历史
                 messages.append(result)
-                logger.info(f"规划专家第 {iteration} 轮响应: {result}")
+                logger.info(f"[第 {iteration} 轮] AI响应已添加到消息历史")
+                logger.debug(f"[第 {iteration} 轮] AI响应内容: {result}")
+                
                 # 检查是否有工具调用
                 if hasattr(result, 'tool_calls') and result.tool_calls:
                     logger.info(f"执行工具调用: {[tc['name'] for tc in result.tool_calls]}")
@@ -463,13 +478,29 @@ class AgentService:
                         
                         # 调用对应的工具（现在都是异步的）
                         if tool_name == self._search_tool_name:
+                            logger.info(f"[工具调用] smart_search 参数: {tool_call['args']}")
                             tool_result = await smart_search.ainvoke(tool_call['args'])
+                            logger.info(f"[结果] smart_search 返回长度: {len(tool_result)} 字符")
+                                
                         elif tool_name == 'jina_fetch_webpage':
+                            logger.info(f"[工具调用] jina_fetch_webpage 参数: {tool_call['args']}")
                             tool_result = await jina_fetch_webpage.ainvoke(tool_call['args'])
+                            logger.info(f"[原始结果] jina_fetch_webpage 返回长度: {len(tool_result)} 字符")
+                            
+                            # 压缩网页内容
+                            url = tool_call['args'].get('url', 'unknown')
+                            original_len = len(tool_result)
+                            tool_result = await self._compress_webpage(tool_result, url)
+                            logger.info(f"[压缩完成] jina_fetch_webpage: {original_len} -> {len(tool_result)} 字符")
+                            logger.debug(f"[压缩内容预览] {tool_result[:500]}...")
+                                
                         elif tool_name == 'nbnhhsh':
+                            logger.info(f"[工具调用] nbnhhsh 参数: {tool_call['args']}")
                             tool_result = await nbnhhsh.ainvoke(tool_call['args'])
+                            logger.info(f"[结果] nbnhhsh 返回长度: {len(tool_result)} 字符")
                         else:
                             tool_result = f"未知工具: {tool_name}"
+                            logger.error(f"[错误] 未知工具: {tool_name}")
                         
                         # 记录统计信息
                         tool_end_time = time.time()
@@ -478,12 +509,14 @@ class AgentService:
                         tool_stats[tool_name]['total_time'] += tool_duration
                         
                         # 将工具结果添加到消息历史
+                        final_content = str(tool_result)
                         messages.append(ToolMessage(
-                            content=str(tool_result),
+                            content=final_content,
                             tool_call_id=tool_call['id']
                         ))
                         
-                        logger.info(f"工具 {tool_name} 执行完成，耗时 {tool_duration:.2f}s")
+                        logger.info(f"[添加到上下文] 工具 {tool_name} 结果长度: {len(final_content)} 字符，耗时 {tool_duration:.2f}s")
+                        logger.info(f"[当前消息数] messages 总数: {len(messages)}")
                 
                 # 如果没有工具调用，说明模型自己决定停止并直接返回回答
                 if not (hasattr(result, 'tool_calls') and result.tool_calls):
@@ -498,17 +531,18 @@ class AgentService:
             elapsed_parts = [f"total: {total_duration:.1f}s"]
             if vision_time > 0:
                 elapsed_parts.append(f"vision: {vision_time:.1f}s")
-            elapsed_line = f"[elapsed] :: {' | '.join(elapsed_parts)}"
+            elapsed_line = f"[Elapsed] :: {' | '.join(elapsed_parts)}"
             
             if tool_stats:
                 stats_parts = []
                 for tool_name, stats in tool_stats.items():
-                    # 只有搜索工具需要加中括号，其他工具直接显示名称
-                    if tool_name.startswith('smart_search['):
-                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                    # 如果是搜索工具，添加搜索引擎名称
+                    if tool_name == 'smart_search':
+                        display_name = f"smart_search[{self.config.search_engine}]"
+                        stats_parts.append(f"{display_name}: {stats['count']}")
                     else:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
-                tool_stats_line = f"[use tools] :: {', '.join(stats_parts)}"
+                tool_stats_line = f"[Use Tools] :: {', '.join(stats_parts)}"
             
             # 检查最终结果
             if result and hasattr(result, 'content') and result.content:
@@ -529,7 +563,7 @@ class AgentService:
                 stats_parts.append(elapsed_line)
                 
                 stats_text = "\n" + "\n".join(stats_parts)
-                fallback_content = f"[KEY] :: 信息处理 | 处理异常\n>> [agent enable]\n抱歉，暂时无法生成完整的回复内容。{stats_text}\n[LLM] :: {model_names}"
+                fallback_content = f"[Key] :: 信息处理 | 处理异常\n>> [LLM Agent] :: {model_names}\n抱歉，暂时无法生成完整的回复内容。{stats_text}"
                 return AIMessage(content=fallback_content)
                 
         except Exception as e:
@@ -543,17 +577,18 @@ class AgentService:
             elapsed_parts = [f"total: {total_duration:.1f}s"]
             if vision_time > 0:
                 elapsed_parts.append(f"vision: {vision_time:.1f}s")
-            elapsed_line = f"[elapsed] :: {' | '.join(elapsed_parts)}"
+            elapsed_line = f"[Elapsed] :: {' | '.join(elapsed_parts)}"
             
             if tool_stats:
                 stats_parts = []
                 for tool_name, stats in tool_stats.items():
-                    # 只有搜索工具需要加中括号，其他工具直接显示名称
-                    if tool_name.startswith('smart_search['):
-                        stats_parts.append(f"{tool_name}: {stats['count']}")
+                    # 如果是搜索工具，添加搜索引擎名称
+                    if tool_name == 'smart_search':
+                        display_name = f"smart_search[{self.config.search_engine}]"
+                        stats_parts.append(f"{display_name}: {stats['count']}")
                     else:
                         stats_parts.append(f"{tool_name}: {stats['count']}")
-                tool_stats_line = f"[use tools] :: {', '.join(stats_parts)}"
+                tool_stats_line = f"[Use Tools] :: {', '.join(stats_parts)}"
             
             stats_parts = []
             if tool_stats_line:
@@ -565,10 +600,10 @@ class AgentService:
             # 检查是否是内容审查失败
             error_msg = str(e)
             if "data_inspection_failed" in error_msg:
-                fallback_content = f"[KEY] :: 内容审查 | 审查失败\n>> [agent enable]\n输入内容可能包含不当信息，无法处理。错误详情: {error_msg}{stats_text}\n[LLM] :: {model_names}"
+                fallback_content = f"[Key] :: 内容审查 | 审查失败\n>> [LLM Agent] :: {model_names}\n输入内容可能包含不当信息，无法处理。错误详情: {error_msg}\n{stats_text}"
             elif "inappropriate content" in error_msg.lower():
-                fallback_content = f"[KEY] :: 内容过滤 | 内容限制\n>> [agent enable]\n内容被服务商过滤，无法生成回答。错误: {error_msg}{stats_text}\n[LLM] :: {model_names}"
+                fallback_content = f"[Key] :: 内容过滤 | 内容限制\n>> [LLM Agent] :: {model_names}\n内容被服务商过滤，无法生成回答。错误: {error_msg}\n{stats_text}"
             else:
-                fallback_content = f"[KEY] :: 系统异常 | 执行错误\n>> [agent enable]\n系统处理异常: {error_msg}{stats_text}\n[LLM] :: {model_names}"
+                fallback_content = f"[Key] :: 系统异常 | 执行错误\n>> [LLM Agent] :: {model_names}\n系统处理异常: {error_msg}\n{stats_text}"
             
             return AIMessage(content=fallback_content)

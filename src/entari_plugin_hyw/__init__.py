@@ -81,15 +81,12 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
         # 安全检查：处理空回复或被审查的情况
         response_content = str(res_agent.content) if hasattr(res_agent, 'content') else ""
         if not response_content.strip():
-            # 检查是否有工具调用但没有内容
-            if hasattr(res_agent, 'tool_calls') and res_agent.tool_calls:
-                response_content = "[KEY] :: 信息处理 | 内容获取\n>> [search enable]\n抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。\n[LLM] :: 安全过滤"
-                raise ValueError("内容被安全过滤，无法显示完整结果。")
-            else:
-                response_content = "[KEY] :: 系统响应 | 处理异常\n>> [search enable]\n抱歉，暂时无法生成回复内容。\n[LLM] :: 系统提示"
-                raise ValueError("内容被安全过滤，无法显示完整结果。")
-        
-        await session.send(response_content)
+            response_content = "[KEY] :: 信息处理 | 内容获取\n>> [search enable]\n抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。\n[LLM] :: 安全过滤"
+        await session.send([Quote(session.event.message.id), response_content])
     except Exception as e:
         await react("10060")  # ❌
         raise e
+
+
+    
+    

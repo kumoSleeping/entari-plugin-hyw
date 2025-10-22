@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "0.2.5"
+version = "0.2.6"
 description = "Use large language models to interpret chat messages"
 authors = [
     {"name" = "kumoSleeping", "email" = "zjr2992@outlook.com"}
@@ -19,6 +19,7 @@ dependencies = [
     "entari-plugin-server>=0.5.0",
     "satori-python-adapter-onebot11>=0.2.5",
     "nekobox>=0.1.6",
+    "ddgs>=9.6.1",
 ]
 requires-python = ">=3.8"
 readme = "README.md"
