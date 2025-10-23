@@ -85,8 +85,11 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             tasks = [download_image(url) for url in urls]
             images = await asyncio.gather(*tasks)
         
-        # 使用统一入口，传递react函数让AI服务内部处理反应
-        res_agent = await agent_service.unified_completion(str(msg), images, react)
+        # 生成会话ID（使用群组和用户ID的组合）
+        session_id = f"{session.guild.id}_{session.user.id if hasattr(session, 'user') else 'unknown'}"
+        
+        # 使用统一入口，传递react函数和会话ID让AI服务内部处理反应
+        res_agent = await agent_service.unified_completion(str(msg), images, react, session_id)
         await react("128051")  # 🐳
         
         # 安全检查：处理空回复或被审查的情况
@@ -98,7 +101,3 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
     except Exception as e:
         await react("10060")  # ❌
         raise e
-
-
-    
-    

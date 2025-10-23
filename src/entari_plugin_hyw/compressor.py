@@ -26,7 +26,7 @@ class WebpageCompressor:
 {url}
 
 [网页内容]
-{webpage_content[:10000]}  # 限制输入长度
+{webpage_content}
 
 [提取要求]
 1. 提取网页的主要内容和核心信息
