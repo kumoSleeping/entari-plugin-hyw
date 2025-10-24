@@ -1,16 +1,19 @@
 import asyncio
 import httpx
 import json
-from typing import List
+from typing import List, Optional
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from pydantic import SecretStr
 from loguru import logger
+
+from .compressor import WebpageCompressor
 
 
 # 全局搜索引擎配置
-_global_search_engines = ["auto"] 
+_global_search_engines = ["auto"]
 
+# 全局压缩器配置
+_global_compressor: Optional[WebpageCompressor] = None
 
 
 def set_global_search_engines(engines: List[str]):
@@ -21,56 +24,23 @@ def set_global_search_engines(engines: List[str]):
 
 def set_global_compressor_llm(llm: ChatOpenAI):
     """设置全局压缩器LLM"""
-    global _global_compressor_llm
-    _global_compressor_llm = llm
-
-
-async def compress_content(content: str, max_length: int = 4000) -> str:
-    """使用LLM压缩内容"""
-    if len(content) <= max_length:
-        return content
+    global _global_compressor
+    _global_compressor = WebpageCompressor(llm)
+    logger.info("[工具] 压缩器已初始化")
     
-    if not _global_compressor_llm:
-        logger.warning("压缩器LLM未初始化，返回原始内容")
-        return content
     
-    try:
-        from langchain_core.messages import HumanMessage
-        
-        prompt = f"""请将以下网页内容压缩到 {max_length} 字符以内，保留最重要的信息：
-
-{content}
-
-要求：
-1. 保留核心信息和关键数据
-2. 去除冗余内容和重复信息
-3. 保持原文的逻辑结构
-4. 使用简洁清晰的语言
-5. 严格控制字数在 {max_length} 字符以内"""
-
-        messages = [HumanMessage(content=prompt)]
-        result = await _global_compressor_llm.ainvoke(messages)
-        compressed_content = result.content
-        
-        logger.info(f"内容压缩完成: 原长度 {len(content)} -> 压缩后 {len(str(compressed_content))}")
-        return str(compressed_content)
-        
-    except Exception as e:
-        logger.error(f"内容压缩失败: {e}")
-        return content
-
-
+    
 # 智能搜索工具
 @tool
-async def web_search(query: str, engines: List[str] | None = None) -> str:
+async def web_search(query: str) -> str:
     """
     - web_search 每个查询只能包含一个的关键词建议在 1-2 个词之间 不超过 3 个词
-    - 多引擎并发搜索工具，支持同时搜索多个搜索引擎并合并结果
-    - 可以指定搜索引擎列表，如 ["brave", "brave::exact", "bing"]，::exact 表示精确搜索
+    - 多引擎并发搜索工具，使用配置文件指定的搜索引擎进行搜索
+    - 支持同时搜索多个搜索引擎并合并结果
+    - 搜索引擎配置在 entari.yml 中的 search_engines 字段，如 ["duckduckgo::exact", "duckduckgo"]，::exact 表示精确搜索
     - 自动去重和合并来自不同搜索引擎的结果，提供更全面的信息
     智能搜索工具, 返回JSON格式文本结果
     query: 要搜索的关键词
-    engines: 搜索引擎列表，默认使用全局配置的搜索引擎列表
     """
 
     async def ddsg_search(keyword: str, backend: str, is_exact: bool = False) -> dict:
@@ -103,10 +73,10 @@ async def web_search(query: str, engines: List[str] | None = None) -> str:
         return parsed
 
     try:
-        # 如果指定了单个搜索引擎，使用传统单引擎模式
-        if engines is not None and len(engines) == 1:
-            logger.info(f"使用单引擎搜索模式: {engines[0]}")
-            parsed_engines = parse_engines(engines)
+        # 使用全局配置的搜索引擎列表
+        if len(_global_search_engines) == 1:
+            logger.info(f"使用单引擎搜索模式: {_global_search_engines[0]}")
+            parsed_engines = parse_engines(_global_search_engines)
             engine_name, is_exact = parsed_engines[0]
             single_result = await ddsg_search(query, engine_name, is_exact)
             # 对精确模式进行客户端二次过滤，确保只保留包含完整查询词的结果
@@ -124,7 +94,7 @@ async def web_search(query: str, engines: List[str] | None = None) -> str:
                 "query": query,
                 "results": filtered_results,
                 "search_type": "single_engine",
-                "engine": engines[0],
+                "engine": _global_search_engines[0],
                 "search_mode": "exact" if is_exact else "normal",
                 "success": single_result.get("success", False),
                 "exact_matched": (len(filtered_results) > 0) if is_exact else None,
@@ -134,8 +104,8 @@ async def web_search(query: str, engines: List[str] | None = None) -> str:
             
             return json.dumps(result_data, ensure_ascii=False, indent=2)
         
-        # 使用传入的搜索引擎列表或全局默认列表进行多引擎搜索
-        search_engines = engines if engines is not None else _global_search_engines
+        # 使用全局配置的搜索引擎列表进行多引擎搜索
+        search_engines = _global_search_engines
         parsed_engines = parse_engines(search_engines)
         logger.info(f"开始多引擎并发搜索: 查询='{query}', 引擎={search_engines}")
         
@@ -220,8 +190,8 @@ async def web_search(query: str, engines: List[str] | None = None) -> str:
             "query": query,
             "search_engines": {
                 "successful": [],
-                "failed": engines if engines is not None else _global_search_engines,
-                "total_requested": len(engines if engines is not None else _global_search_engines)
+                "failed": _global_search_engines,
+                "total_requested": len(_global_search_engines)
             },
             "merged_results": [],
             "engine_results": {},
@@ -229,71 +199,12 @@ async def web_search(query: str, engines: List[str] | None = None) -> str:
             "stats": {
                 "total_results": 0,
                 "successful_engines_count": 0,
-                "failed_engines_count": len(engines if engines is not None else _global_search_engines)
+                "failed_engines_count": len(_global_search_engines)
             },
             "error": str(e)
         }
         logger.error(f"多引擎搜索失败: {e}")
         return json.dumps(error_result, ensure_ascii=False, indent=2)
-# @tool
-# async def single_word_web_search(query: str) -> str:
-#     """
-#     精确搜索工具
-#     - 禁止出现空格
-#     - 传入内容必须为一个完整的查询字符串
-#     - 禁止查询短语、语句、询问
-#     - 只能用于搜索单个名词或专有名词
-#     query: 要精确搜索的关键词（单个查询字符串）
-#     """
-    
-#     async def ddsg_search(keyword: str, backend: str) -> List[dict]:
-#         """文本搜索"""
-#         from ddgs import DDGS
-        
-#         def _sync_search():
-#             """同步搜索函数，在线程池中执行"""
-#             logger.info(f"DDGS 精确搜索: 关键词='{keyword}', 引擎='{backend}'")
-#             return DDGS().text(
-#                 keyword,
-#                 region='cn',
-#                 language='zh',
-#                 safesearch="off",
-#                 timelimit="y",
-#                 page=1,
-#                 max_results=3,
-#                 backend=backend,
-#             )
-        
-#         # 使用 asyncio.to_thread 在线程池中运行同步操作，不阻塞事件循环
-#         results = await asyncio.to_thread(_sync_search)
-#         return results
-
-#     try:
-#         # 将查询词用双引号包裹，进行精确搜索
-#         exact_query = f'"{query}"'
-#         logger.info(f"执行精确搜索: 原始查询='{query}', 精确查询='{exact_query}'")
-        
-#         results = await ddsg_search(exact_query, backend=_global_search_engine)
-        
-#         result_data = {
-#             "query": query,
-#             "exact_query": exact_query,
-#             "results": results,
-#             "search_type": "exact"
-#         }
-#         return json.dumps(result_data, ensure_ascii=False, indent=2)
-        
-#     except Exception as e:
-#         # 错误处理
-#         error_result = {
-#             "query": query,
-#             "exact_query": f'"{query}"',
-#             "results": [],
-#             "search_type": "exact",
-#             "error": str(e)
-#         }
-#         logger.error(f"精确搜索失败: {e}")
-#         return json.dumps(error_result, ensure_ascii=False, indent=2)
 
 
 @tool
@@ -304,38 +215,22 @@ async def jina_fetch_webpage(url: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             logger.info(f"Jina 获取页面: URL='{url}'")
-            resp = await client.get(f"https://r.jina.ai/{url}")
+            resp = await client.get(f"https://r.jina.ai/{url}", headers={"X-Engine": "direct"})
             if resp.status_code == 200:
                 content = resp.text
                 logger.info(f"网页获取成功，原始长度: {len(content)} 字符")
                 
-                # 使用压缩器压缩内容
-                logger.info("开始压缩网页内容...")
-                compressed_content = await compress_content(content, max_length=4000)
-                logger.info(f"网页内容处理完成，最终长度: {len(compressed_content)} 字符")
-                logger.info(f"网页内容预览: {compressed_content[:300]}...")
+                # 如果压缩器已初始化，则使用压缩器压缩内容
+                if _global_compressor is not None:
+                    try:
+                        content = await _global_compressor.compress_webpage(content, url)
+                        logger.info(f"网页内容压缩完成，最终长度: {len(content)} 字符")
+                    except Exception as e:
+                        logger.error(f"网页压缩失败: {e}，返回原始内容")
                 
-                return compressed_content
+                return content
             else:
                 return f"获取网页失败，状态码: {resp.status_code}"
     except Exception as e:
         return f"获取网页失败: {str(e)}"
 
-
-# @tool
-# async def nbnhhsh(text: str) -> str:
-#     """
-#     用于复原一个缩写的所有可能性
-#     注意: 此工具会缩写推演所有可能性, 客观存在很多污染
-#     """
-#     try:
-#         async with httpx.AsyncClient(timeout=15.0) as client:
-#             resp = await client.post("https://lab.magiconch.com/api/nbnhhsh/guess", json={"text": text})
-#             if resp.status_code == 200:
-#                 _res =  json.dumps(resp.json(), ensure_ascii=False)
-#                 logger.info(f"nbnhhsh 解释成功: {_res}")
-#                 return _res
-#             else:
-#                 return f"API请求失败: {resp.status_code}"
-#     except Exception as e:
-#         return f"解释失败: {str(e)}"

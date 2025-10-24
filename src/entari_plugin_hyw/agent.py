@@ -24,6 +24,7 @@ from .tools import (
     jina_fetch_webpage, 
     # nbnhhsh,
     set_global_search_engines,
+    set_global_compressor_llm,
 )
 
 # 导入视觉分析模块
@@ -93,7 +94,9 @@ SYS_PROMPT = """
     - 如果搜索出现广告、黄色、低俗、违法等不良信息, 必须忽略这些结果并重新搜索
 - jina_fetch_webpage
     - 如果用户给出类似链接 网址 URL 或潜在能找到网址的内容时，一定要使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容, 仔细分析网页内容以补充回答
-    - 大部分商业网站 视频网站 小红书 贴吧论坛 csdn 等等类似网站充满大量噪音和无效信息，通常不适合使用 jina_fetch_webpage 获取内容
+    - 大部分商业网站 视频网站 小红书 贴吧论坛 等等类似网站充满大量噪音和无效信息，占用大量上下文, 请少量使用
+    - 不要获取 csdn 商城 黄色 低俗 违法等不良信息
+    - 占用大量上下文, 请少量使用
 - [智能搜索策略]
     在开始搜索前，请先规划信息获取的优先级顺序：
     1. 先搜索未知名词、任务、专有名词，确认其基本信息
@@ -231,7 +234,7 @@ class AgentService:
 
     def _setup_compressor(self):
         """设置压缩器LLM"""
-        # 创建压缩器LLM - 使用专门的便宜模型配置
+        # 创建压缩器LLM - 使用较低温度保证压缩质量
         compressor_llm = ChatOpenAI(
             model=self.config.compressor_llm_model_name,
             api_key=SecretStr(self.config.compressor_llm_api_key),
@@ -241,10 +244,8 @@ class AgentService:
         )
         
         # 设置全局压缩器LLM
-        from .tools import set_global_compressor_llm
         set_global_compressor_llm(compressor_llm)
         logger.info(f"[DEBUG] 压缩器LLM设置完成: {self.config.compressor_llm_model_name}")
-
 
     
     async def unified_completion(self, content: str, images: Optional[List[bytes]] = None, react_func: Optional[Callable[[str], Any]] = None, session_id: Optional[str] = None) -> Any:
