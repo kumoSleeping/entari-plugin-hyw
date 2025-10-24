@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "0.3.2"
+version = "0.3.3"
 description = "Use large language models to interpret chat messages"
 authors = [
     {"name" = "kumoSleeping", "email" = "zjr2992@outlook.com"}

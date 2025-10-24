@@ -17,6 +17,11 @@ class WebpageCompressor:
         logger.info(f"[压缩器] 开始压缩网页内容，原始长度: {len(webpage_content)} 字符")
         logger.debug(f"[压缩器] 网页URL: {url}")
         
+        # 如果内容超过1万字符，直接截取前1万字符
+        if len(webpage_content) > 10000:
+            logger.warning(f"[压缩器] 网页内容超过1万字符 ({len(webpage_content)}字符)，截取前1万字符")
+            webpage_content = webpage_content[:10000] + "\n...(内容过长，已截断)"
+        
         compress_prompt = f"""你是网页内容提取专家，需要从网页中提取核心信息。
 
 [任务]
