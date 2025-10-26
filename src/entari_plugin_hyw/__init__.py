@@ -32,6 +32,9 @@ metadata(
 
 conf = plugin_config(HywConfig)
 agent_service = AgentService(conf)
+command_name_list = [conf.hyw_command_name] if isinstance(conf.hyw_command_name, str) else conf.hyw_command_name
+alc = Alconna(command_name_list, Args["all_param;?", AllParam], meta=CommandMeta(compact=True,))
+
 
 async def download_image(url: str) -> bytes:
     """下载图片"""
@@ -47,7 +50,6 @@ async def download_image(url: str) -> bytes:
     
 @leto.on(MessageCreatedEvent)
 async def on_message_created(message_chain: MessageChain, session: Session[MessageEvent]):
-    command_name_list = [conf.hyw_command_name] if isinstance(conf.hyw_command_name, str) else conf.hyw_command_name
     if session.reply:
         try:
             message_chain.extend(session.reply.origin.message)
@@ -55,7 +57,6 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             pass
     message_chain = message_chain.get(Text) + message_chain.get(Image)
 
-    alc = Alconna(command_name_list, Args["all_param;?", AllParam], meta=CommandMeta(compact=True,))
     res = alc.parse(message_chain)
     if not res.matched:
         return
