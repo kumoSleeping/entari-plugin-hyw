@@ -70,6 +70,8 @@ SYS_PROMPT = """
 - 这是一张视觉专家分析后的多媒体内容, 我需要理解其中的意义并进行解释这张图片:
     - 我需要减少转述损耗, 尽可能把视觉专家的分析内容完整的传达给用户
     - 同时我需要利用工具确认、获取、验证一些具体人物、角色、事件等大语言模型易产生幻觉的信息
+- 这是一份机器人框架处理后的json数据, 我需要理解其中的意义并进行解释这份数据的关键词:
+    - 这大概是一个小程序分享的内容, 我需要寻找其中指向的网址 URL 并使用工具获取相关网页内容进行解释
 - 如果携带信息包含网页链接 URL 、或潜在可以导向网站, 一定要使用工具查找和获取相关网页, 使用 jina_fetch_webpage 获取网页内容
 - 给出的消息可能的拼写错误或语法错误, 以确保准确理解查询意图, 但确保不改变原意.
 - 我已经得到了足够的信息, 现在开始进行最终回复
@@ -248,7 +250,7 @@ class AgentService:
         logger.info(f"[DEBUG] 压缩器LLM设置完成: {self.config.compressor_llm_model_name}")
 
     
-    async def unified_completion(self, content: str, images: Optional[List[bytes]] = None, react_func: Optional[Callable[[str], Any]] = None, session_id: Optional[str] = None) -> Any:
+    async def unified_completion(self, content: str, images: Optional[List[bytes]] = None) -> Any:
         """统一入口 - 使用 LangChain 自动工具执行（带内容过滤重试）"""
         if self._planning_agent is None:
             raise RuntimeError("规划专家未初始化")
@@ -259,7 +261,7 @@ class AgentService:
         
         while retry_count <= max_inspection_retries:
             try:
-                result = await self._unified_completion_internal(content, images, react_func, session_id)
+                result = await self._unified_completion_internal(content, images)
                 
                 # 检查返回结果中是否包含内容审查失败的信息
                 if hasattr(result, 'content') and "内容审查 | 审查失败" in result.content and retry_count < max_inspection_retries:
@@ -282,7 +284,7 @@ class AgentService:
                     # 其他异常或超过重试次数，直接返回
                     raise
     
-    async def _unified_completion_internal(self, content: str, images: Optional[List[bytes]] = None, react_func: Optional[Callable[[str], Any]] = None, session_id: Optional[str] = None) -> Any:
+    async def _unified_completion_internal(self, content: str, images: Optional[List[bytes]] = None) -> Any:
         """统一入口内部实现 - 使用 create_agent 自动工具执行"""
         logger.info(f"[DEBUG] 开始处理内容: {content[:100]}...")
         if self._planning_agent is None:
@@ -301,8 +303,6 @@ class AgentService:
         # 1. 如果有图片，先调用视觉专家进行分析
         vision_time = 0.0
         if images:
-            if react_func:
-                await react_func("127847")  # 🍧 图片分析中
             model_names += f"[{self.config.vision_llm_model_name}]"
             
             vision_start_time = time.time()
@@ -313,14 +313,9 @@ class AgentService:
                     vision_result = await vision_expert_analysis(self._vision_llm, image_data, content)
                 expert_info.append(f"视觉专家分析{i+1}: {vision_result}")
             vision_time = time.time() - vision_start_time
-            if react_func:
-                await react_func("10024")  # ✨ 开始智能规划
             full_context = "\n".join([f"图片{i+1}分析结果: {res}" for i, res in enumerate(expert_info)]) + f"\n对话携带信息: {content}"
             logger.info("content:", content)
         else:
-            if react_func:
-                await react_func("10024")  # ✨ 开始智能规划
-            
             # 2. 构建完整上下文
             context_parts = [f"文本信息: {content}"]
             if expert_info:
