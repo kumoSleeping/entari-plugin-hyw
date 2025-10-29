@@ -47,7 +47,7 @@ class HywConfig(BasicConfModel):
     vision_llm_enable_search: bool = False
 
     # 压缩器LLM配置 - 使用便宜模型
-    compressor_llm_model_name: str = "qwen-flash"
+    compressor_llm_model_name: str
     compressor_llm_api_key: str
     compressor_llm_model_base_url: str 
     compressor_llm_temperature: float = 0.1
