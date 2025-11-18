@@ -39,5 +39,9 @@ dist/
 # Config files with sensitive data
 entari.yml
 entari.schema.json
+hyw.config.json
+hyw.config.yaml
+hyw.config.yml
+config/hyw.config.*
 .pdm-python
 pdm.lock
