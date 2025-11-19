@@ -24,11 +24,13 @@ from arclet.alconna import (
     AllParam,
     MultiVar,
     CommandMeta,
+    Option,
 )
 from arclet.entari import MessageChain, Session, command
-from arclet.entari import plugin, Ready, Cleanup
+from arclet.entari import plugin, Ready, Cleanup, Startup
 from satori.element import Custom, E
 from .hyw_core import HYW
+import builtins
 # 全局变量
 hyw_core = None
 stack = None
@@ -113,7 +115,11 @@ class HywConfig(BasicConfModel):
     api_key: str
     base_url: str = "https://openrouter.ai/api/v1"
     search_engine: str = "google"
-
+    headless: bool = False
+    debug: bool = False
+    verbose: bool = False
+    vision_model_name: Optional[str] = None
+    vision_base_url: Optional[str] = None
 
 metadata(
     "hyw",
@@ -124,39 +130,24 @@ metadata(
 )
 
 conf = plugin_config(HywConfig  )
-alc = Alconna(conf.command_name_list, Args["all_param;?", AllParam], meta=CommandMeta(compact=True,))
+alc = Alconna(
+    conf.command_name_list,
+    Args["all_param", AllParam],
+    # Option("-v|--verbose", dest="verbose", default=False, help_text="启用详细日志输出"),
+    meta=CommandMeta(compact=False)
+)
 hyw = HYW(
         api_key=conf.api_key,
         model_name=conf.model_name,
         base_url=conf.base_url,
-        search_engine=conf.search_engine
+        search_engine=conf.search_engine,
+        headless=conf.headless,
+        debug=conf.debug,
+        vision_model_name=conf.vision_model_name,
+        vision_base_url=conf.vision_base_url
     )
 
-@plugin.listen(Ready)
-async def on_ready():
-    global hyw, hyw_core, stack, sessions
-    stack, sessions = await hyw.connect_servers([
-            {"name": "Playwright", "command": "npx", "args": ["-y", "@playwright/mcp@0.0.38", "--isolated", "--headless"],
-             "env": {
-                 "PLAYWRIGHT_VIEWPORT_WIDTH": "1920",
-                 "PLAYWRIGHT_VIEWPORT_HEIGHT": "1080",
-                 "PLAYWRIGHT_DEVICE_SCALE_FACTOR": "0.5",
-                 "PLAYWRIGHT_HEADLESS": "false",
-                 "HEADLESS": "false"
-             }}
-        ])
-    hyw_core = hyw
-    logger.success("Browser initialized!")
-    
-    
-@plugin.listen(Cleanup)
-async def on_cleanup():
-    global stack
-    print("Entari is ready!")
-    logger.info("正在关闭浏览器...")
-    if stack:
-        await stack.aclose()
-    logger.success("浏览器已关闭")
+
 
 # Emoji到代码的映射字典
 EMOJI_TO_CODE = {
@@ -191,11 +182,6 @@ def process_onebot_json(json_data_str: str) -> str:
 
 @leto.on(MessageCreatedEvent)
 async def on_message_created(message_chain: MessageChain, session: Session[MessageEvent]):
-    # 检查 hyw_core 是否已初始化
-    global hyw_core
-    if hyw_core is None:
-        logger.warning("HYW not initialized, skipping message processing")
-        return
         
     async def react(emoji: str):
         try:
@@ -209,7 +195,8 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
 
     if session.reply:
         try:
-            message_chain.extend(session.reply.origin.message)
+            message_chain.extend(MessageChain(" ") + session.reply.origin.message)
+            # message_chain.extend(session.reply.origin.message)
         except Exception:
             pass
     message_chain = message_chain.get(Text) + message_chain.get(Image) + message_chain.get(Custom)
@@ -229,54 +216,118 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             if conversation_history_key:
                 conversation_history_payload = list(_history_store.get(conversation_history_key, []))
                 logger.info(f"继续对话模式触发, 引用消息ID: {quoted_message_id}, 历史长度: {len(conversation_history_payload)}")
-
+    # logger.info(f"收到消息: {message_chain}")
     parse_result = alc.parse(message_chain)
-    bypass_parse = bool(conversation_history_key)
-    logger.info(f"bypass_parse: {bypass_parse}, quoted_message_id: {quoted_message_id}, conversation_history_key: {conversation_history_key}")
-    if not parse_result.matched and not bypass_parse:
-        # logger.info(parse_result.error_info)
+    
+    # 快捷指令处理
+    current_msg_text = str(message_chain.get(Text)) if message_chain.get(Text) else ""
+    
+    is_shortcut = False
+    shortcut_replacement = ""
+    
+    # 检查是否以 / 开头
+    if current_msg_text.strip().startswith("/"):
+        is_shortcut = True
+        # 去掉开头的 /
+        shortcut_replacement = current_msg_text.strip()[1:]
+
+    # 逻辑修改：
+    # 1. 如果命令匹配 (parse_result.matched)，正常处理
+    # 2. 如果不匹配，但存在引用回复 (conversation_history_key) 且 命中快捷指令 (is_shortcut)，允许处理
+    # 3. 其他情况忽略
+    
+    should_process = parse_result.matched or (bool(conversation_history_key) and is_shortcut)
+    
+    # logger.info(f"should_process: {should_process}, matched: {parse_result.matched}, is_shortcut: {is_shortcut}, conversation_history_key: {conversation_history_key}")
+    
+    if not should_process:
         return
+
+    # 检查是否使用了 -v/--verbose 参数
+    # if parse_result.matched and hasattr(parse_result, 'verbose') and parse_result.verbose:
+    #     logger.info("Verbose 模式已启用")
+    
     raw_param_chain: MessageChain = parse_result.all_param if parse_result.matched else message_chain  # type: ignore
-    if not parse_result.matched and bypass_parse:
-        logger.debug("ALC未匹配但引用历史消息，直接放行")
+    
+    if not parse_result.matched and is_shortcut:
+        logger.debug(f"触发快捷指令，替换内容: {shortcut_replacement}")
+        
     mc = MessageChain(raw_param_chain)
     
     async def process_request() -> None:
         await react("✨")
-        logger.info(f"开始处理消息, bypass_parse: {bypass_parse}, msg: {mc.get(Text).strip() if mc.get(Text) else ''}")
+        logger.info(f"开始处理消息, matched: {parse_result.matched}, is_shortcut: {is_shortcut}")
+        
+        playwright = None
+        browser = None
+        context = None
+        page = None
+        
         try:
-            msg = mc.get(Text).strip() if mc.get(Text) else ""
+            # 如果是快捷指令，使用替换后的文本；否则获取原始文本
+            if is_shortcut and not parse_result.matched:
+                msg = shortcut_replacement
+            else:
+                msg = mc.get(Text).strip() if mc.get(Text) else ""
+            
             logger.info(msg)
 
             if mc.get(Custom): # type: ignore
                 custom_elements = [e for e in mc if isinstance(e, Custom)]
-                for i in msg:
-                    i = str(i).replace("当前QQ版本不支持此应用，请升级", "")
-                    logger.info("删除不支持应用提示")
                 for custom in custom_elements:
                     if custom.tag == 'onebot:json':
                         decoded_json = process_onebot_json(custom.attributes())
                         msg += decoded_json
                         break
 
-            image_base64 = None
-            if mc.get(Image):
-                urls = mc[Image].map(lambda x: x.src)
-                tasks = [download_image(url) for url in urls]
-                images = await asyncio.gather(*tasks)
-                import base64
-                image_base64 = base64.b64encode(images[0]).decode('utf-8')
+            # 并行执行：启动浏览器、下载图片、视觉分析
+            async def start_browser_task():
+                return await hyw.start_browser()
+            
+            async def process_images_task():
+                images = []
+                if mc.get(Image):
+                    urls = mc[Image].map(lambda x: x.src)
+                    tasks = [download_image(url) for url in urls]
+                    raw_images = await asyncio.gather(*tasks)
+                    import base64
+                    images = [base64.b64encode(img).decode('utf-8') for img in raw_images]
+                return images
+            
+            time_start = time.perf_counter()
+            
+            # 并行启动浏览器和处理图片
+            browser_task = asyncio.create_task(start_browser_task())
+            images_task = asyncio.create_task(process_images_task())
+            
+            # 等待两个任务完成
+            browser_result, images = await asyncio.gather(browser_task, images_task)
+            playwright, browser, context, page = browser_result
+            
+            # 如果有图片，进行视觉分析
+            image_analysis = ""
+            if images:
+                image_analysis = await hyw.analyze_images(images)
+            
+            # msg += image_analysis
 
             lock = _get_hyw_request_lock()
             async with lock:
-                time_start = time.perf_counter()
-                response = await hyw.agent(str(msg), image_base64=image_base64, conversation_history=conversation_history_payload)
+                # 传入 conversation_history_payload 以便 todo_list 使用上下文
+                response = await hyw.agent(str(msg), conversation_history=conversation_history_payload, browser_session=(playwright, browser, context, page), image_analysis=image_analysis)
+            
             response_content = response.get("llm_response", "") if isinstance(response, dict) else ""
+            new_history = response.get("conversation_history", []) if isinstance(response, dict) else []
             total_time = time.perf_counter() - time_start
+            
+            # 计算对话轮次（只统计assistant消息）
+            conversation_turns = len([m for m in new_history if m.get("role") == "assistant"])
+            
             if not response_content.strip():
                 response_content = "[ERROE] \n>> 抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。"
-            send_result = await session.send([Quote(session.event.message.id), response_content+f"\n\n[DEBUG:处理时间] :: {total_time:.2f} 秒"])
-            new_history = response.get("conversation_history", []) if isinstance(response, dict) else []
+            
+            send_result = await session.send([Quote(session.event.message.id), response_content+f"\n\n[DEBUG:处理时间] :: {total_time:.2f} 秒\n[DEBUG:对话轮次] :: {conversation_turns}"])
+            
             sent_message_id = _extract_message_id(send_result)
             current_user_message_id = str(session.event.message.id)
             related_ids: List[Optional[str]] = [current_user_message_id, sent_message_id]
@@ -287,6 +338,10 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
         except Exception as exc:
             await react("❌")
             logger.exception("处理HYW消息失败: {}", exc)
+        finally:
+            # 确保浏览器被关闭
+            if playwright or browser or context:
+                await hyw.close_browser(playwright, browser, context)
 
     asyncio.create_task(process_request())
     return
