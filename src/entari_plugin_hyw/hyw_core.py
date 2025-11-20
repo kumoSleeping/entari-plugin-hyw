@@ -416,20 +416,16 @@ class HYW:
                 msg_dict.pop('annotations', None)
                 msg_dict.pop('reasoning', None)
                 
+                messages.append(msg_dict)
+
                 # Add system message with search info if available (for future context)
                 if annotations:
-                    # Limit annotations to top 3 to avoid excessive context
-                    # OpenRouter :online defaults to 5, which can be too verbose
-                    limited_annotations = annotations[:3]
-                    search_info = self._format_extra_content(limited_annotations)
+                    search_info = self._format_extra_content(annotations)
                     system_msg = {
                         "role": "system", 
                         "content": f"[搜索结果/引用来源]\n{search_info}"
                     }
-                    # Insert system message BEFORE the assistant's response
                     messages.append(system_msg)
-                
-                messages.append(msg_dict)
                 
                 logger.info(f"LLM Response: content={bool(msg.content)}, tools={bool(msg.tool_calls)}")
 
