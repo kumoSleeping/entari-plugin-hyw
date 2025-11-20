@@ -117,14 +117,11 @@ class HywConfig(BasicConfModel):
     search_engine: str = "google"
     headless: bool = False
     debug: bool = False
+    use_jina: bool = False
+    compress_content: bool = False
+    compress_model_name: Optional[str] = None
+    compress_base_url: Optional[str] = None
     # verbose: bool = False
-    vision_model_name: Optional[str] = None
-    vision_base_url: Optional[str] = None
-    vision_api_key: Optional[str] = None
-    
-    ocr_model_name: Optional[str] = None
-    ocr_base_url: Optional[str] = None
-    ocr_api_key: Optional[str] = None
 
 metadata(
     "hyw",
@@ -138,7 +135,6 @@ conf = plugin_config(HywConfig  )
 alc = Alconna(
     conf.command_name_list,
     Option("-t|--text", dest="text_only", default=False, help_text="仅文本模式(禁用图片识别)"),
-    Option("-o|--ocr", dest="ocr", default=False, help_text="启用OCR模式"),
     Args["all_param", AllParam],
     # Option("-v|--verbose", dest="verbose", default=False, help_text="启用详细日志输出"),
     meta=CommandMeta(compact=False)
@@ -148,14 +144,12 @@ hyw = HYW(
         model_name=conf.model_name,
         base_url=conf.base_url,
         search_engine=conf.search_engine,
-        headless=conf.headless,
         debug=conf.debug,
-        vision_model_name=conf.vision_model_name,
-        vision_base_url=conf.vision_base_url,
-        vision_api_key=conf.vision_api_key,
-        ocr_model_name=conf.ocr_model_name,
-        ocr_base_url=conf.ocr_base_url,
-        ocr_api_key=conf.ocr_api_key
+        headless=conf.headless,
+        use_jina=conf.use_jina,
+        compress_content=conf.compress_content,
+        compress_model_name=conf.compress_model_name,
+        compress_base_url=conf.compress_base_url
     )
 
 
@@ -189,24 +183,6 @@ def process_onebot_json(json_data_str: str) -> str:
         return json_str
     except Exception as e:
         return json_data_str
-    
-    
-@leto.on(Startup)
-async def _():
-    logger.info("HYW plugin: Startup event received, initializing browser...")
-    try:
-        # 直接 await 确保启动，或者使用 create_task 但要处理异常
-        # 这里选择 create_task 以免阻塞启动流程，但添加回调处理异常
-        task = asyncio.create_task(hyw._ensure_browser_running())
-        task.add_done_callback(lambda t: logger.info("HYW plugin: Browser pre-warming completed") if not t.exception() else logger.error(f"HYW plugin: Browser pre-warming failed: {t.exception()}"))
-    except Exception as e:
-        logger.error(f"HYW plugin: Failed to schedule browser pre-warming: {e}")
-
-
-@leto.on(Cleanup)
-async def _():
-    asyncio.create_task(hyw.cleanup())
-    logger.info("HYW plugin cleaned up")
 
 
 @leto.on(MessageCreatedEvent)
@@ -311,7 +287,6 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             async def process_images_task():
                 # Check flags
                 is_text_only = False
-                is_ocr = False
                 
                 # Check from Alconna result
                 if parse_result.matched:
@@ -322,29 +297,20 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
                         return bool(val)
 
                     is_text_only = get_bool_value(getattr(parse_result, 'text_only', False))
-                    is_ocr = get_bool_value(getattr(parse_result, 'ocr', False))
                 
                 # Manual check for shortcut or unmatched cases
                 text_str = str(message_chain.get(Text) or "")
                 if not is_text_only and re.search(r'(?:^|\s)(-t|--text)(?:$|\s)', text_str):
                     is_text_only = True
-                if not is_ocr and re.search(r'(?:^|\s)(-o|--ocr)(?:$|\s)', text_str):
-                    is_ocr = True
                 
-                # 1. Check conflict
-                if is_text_only and is_ocr:
-                    return [], "参数冲突：不能同时使用 -t (仅文本) 和 -o (OCR) 模式", False
-
                 # 2. Handle text only
                 if is_text_only:
                     logger.info("检测到仅文本模式参数，跳过图片分析")
-                    return [], None, False
+                    return [], None
 
-                # 3. Check images for OCR
+                # 3. Check images
                 has_images = bool(mc.get(Image))
-                if is_ocr and not has_images:
-                     return [], "参数错误：OCR 模式 (-o) 需要包含图片", False
-
+                
                 images = []
                 if has_images:
                     urls = mc[Image].map(lambda x: x.src)
@@ -353,7 +319,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
                     import base64
                     images = [base64.b64encode(img).decode('utf-8') for img in raw_images]
                 
-                return images, None, is_ocr
+                return images, None
             
             time_start = time.perf_counter()
             
@@ -364,24 +330,17 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             # 等待两个任务完成
             # browser_result, images = await asyncio.gather(browser_task, images_task)
             # playwright, browser, context, page = browser_result
-            images, error_msg, use_ocr = await images_task
+            images, error_msg = await images_task
             
             if error_msg:
                 await session.send(error_msg)
                 return
-            
-            # 如果有图片，进行视觉分析
-            image_analysis = ""
-            if images:
-                image_analysis = await hyw.analyze_images(images, use_ocr=use_ocr)
-            
-            # msg += image_analysis
 
             lock = _get_hyw_request_lock()
             async with lock:
+                # Run Agent
                 # 传入 conversation_history_payload 以便 todo_list 使用上下文
-                # browser_session 传入 None 以便 hyw_core 自动管理浏览器
-                response = await hyw.agent(str(msg), conversation_history=conversation_history_payload, browser_session=None, image_analysis=image_analysis)
+                response = await hyw.agent(str(msg), conversation_history=conversation_history_payload, images=images)
             
             response_content = response.get("llm_response", "") if isinstance(response, dict) else ""
             new_history = response.get("conversation_history", []) if isinstance(response, dict) else []
