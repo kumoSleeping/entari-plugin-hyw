@@ -416,16 +416,19 @@ class HYW:
                 msg_dict.pop('annotations', None)
                 msg_dict.pop('reasoning', None)
                 
-                messages.append(msg_dict)
-
                 # Add system message with search info if available (for future context)
                 if annotations:
+                    # Include ALL annotations as requested by user
                     search_info = self._format_extra_content(annotations)
                     system_msg = {
                         "role": "system", 
                         "content": f"[搜索结果/引用来源]\n{search_info}"
                     }
+                    # Insert system message BEFORE the assistant's response
+                    # This ensures it's available as context for the NEXT turn immediately
                     messages.append(system_msg)
+                
+                messages.append(msg_dict)
                 
                 logger.info(f"LLM Response: content={bool(msg.content)}, tools={bool(msg.tool_calls)}")
 
