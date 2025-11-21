@@ -421,7 +421,7 @@ class HYW:
         # Build stats parts
         vision_duration = stats.get("vision_duration", 0)
         if vision_duration > 0:
-            time_parts = [f"[v:{vision_duration:.2f}s/{current_duration:.2f}s]"]
+            time_parts = [f"[V:{vision_duration:.2f}s/{current_duration:.2f}s]"]
         else:
             time_parts = [f"[{current_duration:.2f}s]"]
         
