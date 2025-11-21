@@ -247,6 +247,13 @@ async def process_images(mc: MessageChain, parse_result: Any) -> Tuple[List[str]
 
 @leto.on(MessageCreatedEvent)
 async def on_message_created(message_chain: MessageChain, session: Session[MessageEvent]):
+    # Skip if no substantial content in original message
+    original_text = str(message_chain.get(Text)).strip()
+    has_images = bool(message_chain.get(Image))
+    has_custom = bool(message_chain.get(Custom))
+    if not original_text and not has_images and not has_custom:
+        return
+    
     if session.reply:
         try:
             message_chain.extend(MessageChain(" ") + session.reply.origin.message)
