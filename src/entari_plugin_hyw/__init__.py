@@ -114,10 +114,12 @@ class HywConfig(BasicConfModel):
     model_name: str
     api_key: str
     base_url: str = "https://openrouter.ai/api/v1"
-    search_engine: str = "google"
     headless: bool = False
     debug: bool = False
     use_jina: bool = False
+    vision_model_name: Optional[str] = None
+    vision_base_url: Optional[str] = None
+    vision_api_key: Optional[str] = None
     compress_content: bool = False
     compress_model_name: Optional[str] = None
     compress_base_url: Optional[str] = None
@@ -143,10 +145,12 @@ hyw = HYW(
         api_key=conf.api_key,
         model_name=conf.model_name,
         base_url=conf.base_url,
-        search_engine=conf.search_engine,
         debug=conf.debug,
         headless=conf.headless,
         use_jina=conf.use_jina,
+        vision_model_name=conf.vision_model_name,
+        vision_base_url=conf.vision_base_url,
+        vision_api_key=conf.vision_api_key,
         compress_content=conf.compress_content,
         compress_model_name=conf.compress_model_name,
         compress_base_url=conf.compress_base_url
@@ -261,7 +265,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
     
     async def process_request() -> None:
         await react("✨")
-        logger.info(f"开始处理消息, matched: {parse_result.matched}, is_shortcut: {is_shortcut}")
+        # logger.info(f"开始处理消息, matched: {parse_result.matched}, is_shortcut: {is_shortcut}")
         
         try:
             # 如果是快捷指令，使用替换后的文本；否则获取原始文本
@@ -270,7 +274,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             else:
                 msg = mc.get(Text).strip() if mc.get(Text) else ""
             
-            logger.info(msg)
+            # logger.info(msg)
 
             if mc.get(Custom): # type: ignore
                 custom_elements = [e for e in mc if isinstance(e, Custom)]
@@ -279,11 +283,7 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
                         decoded_json = process_onebot_json(custom.attributes())
                         msg += decoded_json
                         break
-
-            # 并行执行：启动浏览器、下载图片、视觉分析
-            # async def start_browser_task():
-            #     return await hyw.start_browser()
-            
+                    
             async def process_images_task():
                 # Check flags
                 is_text_only = False
@@ -344,15 +344,16 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
             
             response_content = response.get("llm_response", "") if isinstance(response, dict) else ""
             new_history = response.get("conversation_history", []) if isinstance(response, dict) else []
-            total_time = time.perf_counter() - time_start
             
-            # 计算对话轮次（只统计assistant消息）
-            conversation_turns = len([m for m in new_history if m.get("role") == "assistant"])
-            
-            if not response_content.strip():
-                response_content = "[ERROE] \n>> 抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。"
-            
-            send_result = await session.send([Quote(session.event.message.id), response_content+f"\n\n[DEBUG:处理时间] :: {total_time:.2f} 秒\n[DEBUG:对话轮次] :: {conversation_turns}"])
+            try:
+                send_result = await session.send([Quote(session.event.message.id), response_content])
+            except ActionFailed as e:
+                if "9057" in str(e):
+                    logger.warning(f"发送消息失败(9057)，尝试截断发送: {e}")
+                    truncated_content = response_content[:1000] + "\n\n[...内容过长，已大幅截断...]"
+                    send_result = await session.send([Quote(session.event.message.id), truncated_content])
+                else:
+                    raise e
             
             sent_message_id = _extract_message_id(send_result)
             current_user_message_id = str(session.event.message.id)

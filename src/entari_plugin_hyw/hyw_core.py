@@ -10,12 +10,11 @@ from playwright.async_api import async_playwright
 from loguru import logger
 
 class HYW:
-    def __init__(self, api_key, model_name, base_url, search_engine, debug=False, 
-                 vision_model_name=None, vision_base_url=None, headless=True, use_jina=False,
+    def __init__(self, api_key, model_name, base_url, debug=False, 
+                 vision_model_name=None, vision_base_url=None, vision_api_key=None, headless=True, use_jina=False,
                  compress_content=False, compress_model_name=None, compress_base_url=None):
         self.client = AsyncOpenAI(base_url=base_url, api_key=api_key)
         self.model_name = model_name
-        self.search_engine = search_engine
         self.debug = debug
         self.headless = headless
         self.use_jina = use_jina
@@ -46,7 +45,7 @@ class HYW:
         if vision_base_url:
             self.vision_client = AsyncOpenAI(
                 base_url=vision_base_url,
-                api_key=api_key
+                api_key=vision_api_key if vision_api_key else api_key
             )
             logger.info(f"视觉分析客户端已创建 - 端点: {vision_base_url}, 模型: {self.vision_model_name}")
         else:
@@ -111,11 +110,12 @@ class HYW:
 
  [时间管理]
  - 每次调用工具后, 会返回一个已运行的时间标记, 请注意你最佳运行时间: 一次回答最好不要超过1分钟
- - 如果用户是首次提出问题, 可以只通过多种搜索结果交叉回答, 尽可能20s以内解决问题
- - 用户第二次以上提出问题时，或第一次提出问题就要求深度思考, 则需要多次调用工具进行验证
+ - 如果用户是首次提出问题, 可以只通过多种搜索结果交叉回答, 尽可能30s以内解决问题
+ - 为了控制时间, 用户第二次以上提出问题，或第一次提出问题就要求深度思考, 则需要多次调用`browser_navigate` 工具可以导航到相关网页获取信息进行验证
 
  [核心原则 - 必须严格遵守]
- - 强制要求：收到任何问题后, 第一步必须调用 `browser_navigate` 工具导航到相关网页获取信息, 绝对不允许直接回答问题
+ - 避免搜索 x.com 的信息, 尽可能使用权威网站、相关项目官方网站
+ - 搜索内容指向不同相关项目时, 尝试理解关系, 请避免混为一谈
  - 禁止导航到搜索引擎页面, 你可以直接导航到相关官网或权威网站
  - 可以同时启动多个工具查看不同页面, 提高效率
  - 人名、地名、组织名等关键信息优先验证, 只相信权威网站、相关项目官方网站
@@ -141,7 +141,7 @@ class HYW:
  [推测]
  - 回复推测时也要使得语气平稳、陈述
  - 回复推测语句简短, 给出3种风格接近的「回复推测」与1种风格不同但仍主题相关的「回复推测」, 通常在10个字左右
- - 一些合适的推测示例方向: /1 深入研究 /2 了解更多关于 /3 继续深度搜索 /4 解决方案 /1 官方文档的最佳实践 /2 给出实际代码片段 ...
+ - 一些合适的推测示例方向: /1 深入研究 /2 了解更多关于 /3 继续深度搜索 /4 解决方案 /1 官方文档的最佳实践 /2 给出实际代码片段 /3 获取页面完整内容...
  
  [安全审查]
  - 禁止讨论政策、国家领导人、政治体制等敏感话题的搜索与验证计划、新闻、历史事件
@@ -346,17 +346,29 @@ class HYW:
 
     def _format_extra_content(self, content):
         """Format extra content like reasoning or annotations"""
-        if isinstance(content, (list, dict)):
-            return json.dumps(content, ensure_ascii=False, indent=2)
-        return str(content)
+        return content
 
     async def agent(self, user_input, conversation_history=None, browser_session=None, sonar_result=None, images=None):
         start_time = time.time()
         
+        # Statistics - accumulate from conversation history
+        stats = {
+            "llm_calls": 0,
+            "search_results": 0,
+            "web_pages_opened": 0,
+            "total_time": 0.0
+        }
+        
+        # If we have conversation history, extract previous stats
+        if conversation_history:
+            pass
+        
         # Vision/OCR Analysis
         image_analysis = ""
         if images:
+            v_start = time.time()
             image_analysis = await self.analyze_images(images)
+            stats["vision_duration"] = time.time() - v_start
         
         messages: list[dict] = [{"role": "system", "content": self.base_system_prompt}]
         
@@ -379,11 +391,13 @@ class HYW:
                 
                 for attempt in range(max_retries):
                     try:
+                        stats["llm_calls"] += 1
                         resp = await self.client.chat.completions.create(
                             model=self.model_name, 
                             messages=messages, 
                             tools=self.tools, 
                             tool_choice="auto",
+                            extra_body={"reasoning": {"effort": "low"}}
                         )
                         break
                     except Exception as e:
@@ -400,9 +414,10 @@ class HYW:
                         logger.error(f"Final API failure: {last_error}")
                         return {
                             "llm_response": f"抱歉，AI 提供商似乎出现了故障，重试多次后仍然失败。\n错误信息: {str(last_error)}", 
-                            "conversation_history": messages
+                            "conversation_history": messages,
+                            "stats": stats
                         }
-                    return {"llm_response": "Error: Failed to get response from LLM", "conversation_history": messages}
+                    return {"llm_response": "Error: Failed to get response from LLM", "conversation_history": messages, "stats": stats}
 
                 msg = resp.choices[0].message
                 # Convert to dict to ensure tool_calls are preserved
@@ -420,9 +435,17 @@ class HYW:
                 if annotations:
                     # Include ALL annotations as requested by user
                     search_info = self._format_extra_content(annotations)
+                    try:
+                        # Try to count search results if it's a list
+                        if isinstance(annotations, list):
+                            stats["search_results"] += len(annotations)
+                    except:
+                        pass
+                        
                     system_msg = {
-                        "role": "system", 
-                        "content": f"[搜索结果/引用来源]\n{search_info}"
+                        "role": "tool", 
+                        "content": search_info,
+                        "tool_call_id": "citation"
                     }
                     # Insert system message BEFORE the assistant's response
                     # This ensures it's available as context for the NEXT turn immediately
@@ -433,6 +456,7 @@ class HYW:
                 logger.info(f"LLM Response: content={bool(msg.content)}, tools={bool(msg.tool_calls)}")
 
                 if msg.tool_calls:
+                    stats["web_pages_opened"] += len([tc for tc in msg.tool_calls if tc.function.name == "browser_navigate"])
                     tasks = [self._run_tool_isolated(tc, start_time) for tc in msg.tool_calls]
                     results = await asyncio.gather(*tasks)
                     messages.extend(results)
@@ -442,13 +466,43 @@ class HYW:
                     self._save_conversation_debug(messages)
                     # Filter conversation_history: remove system messages but keep all tool-related messages
                     filtered_history = [m for m in messages if m.get("role") != "system"]
-                    return {"llm_response": msg.content, "conversation_history": filtered_history}
+                    
+                    final_response = self._append_stats_info(msg.content, filtered_history, stats, start_time)
+                    return {"llm_response": final_response, "conversation_history": filtered_history, "stats": stats}
             
             # Save conversation history even if max turns reached
             self._save_conversation_debug(messages)
-            return {"llm_response": "Max turns reached", "conversation_history": messages}
+            final_response = self._append_stats_info("Max turns reached", messages, stats, start_time)
+            return {"llm_response": final_response, "conversation_history": messages, "stats": stats}
         finally:
             pass
+
+    def _append_stats_info(self, content, history, stats, start_time):
+        current_duration = time.time() - start_time
+        
+        if not content or not content.strip():
+            content = "[ERROE] \n>> 抱歉，获取到的内容可能包含敏感信息，暂时无法显示完整结果。"
+        
+        # Build stats parts
+        vision_duration = stats.get("vision_duration", 0)
+        if vision_duration > 0:
+            time_parts = [f"[v:{vision_duration:.2f}s/{current_duration:.2f}s]"]
+        else:
+            time_parts = [f"[{current_duration:.2f}s]"]
+        
+        # Tools
+        search_count = stats.get('search_results', 0)
+        web_count = stats.get('web_pages_opened', 0)
+        tools_parts = []
+        if search_count > 0:
+            tools_parts.append(f"[S:{search_count}]")
+        if web_count > 0:
+            tools_parts.append(f"[W:{web_count}]")
+            
+            
+        stats_info = f"\n[Stats] :: {' '.join(tools_parts)} {' '.join(time_parts)}"
+            
+        return content + stats_info
     
     def _save_conversation_debug(self, messages):
         """Save conversation history to JSON file for debugging"""
@@ -460,7 +514,6 @@ class HYW:
             debug_dir = "conversation_debug"
             os.makedirs(debug_dir, exist_ok=True)
             
-
             timestamp = int(time.time())
             filename = os.path.join(debug_dir, f"conversation_{timestamp}.json")
             
