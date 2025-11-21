@@ -52,12 +52,14 @@ plugins:
   entari_plugin_hyw:
     # --- 基础设置 ---
     # 触发机器人的命令列表
-    command_name_list: ["/hyw", "hyw"]
+    command_name_list: ["zssm", "hyw"]
     
     # 主 LLM 模型配置（必需）(online 模式), 如 x-ai/grok-4.1-fast:online、perplexity/sonar
     model_name: "gx-ai/grok-4.1-fast:online"
     api_key: "your-api-key"
-    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+    # 默认 https://openrouter.ai/api/v1
+    base_url: "openai-compatible-url"  
     
     # --- 浏览器与搜索 ---
     # 网页浏览工具: "jina" (默认) 或 "playwright"
@@ -73,7 +75,7 @@ plugins:
     # 如果未设置，将回退使用主模型
     vision_model_name: "qwen-vl-plus"
     vision_api_key: "your-vision-api-key"
-    vision_base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    vision_base_url: "your-vision_base_url"
     
     # --- 调试 ---
     save_conversation: false
