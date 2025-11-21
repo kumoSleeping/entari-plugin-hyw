@@ -45,3 +45,9 @@ hyw.config.yml
 config/hyw.config.*
 .pdm-python
 pdm.lock
+uv.lock
+
+
+#
+conversation_debug
+saved_conversations
