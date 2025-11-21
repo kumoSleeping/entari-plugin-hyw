@@ -93,10 +93,10 @@
             
             <!-- <div style="margin-top: 12px; margin-bottom: 6px; color: #FAB387;">[Next?] </div> -->
             <div class="suggestions">
-              <div class="suggestion-pill">/1 产品功能详情</div>
-              <div class="suggestion-pill">/2 下载PDF手册</div>
-              <div class="suggestion-pill">/3 系统登录指南</div>
-              <div class="suggestion-pill">/4 官方支持咨询</div>
+              <div class="suggestion-pill">产品功能详情</div>
+              <div class="suggestion-pill">下载PDF手册</div>
+              <div class="suggestion-pill">系统登录指南</div>
+              <div class="suggestion-pill">官方支持咨询</div>
             </div>
 
             <div class="stats-bar">
@@ -139,10 +139,10 @@
              
             <!-- <div style="margin-top: 12px; margin-bottom: 6px; color: #FAB387;">[Next?] </div> -->
             <div class="suggestions">
-              <div class="suggestion-pill">/1 高达扎古详情</div>
-              <div class="suggestion-pill">/2 Zaku产品特性</div>
-              <div class="suggestion-pill">/3 名字来源验证</div>
-              <div class="suggestion-pill">/4 官方产品下载</div>
+              <div class="suggestion-pill">高达扎古详情</div>
+              <div class="suggestion-pill">Zaku产品特性</div>
+              <div class="suggestion-pill">名字来源验证</div>
+              <div class="suggestion-pill">官方产品下载</div>
             </div>
              <div class="stats-bar">
                <span class="stat-badge search">28 results</span>
