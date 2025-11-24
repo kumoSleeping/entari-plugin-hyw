@@ -15,9 +15,7 @@
 
 
 <div align="center">
-  
-  ![Chat Demo](demo.svg)
-
+  <img src="demo.svg" alt="Chat Demo" width="100%">
 </div>
 
 ## ✨ 功能特性
