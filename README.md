@@ -15,7 +15,7 @@
 
 
 <div align="center">
-  <img src="demo.svg" alt="Chat Demo" width="800" style="display: block; margin: 0;">
+  <img src="demo.svg" alt="Chat Demo" width="100%" style="display: block; margin: 0;">
 </div>
 
 ## ✨ 功能特性
