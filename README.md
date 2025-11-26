@@ -90,6 +90,10 @@ plugins:
       reasoning:
         effort: low
     
+    # --- 交互体验 ---
+    # 是否开启表情反应 (默认: true)
+    reaction: true
+
     # --- 调试 ---
     save_conversation: false
 ```
