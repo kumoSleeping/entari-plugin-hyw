@@ -134,12 +134,13 @@ class HywConfig(BasicConfModel):
     extra_body: Optional[Dict[str, Any]] = None
     
     enable_browser_fallback: bool = False
+    reaction: bool = True
     # verbose: bool = False
 
 metadata(
     "hyw",
     author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}],
-    version="2.3.1",
+    version="2.3.2",
     description="",
     config=HywConfig,
 )
@@ -300,7 +301,8 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
     mc = MessageChain(raw_param_chain)
     
     async def process_request() -> None:
-        await react(session, "✨")
+        if conf.reaction:
+            await react(session, "✨")
         try:
             if is_shortcut and not parse_result.matched:
                 msg = shortcut_replacement
@@ -355,7 +357,8 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
                 logger.info(f"对话轮数达到上限 ({user_turns})，停止记录历史")
             
         except Exception as exc:
-            await react(session, "❌")
+            if conf.reaction:
+                await react(session, "❌")
             logger.exception("处理HYW消息失败: {}", exc)
 
     asyncio.create_task(process_request())
