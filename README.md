@@ -19,7 +19,7 @@
 </div>
 
 ## ✨ 功能特性
-- **关于搜索**：目前推荐使用 OpenRouter 的 `:online` 参数，该参数会优先使用模型提供商的搜索、其次 `exa`(较贵) 进行网页搜索。推荐使用 `x-ai/grok-4.1-fast:online`。
+- **关于搜索**：目前推荐使用 OpenRouter 的 `:online` 参数，该参数会优先使用模型提供商的搜索、其次 `exa`(较贵) 进行网页搜索。如果不设置 online 模式, 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果。
 - 给予 `Alconna` 与 `MessageChain` 混合处理, 深度优化触发体验`。
 - **网页获取**：支持通过 **Jina AI** 或 **Playwright** 进行实时页面获取。
 - **多模态理解**：无缝处理文本与图片。自动对文档/截图进行 OCR 文字识别，对照片进行视觉分析。
@@ -54,7 +54,8 @@ plugins:
     # 触发机器人的命令列表
     command_name_list: ["zssm", "hyw"]
     
-    # 主 LLM 模型配置（必需）(online 模式), 如 x-ai/grok-4.1-fast:online、perplexity/sonar
+    # 主 LLM 模型配置（必需）(推荐 online 模式), 如 x-ai/grok-4.1-fast:online、perplexity/sonar
+    # 如果不设置 online 模式, 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果
     model_name: "gx-ai/grok-4.1-fast:online"
     api_key: "your-api-key"
 
@@ -76,6 +77,11 @@ plugins:
     vision_model_name: "qwen-vl-plus"
     vision_api_key: "your-vision-api-key"
     vision_base_url: "your-vision_base_url"
+    
+    # --- openai 协议 extra_body ---
+    extra_body:
+      reasoning:
+        effort: low
     
     # --- 调试 ---
     save_conversation: false

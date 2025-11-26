@@ -130,6 +130,8 @@ class HywConfig(BasicConfModel):
     vision_model_name: Optional[str] = None
     vision_base_url: Optional[str] = None
     vision_api_key: Optional[str] = None
+    
+    extra_body: Optional[Dict[str, Any]] = None
     # verbose: bool = False
 
 metadata(
@@ -160,7 +162,8 @@ hyw_config = HYWConfig(
     jina_api_key=conf.jina_api_key,
     vision_model_name=conf.vision_model_name,
     vision_base_url=conf.vision_base_url,
-    vision_api_key=conf.vision_api_key
+    vision_api_key=conf.vision_api_key,
+    extra_body=conf.extra_body
 )
 
 hyw = HYW(config=hyw_config)

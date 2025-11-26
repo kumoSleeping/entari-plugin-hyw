@@ -55,7 +55,8 @@ BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户�
  - 过于色情、暴力、血腥等内容, 请谨慎处理, 避免直接描述
 
  [搜索与验证原则]
- - 避免搜索 x.com 的信息, 尽可能使用权威网站、相关项目官方网站
+ - web 搜索优先使用 bing + google 双页面混合验证
+ - 避免搜索 x.com 、 csdn 等不准确信息, 尽可能使用权威网站、相关项目官方网站
  - 搜索内容指向不同相关项目时, 尝试理解关系, 请避免混为一谈
  - 禁止导航到搜索引擎页面, 你可以直接导航到相关官网或权威网站
  - 可以同时启动多个工具查看不同页面, 提高效率
@@ -108,6 +109,8 @@ class HYWConfig:
     vision_model_name: Optional[str] = None
     vision_base_url: Optional[str] = None
     vision_api_key: Optional[str] = None
+    
+    extra_body: Optional[Dict[str, Any]] = None
 
 # --- Browser Tool ---
 
@@ -483,7 +486,7 @@ class HYW:
                             messages=messages, 
                             tools=self.tools if self.tools else None, 
                             tool_choice="auto" if self.tools else None,
-                            extra_body={"reasoning": {"effort": "low"}}
+                            extra_body=self.config.extra_body
                         )
                         break
                     except Exception as e:
