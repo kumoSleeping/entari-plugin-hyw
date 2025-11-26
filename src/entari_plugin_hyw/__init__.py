@@ -139,7 +139,7 @@ class HywConfig(BasicConfModel):
 metadata(
     "hyw",
     author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}],
-    version="0.1.0",
+    version="2.3.1",
     description="",
     config=HywConfig,
 )
@@ -347,7 +347,12 @@ async def on_message_created(message_chain: MessageChain, session: Session[Messa
                 history_manager.remove(conversation_history_key)
                 related_ids.append(quoted_message_id)
             
-            history_manager.remember(sent_message_id, new_history, related_ids)
+            # Check turn limit
+            user_turns = len([m for m in new_history if m.get("role") == "user"])
+            if user_turns < 5:
+                history_manager.remember(sent_message_id, new_history, related_ids)
+            else:
+                logger.info(f"对话轮数达到上限 ({user_turns})，停止记录历史")
             
         except Exception as exc:
             await react(session, "❌")
