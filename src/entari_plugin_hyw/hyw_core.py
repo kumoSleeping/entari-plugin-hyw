@@ -1,6 +1,7 @@
 import asyncio
 import html
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
@@ -102,6 +103,25 @@ BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户�
  /2 <回复推测2>
  /3 <回复推测3>
  /4 <回复推测4>
+"""
+
+ADDITIONAL_RULES_PROMPT = """
+ [补充规则]
+ - 请保持回答的连贯性, 参考上文的历史信息
+ - 判断之前的信息是否足够回复用户的问题, 如果足够请不使用工具, 直接快速的给出回答
+ - 如果之前的信息不够, 可以使用工具获取信息
+"""
+
+FINAL_TURN_PROMPT = """
+注意: 对话即将结束, 请改变最终回复格式.
+
+ [最终回复格式]
+ [LLM Agent] >>
+<纯文本详细解释>
+<(如果需要提供代码)
+```<核心代码语言片段>
+<代码>
+ ```>
 """
 
 # --- Configuration ---
@@ -472,6 +492,7 @@ class HYW:
         """Format extra content like reasoning or annotations"""
         return str(content)
 
+
     def _save_conversation_debug(self, messages: List[Dict[str, Any]]):
         """Save conversation history to JSON file for debugging"""
         if not self.config.save_conversation:
@@ -491,8 +512,8 @@ class HYW:
             logger.debug(f"Conversation saved to {filename}")
         except Exception as e:
             logger.warning(f"Failed to save conversation debug: {e}")
-
-    def _append_stats_info(self, content: str, stats: Dict[str, Any], start_time: float) -> str:
+            
+    def _append_stats_info(self, content: str, stats: Dict[str, Any], start_time: float, user_turns: int = 1) -> str:
         current_duration = time.time() - start_time
         
         if not content or not content.strip():
@@ -514,8 +535,23 @@ class HYW:
         if web_count > 0:
             tools_parts.append(f"[W:{web_count}]")
             
-        stats_info = f"\n[Stats] :: {' '.join(tools_parts)} {' '.join(time_parts)}"
-        return content + stats_info
+        # Domains
+        visited_domains = stats.get('visited_domains', [])
+        # Deduplicate while preserving order
+        unique_domains = []
+        seen = set()
+        for d in visited_domains:
+            if d not in seen:
+                unique_domains.append(d)
+                seen.add(d)
+        
+        domain_parts = [f"[{d}]" for d in unique_domains]
+        
+        # Turn count
+        turn_info = f"[{user_turns}/5]"
+        
+        stats_info = f"\n[Stats] :: {turn_info} {' '.join(tools_parts)} {' '.join(domain_parts)} {' '.join(time_parts)}"
+        return content + stats_info.replace("  ", " ")
 
     async def agent(self, user_input: str, conversation_history: Optional[List[Dict[str, Any]]] = None, images: Optional[List[str]] = None) -> Dict[str, Any]:
         start_time = time.time()
@@ -524,9 +560,14 @@ class HYW:
             "llm_calls": 0,
             "search_results": 0,
             "web_pages_opened": 0,
+            "visited_domains": [],
             "total_time": 0.0,
             "vision_duration": 0.0
         }
+        
+        user_turns = 1
+        if conversation_history:
+             user_turns = len([m for m in conversation_history if m.get("role") == "user"]) + 1
         
         # Vision/OCR Analysis
         image_analysis = ""
@@ -542,6 +583,15 @@ class HYW:
             messages.append({"role": "system", "content": f"[图片分析报告]\n{image_analysis}"})
         
         if conversation_history:
+            # Calculate turns (count user messages)
+            # user_turns is already calculated above
+            
+            # Inject additional rules
+            messages.append({"role": "system", "content": ADDITIONAL_RULES_PROMPT})
+
+            if user_turns >= 5:
+                 messages.append({"role": "system", "content": FINAL_TURN_PROMPT})
+
             messages.extend([m for m in conversation_history if m.get("role") != "system"])
         
         messages.append({"role": "user", "content": user_input})
@@ -619,19 +669,32 @@ class HYW:
 
                 if msg.tool_calls:
                     stats["web_pages_opened"] += len([tc for tc in msg.tool_calls if tc.function.name == "browser_navigate"])
+                    
+                    # Extract domains for stats
+                    for tc in msg.tool_calls:
+                        if tc.function.name == "browser_navigate":
+                            try:
+                                args_str = html.unescape(tc.function.arguments)
+                                args = json.loads(args_str)
+                                url = args.get("url", "")
+                                match = re.search(r'https?://(?:www\.)?([^/.]+)', url)
+                                if match:
+                                    stats["visited_domains"].append(match.group(1))
+                            except Exception:
+                                pass
+
                     tasks = [self._run_tool_isolated(tc, start_time) for tc in msg.tool_calls]
                     results = await asyncio.gather(*tasks)
                     messages.extend(results)
                 elif msg.content:
                     logger.success("Conversation completed")
-                    self._save_conversation_debug(messages)
                     filtered_history = [m for m in messages if m.get("role") != "system"]
-                    final_response = self._append_stats_info(msg.content, stats, start_time)
+                    final_response = self._append_stats_info(msg.content, stats, start_time, user_turns)
                     return {"llm_response": final_response, "conversation_history": filtered_history, "stats": stats}
             
             # Max turns reached
             self._save_conversation_debug(messages)
-            final_response = self._append_stats_info("Max turns reached", stats, start_time)
+            final_response = self._append_stats_info("Max turns reached", stats, start_time, user_turns)
             return {"llm_response": final_response, "conversation_history": messages, "stats": stats}
         finally:
             pass
