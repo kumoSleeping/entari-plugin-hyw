@@ -54,9 +54,9 @@ plugins:
     # 触发机器人的命令列表
     command_name_list: ["zssm", "hyw"]
     
-    # 主 LLM 模型配置（必需）(推荐 online 模式), 如 x-ai/grok-4.1-fast:online、perplexity/sonar
-    # 如果不设置 online 模式, 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果
-    model_name: "gx-ai/grok-4.1-fast:online"
+    # 主 LLM 模型配置（必需）, 如 x-ai/grok-4.1-fast:online、perplexity/sonar
+    # 如果模型不自带搜索 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果
+    model_name: "gx-ai/grok-4.1-fast:free"
     api_key: "your-api-key"
 
     # 默认 https://openrouter.ai/api/v1
@@ -72,13 +72,16 @@ plugins:
     # Playwright 设置
     headless: true
     
+    # 浏览器回退: 当首选 browser_tool 失败时，尝试使用备用 browser_tool (默认: false)
+    enable_browser_fallback: false
+    
     # --- 视觉配置 (可选) ---
     # 如果未设置，将回退使用主模型
     vision_model_name: "qwen-vl-plus"
     vision_api_key: "your-vision-api-key"
     vision_base_url: "your-vision_base_url"
     
-    # --- openai 协议 extra_body ---
+    # --- openai extra_body ---
     extra_body:
       reasoning:
         effort: low

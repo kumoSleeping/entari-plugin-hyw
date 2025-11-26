@@ -132,6 +132,8 @@ class HywConfig(BasicConfModel):
     vision_api_key: Optional[str] = None
     
     extra_body: Optional[Dict[str, Any]] = None
+    
+    enable_browser_fallback: bool = False
     # verbose: bool = False
 
 metadata(
@@ -163,7 +165,8 @@ hyw_config = HYWConfig(
     vision_model_name=conf.vision_model_name,
     vision_base_url=conf.vision_base_url,
     vision_api_key=conf.vision_api_key,
-    extra_body=conf.extra_body
+    extra_body=conf.extra_body,
+    enable_browser_fallback=conf.enable_browser_fallback
 )
 
 hyw = HYW(config=hyw_config)

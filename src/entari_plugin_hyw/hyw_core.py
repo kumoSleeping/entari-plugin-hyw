@@ -39,8 +39,18 @@ VISION_EXPERT_SYSTEM_PROMPT = """你是一个专业的图像分析专家。
  - 如果识别到文字，请使用清晰的格式列出。
 """
 
-BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户解决问题.
-你拥有强大的思维链能力，在回答前请先进行深度的思考和隐形规划。
+BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户解决问题, 
+- 你拥有强大的思维链能力，在回答前请先进行深度的思考和隐形规划
+- 你最多可以同时一次调用 5 次 tool
+- 尽量在一次调用内完成搜索与思考任务并进行最终回复
+
+ [任务分析思考]
+ - 对话过滤：此消息是用户间的对话，过滤掉无关人员和干扰信息，只关注需要解释的关键词
+ - 直接提问：用户直接提问或要求查询、简洁问题和询问报错, 请分析解释的同进行操作, 解决用户需求
+ - 多媒体/视觉内容：包含视觉分析结果时，理解其意义，减少转述损耗，并利用工具验证易产生幻觉的信息（如具体人物、事件）
+ - JSON/结构化数据：理解数据含义（如小程序分享），寻找并获取其中指向的 URL 内容
+ - URL处理：如果包含网页链接，务必使用工具获取内容, 同时可以进行补充搜索
+ - 意图理解：纠正可能的拼写/语法错误，还原缩写含义，确保准确理解查询意图
 
  [核心原则 - 必须严格遵守]
  - 永远使用中文回答
@@ -55,7 +65,8 @@ BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户�
  - 过于色情、暴力、血腥等内容, 请谨慎处理, 避免直接描述
 
  [搜索与验证原则]
- - web 搜索优先使用 google 与 bing 两个搜索引擎混合验证, 且只能使用 google 与 bing 搜索以确保数据准确
+ - web 搜索优先使用 google、bing、duckduckgo 三个搜索引擎混合验证, 且只能使用此三种搜索引擎以确保数据准确性, 永远禁止使用 `baidu` 等国内搜索引擎
+ - 搜索时关键词抓住重点、语言简洁专业, 以获取更专业贴切的搜索结果
  - 避免搜索 x.com 、 csdn 等不准确信息, 尽可能使用权威网站、相关项目官方网站
  - 搜索内容指向不同相关项目时, 尝试理解关系, 请避免混为一谈
  - 禁止导航到搜索引擎页面, 你可以直接导航到相关官网或权威网站
@@ -81,7 +92,8 @@ BASE_SYSTEM_PROMPT = """你是一个智能AI助手, 你的目的是帮助用户�
  [最终回复格式]
  [LLM Agent] >>
 <纯文本详细解释>
-<(如果需要提供代码)```&lt;代码语言>
+<(如果需要提供代码)
+```<核心代码语言片段>
 <代码>
  ```>
  
@@ -111,6 +123,8 @@ class HYWConfig:
     vision_api_key: Optional[str] = None
     
     extra_body: Optional[Dict[str, Any]] = None
+    
+    enable_browser_fallback: bool = False
 
 # --- Browser Tool ---
 
@@ -159,7 +173,7 @@ class BrowserTool:
         content = await primary_method(url)
         
         # Check for failure (assuming error messages start with "Error")
-        if content.startswith("Error") and secondary_method:
+        if content.startswith("Error") and secondary_method and self.config.enable_browser_fallback:
             logger.warning(f"{primary_name} failed: {content}. Falling back to {secondary_name}...")
             content = await secondary_method(url)
              
@@ -268,6 +282,40 @@ class BrowserTool:
         if self.playwright:
             await self.playwright.stop()
 
+    async def search(self, query: str) -> str:
+        """Search using Jina AI or fallback to browser navigation"""
+        import urllib.parse
+        encoded_query = urllib.parse.quote(query)
+        
+        # Try Jina Search first
+        try:
+            url = f"https://s.jina.ai/{encoded_query}"
+            
+            logger.info(f"Jina AI searching: {query}")
+            headers = {}
+            if self.config.jina_api_key:
+                headers["Authorization"] = f"Bearer {self.config.jina_api_key}"
+                
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    content = resp.text
+                    logger.info(f"Successfully fetched search results for '{query}' via Jina")
+                    return content
+                else:
+                    logger.warning(f"Jina search failed with status {resp.status_code}, falling back to direct navigation")
+        except Exception as e:
+            logger.error(f"Jina search failed: {e}")
+
+        # Fallback: Navigate to search engine
+        try:
+            # Use Bing as it's often friendlier to scrapers/readers than Google
+            search_url = f"https://www.bing.com/search?q={encoded_query}"
+            logger.info(f"Fallback searching via Bing: {search_url}")
+            return await self.navigate(search_url)
+        except Exception as e:
+             return f"Error searching '{query}': {str(e)}"
+
 
 # --- Core Class ---
 
@@ -316,6 +364,25 @@ class HYW:
                 }
             }
         })
+
+        if self.config.jina_api_key:
+            self.tools.append({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web using Jina AI to find information.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": {
+                                "type": "string", 
+                                "description": "The search query"
+                            }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            })
             
         self.tools_desc = "\n".join([f"- {t['function']['name']}" for t in self.tools])
 
@@ -366,6 +433,16 @@ class HYW:
             if url:
                 return await self.browser_tool.navigate(url)
             return "Error: Missing URL argument"
+            
+        if func_name == "web_search":
+            if not self.browser_tool:
+                 return "Error: Browser tool is disabled"
+            
+            query = args.get("query")
+            if query:
+                return await self.browser_tool.search(query)
+            return "Error: Missing query argument"
+            
         return f"Error: Unknown tool {func_name}"
 
     def _tool_msg(self, tool_call_id: str, content: Any, is_error: bool = False, elapsed_time: Optional[float] = None) -> Dict[str, Any]:
@@ -502,7 +579,9 @@ class HYW:
                         self._save_conversation_debug(messages)
                         logger.error(f"Final API failure: {last_error}")
                         return {
-                            "llm_response": f"抱歉，AI 提供商似乎出现了故障，重试多次后仍然失败。\n错误信息: {str(last_error)}", 
+                            "llm_response": f"""[Error] :: internal error
+抱歉, 虽然很不想承认，但AI提供商、开发者、部署配置总有一个出了问题:
+错误信息: {str(last_error)}""", 
                             "conversation_history": messages,
                             "stats": stats
                         }
