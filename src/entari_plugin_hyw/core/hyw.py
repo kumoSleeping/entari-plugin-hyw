@@ -213,9 +213,9 @@ class HYW:
         """Parse response with ===section=== tags"""
         structured = {
             "response": "",
-            "speculation": [],
+            "suggestion": [],
             "references": [],
-            "send": ""
+            "tun": ""
         }
         
         try:
@@ -249,8 +249,8 @@ class HYW:
             else:
                 pass
 
-            # Parse speculation
-            spec_text = sections.get("speculation", "")
+            # Parse suggestion (support both for backward compatibility)
+            spec_text = sections.get("suggestion") or sections.get("speculation", "")
             if spec_text:
                 specs = []
                 for line in spec_text.split('\n'):
@@ -258,7 +258,7 @@ class HYW:
                     cleaned = re.sub(r'^(\d+\.|-|\*)\s*', '', line).strip()
                     if cleaned:
                         specs.append(cleaned)
-                structured["speculation"] = specs
+                structured["suggestion"] = specs
                 
             # Parse references
             ref_text = sections.get("references", "")
@@ -270,8 +270,8 @@ class HYW:
                     refs.append({"title": title, "url": url})
                 structured["references"] = refs
                 
-            # Parse send
-            structured["send"] = sections.get("send", "")
+            # Parse tun
+            structured["tun"] = sections.get("tun", "")
             
         except Exception as e:
             logger.error(f"Failed to parse tagged response: {e}")
@@ -298,6 +298,8 @@ class HYW:
         model_conf = next((m for m in self.config.models if m.get("name") == model), None)
         if model_conf:
             max_turns = model_conf.get("max_turns", 5)
+        else:
+            model_conf = {} # Default to empty dict to prevent AttributeError later
 
         # Check capabilities
 

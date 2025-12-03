@@ -5,7 +5,7 @@ import base64
 import mimetypes
 from datetime import datetime
 from urllib.parse import urlparse
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Union
 import re
 import json
 from playwright.async_api import async_playwright
@@ -202,58 +202,146 @@ class ContentRenderer:
         html_parts.append('</div></div>')
         return "".join(html_parts)
 
-    def _generate_status_footer(self, stats: Dict[str, Any], session_id: str, turns: int, max_turns: int = 10) -> str:
+    def _generate_status_footer(self, stats: Union[Dict[str, Any], List[Dict[str, Any]]], session_id: str, turns: int, max_turns: int = 10) -> str:
         if not stats:
             return ""
             
-        agent_total_time = stats.get("time", 0)
-        vision_time = stats.get("vision_duration", 0)
-        llm_time = max(0, agent_total_time - vision_time)
-        tool_count = stats.get("tool_calls_count", 0)
+        # Check if multi-step
+        is_multi_step = isinstance(stats, list)
         
-        # Vision Time Block
-        vision_html = ""
-        if vision_time > 0:
-            vision_html = f'''
+        if is_multi_step:
+            # Multi-step Layout
+            # stats is [step1_stats, step2_stats]
+            step1_stats = stats[0]
+            step2_stats = stats[1] if len(stats) > 1 else {}
+            
+            step1_time = step1_stats.get("time", 0)
+            step2_time = step2_stats.get("time", 0)
+            
+            total_tool_count = step1_stats.get("tool_calls_count", 0) + step2_stats.get("tool_calls_count", 0)
+            
+            # Step 1 Time (Purple)
+            step1_html = f'''
             <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                 <span class="w-2 h-2 rounded-full bg-purple-400"></span>
-                <span>{vision_time:.1f}s</span>
+                <span>{step1_time:.1f}s</span>
             </div>
             '''
             
-        return f'''
-        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
-            <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
-                {vision_html}
+            # Step 2 Time (Green)
+            step2_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                <span>{step2_time:.1f}s</span>
+            </div>
+            '''
+            
+            # Render Time (Orange)
+            render_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-orange-400"></span>
+                <span id="render-time-display">...</span>
+            </div>
+            '''
+            
+            # Total Time (Gray)
+            total_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-gray-400"></span>
+                <span id="total-time-display">...</span>
+            </div>
+            '''
+            
+            # Tools, Turns, ID
+            extras_html = f'''
+            <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
 
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                    <span class="w-2 h-2 rounded-full bg-orange-400"></span>
-                    <span id="render-time-display">...</span>
-                </div>
-
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                    <span class="w-2 h-2 rounded-full bg-gray-400"></span>
-                    <span id="total-time-display">...</span>
-                </div>
-                
-                <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
-
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                    <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-                    <span>{tool_count}</span>
-                </div>
-                
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                    <span class="w-2 h-2 rounded-full bg-pink-400"></span>
-                    <span>{turns}</span>
-                </div>
-                
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
-                    <span class="text-pink-600">{session_id}</span>
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                <span>{total_tool_count}</span>
+            </div>
+            
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-pink-400"></span>
+                <span>{turns}</span>
+            </div>
+            
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
+                <span class="text-pink-600">{session_id}</span>
+            </div>
+            '''
+            
+            return f'''
+            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                    {step1_html}
+                    {step2_html}
+                    {render_html}
+                    {total_html}
+                    {extras_html}
                 </div>
             </div>
-        </div>
-        '''
+            '''
+            
+        else:
+            # Single Step Layout (Existing Logic)
+            agent_total_time = stats.get("time", 0)
+            vision_time = stats.get("vision_duration", 0)
+            llm_time = max(0, agent_total_time - vision_time)
+            tool_count = stats.get("tool_calls_count", 0)
+            
+            # Vision Time Block
+            vision_html = ""
+            if vision_time > 0:
+                vision_html = f'''
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                    <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                    <span>{vision_time:.1f}s</span>
+                </div>
+                '''
+                
+            # Agent Time Block
+            agent_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                <span>{llm_time:.1f}s</span>
+            </div>
+            '''
+            
+            return f'''
+            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                    {vision_html}
+                    {agent_html}
+
+                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                        <span class="w-2 h-2 rounded-full bg-orange-400"></span>
+                        <span id="render-time-display">...</span>
+                    </div>
+
+                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                        <span class="w-2 h-2 rounded-full bg-gray-400"></span>
+                        <span id="total-time-display">...</span>
+                    </div>
+                    
+                    <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
+
+                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+                        <span>{tool_count}</span>
+                    </div>
+                    
+                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                        <span class="w-2 h-2 rounded-full bg-pink-400"></span>
+                        <span>{turns}</span>
+                    </div>
+                    
+                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
+                        <span class="text-pink-600">{session_id}</span>
+                    </div>
+                </div>
+            </div>
+            '''
 
     def _generate_references_html(self, references: List[Dict[str, Any]], search_provider: str) -> str:
         if not references:
@@ -262,7 +350,8 @@ class ContentRenderer:
         # Limit to 8 references
         refs = references[:8]
         
-        provider_display = search_provider.replace("_", " ").title()
+        # provider_display = search_provider.replace("_", " ").title()
+        provider_display = "REFERENCES"
         
         # Pink Globe SVG
         icon_svg = '''
@@ -466,7 +555,11 @@ class ContentRenderer:
             await page.wait_for_load_state("networkidle")
             
             # Update Timing Stats
-            agent_time = stats.get("time", 0) if stats else 0
+            if isinstance(stats, list):
+                # Sum up time from all steps
+                agent_time = sum(s.get("time", 0) for s in stats)
+            else:
+                agent_time = stats.get("time", 0) if stats else 0
             current_time = asyncio.get_event_loop().time()
             render_duration = current_time - render_start_time
             total_duration = agent_time + render_duration

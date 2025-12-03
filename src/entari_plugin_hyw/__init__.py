@@ -162,8 +162,22 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
                 break
         
         # Model Selection (Step 1)
+        # Resolve model names from config if they are short names/keywords
         model = selected_model or meta.get("model")
+        if model and model != "off":
+            resolved, err = resolve_model_name(model, conf.models)
+            if resolved:
+                model = resolved
+            elif err:
+                logger.warning(f"Model resolution warning for {model}: {err}")
+
         vision_model = selected_vision_model or meta.get("vision_model")
+        if vision_model and vision_model != "off":
+            resolved_v, err_v = resolve_model_name(vision_model, conf.models)
+            if resolved_v:
+                vision_model = resolved_v
+            elif err_v:
+                logger.warning(f"Vision model resolution warning for {vision_model}: {err_v}")
 
         images, err = await process_images(mc, vision_model)
 
@@ -194,7 +208,16 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             # If not specified, inherit from Step 1 or config? 
             # Usually inherit from config or meta if not specified in -n
             step2_model = next_text_model or model
+            if step2_model and step2_model != "off":
+                resolved_s2, err_s2 = resolve_model_name(step2_model, conf.models)
+                if resolved_s2:
+                    step2_model = resolved_s2
+            
             step2_vision_model = next_vision_model or vision_model # Probably not used if no new images, but consistent
+            if step2_vision_model and step2_vision_model != "off":
+                resolved_s2v, err_s2v = resolve_model_name(step2_vision_model, conf.models)
+                if resolved_s2v:
+                    step2_vision_model = resolved_s2v
             
             # No new images for Step 2 usually, unless we want to carry over images?
             # The user said "First round image model, second round text model".
@@ -211,15 +234,30 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             final_resp = resp2
             
             # Merge Stats
+            # Instead of merging into a single dict, we prepare a list of stats for the renderer
+            # But we also need a combined stats for history recording?
+            # History manager likely expects a single dict or doesn't care much (it stores what we give)
+            
+            # Let's keep step1_stats and resp2["stats"] separate for rendering
+            # But for history, maybe we still want a merged one?
+            # The code below uses final_resp["stats"] for rendering AND history.
+            
+            # Let's create a list for rendering
+            stats_for_render = [step1_stats, resp2.get("stats", {})]
+            
+            # And a merged one for history/final_resp
+            merged_stats = step1_stats.copy()
             if "stats" in resp2:
                 for k, v in resp2["stats"].items():
-                    if isinstance(v, (int, float)) and k in step1_stats:
-                        step1_stats[k] += v
+                    if isinstance(v, (int, float)) and k in merged_stats:
+                        merged_stats[k] += v
                     elif k == "visited_domains":
-                        step1_stats[k] = list(set(step1_stats.get(k, []) + v))
+                        merged_stats[k] = list(set(merged_stats.get(k, []) + v))
                     else:
-                        step1_stats[k] = v
-            final_resp["stats"] = step1_stats
+                        merged_stats[k] = v
+            
+            final_resp["stats"] = merged_stats
+            final_resp["stats_list"] = stats_for_render # Pass this to renderer if available
             
             # Merge Model Info for Display
             # We want to show Step 1 Vision Model AND Step 2 Text Model
@@ -281,11 +319,14 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             render_model_name = ""
             render_icon = ""
 
+        # Use stats_list if available, otherwise standard stats
+        stats_to_render = final_resp.get("stats_list", final_resp.get("stats", {}))
+
         await renderer.render(
             markdown_content=content,
             output_path=output_path,
-            suggestions=structured.get("speculation", []),
-            stats=final_resp.get("stats", {}),
+            suggestions=structured.get("suggestion", []),
+            stats=stats_to_render,
             references=structured.get("references", []),
             model_name=render_model_name,
             search_provider="Jina Fetch" if conf.browser_tool == "jina" else "Playwright",
@@ -302,15 +343,15 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         # Send & Save
         from pathlib import Path
         
-        # Handle 'send' field from structured response
-        if structured.get("send"):
+        # Handle 'tun' field from structured response
+        if structured.get("tun"):
             try:
                 if conf.quote:
-                    await session.send([Quote(session.event.message.id), structured["send"]])
+                    await session.send([Quote(session.event.message.id), structured["tun"]])
                 else:
-                    await session.send(structured["send"])
+                    await session.send(structured["tun"])
             except Exception as e:
-                logger.warning(f"Failed to send extra content: {e}")
+                logger.warning(f"Failed to send tun content: {e}")
 
         # Convert to base64
         with open(output_path, "rb") as f:
@@ -365,10 +406,10 @@ next_alc = Alconna(
 # Main Command (Question)
 alc = Alconna(
     conf.question_command,
-    Option("-v|--vision", Args["vision_model", str], help_text="设置视觉模型(设为off禁用)"),
-    Option("-t|--text", Args["text_model", str], help_text="设置文本模型"),
-    Option("-c|--code", Args["code", str], help_text="继续指定会话"),
-    Option("-n|--next", Args["next_input", AllParam], help_text="后续操作"),
+    Option("-v|--vision", Args["vision_model", str]),
+    Option("-t|--text", Args["text_model", str]),
+    Option("-c|--code", Args["code", str]),
+    Option("-n|--next", Args["next_input", AllParam]),
     Args["list_models;?", "-m|--models"],
     Args["all_chat;?", "-a"],
     Args["local_mode;?", "-l"],
@@ -378,11 +419,14 @@ alc = Alconna(
         description=f"""使用方法:
         {conf.question_command} -a : 列出所有会话
         {conf.question_command} -m : 列出所有模型
-        {conf.question_command} -v <模型名> -t <模型名> : 设置主要视觉模型和文本模型
+        {conf.question_command} -v <模型名> : 设置主要视觉模型, 设为 off 禁用
+        {conf.question_command} -t <模型名> : 设置主要文本模型
         {conf.question_command} -l : 开启本地模式 (关闭Web索引)
         {conf.question_command} -c <4位消息码> : 继续指定会话
         {conf.question_command} -n <后续提示词> : 在第一步完成后执行后续操作 (支持 -t/-v)
         {conf.question_command} <问题> : 发起问题
+特性:
+        可以要求模型使用 `tun` 工具将特定内容以文本形式发送.
 """
         )
 )
