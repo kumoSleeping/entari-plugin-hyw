@@ -221,7 +221,7 @@ class HYW:
         try:
             # Extract sections
             sections = {}
-            current_section = None
+            current_section = "response"
             current_content = []
             
             for line in content.split('\n'):
