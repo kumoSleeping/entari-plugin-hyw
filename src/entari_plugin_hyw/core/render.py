@@ -123,7 +123,7 @@ class ContentRenderer:
         main_title_group = ""
         if title:
             main_title_group = f'''
-                <div class="{main_badge_bg} border border-gray-200 rounded-md px-2.5 py-1 flex-none flex items-center gap-2 { '!bg-transparent !border-none !p-0' if is_plain else '' }">
+                <div class="{main_badge_bg} shadow-sm rounded-md px-2.5 py-1 flex-none flex items-center gap-2 { '!bg-transparent !shadow-none !p-0' if is_plain else '' }">
                     {icon_html}
                     <span class="text-sm font-bold {title_color} uppercase tracking-wide whitespace-nowrap overflow-hidden text-ellipsis">{title}</span>
                 </div>
@@ -188,13 +188,13 @@ class ContentRenderer:
         '''
         header = self._generate_card_header("SUGGESTIONS", badge_text=None, custom_icon_html=icon_svg, is_plain=True)
             
-        html_parts = ['<div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-5 shadow-sm border-[1.5px] border-gray-300 overflow-hidden">']
+        html_parts = ['<div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
         html_parts.append(header)
         html_parts.append('<div class="grid grid-cols-2 gap-2.5">')
         
         for i, sug in enumerate(suggestions):
             html_parts.append(f'''
-            <div class="flex items-baseline gap-2 text-sm text-gray-600 px-3.5 py-2.5 bg-white rounded-full border border-gray-200 shadow-sm">
+            <div class="flex items-baseline gap-2 text-sm text-gray-600 px-3.5 py-2.5 bg-white/80 backdrop-blur-sm rounded-full shadow-sm hover:shadow transition-shadow cursor-default">
                 <span class="text-pink-600 font-mono font-bold text-[13px] whitespace-nowrap">{i+1}</span>
                 <span class="flex-1 text-[13px] text-gray-600 font-medium whitespace-nowrap overflow-hidden text-ellipsis">{sug}</span>
             </div>
@@ -215,40 +215,40 @@ class ContentRenderer:
         vision_html = ""
         if vision_time > 0:
             vision_html = f'''
-            <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                 <span class="w-2 h-2 rounded-full bg-purple-400"></span>
                 <span>{vision_time:.1f}s</span>
             </div>
             '''
             
         return f'''
-        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 shadow-sm border-[1.5px] border-gray-300 overflow-hidden">
+        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
             <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
                 {vision_html}
 
-                <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                     <span class="w-2 h-2 rounded-full bg-orange-400"></span>
                     <span id="render-time-display">...</span>
                 </div>
 
-                <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                     <span class="w-2 h-2 rounded-full bg-gray-400"></span>
                     <span id="total-time-display">...</span>
                 </div>
                 
                 <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
 
-                <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                     <span class="w-2 h-2 rounded-full bg-blue-400"></span>
                     <span>{tool_count}</span>
                 </div>
                 
-                <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm">
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
                     <span class="w-2 h-2 rounded-full bg-pink-400"></span>
                     <span>{turns}</span>
                 </div>
                 
-                <div class="flex items-center gap-1.5 bg-white px-2 py-1 rounded border border-gray-200 shadow-sm ml-auto">
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
                     <span class="text-pink-600">{session_id}</span>
                 </div>
             </div>
@@ -272,7 +272,7 @@ class ContentRenderer:
         '''
         header = self._generate_card_header(provider_display, badge_text=None, custom_icon_html=icon_svg, is_plain=True) # Title is the provider
             
-        html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 shadow-sm border-[1.5px] border-gray-300 overflow-hidden">']
+        html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
         html_parts.append(header)
         html_parts.append('<div class="grid grid-cols-2 gap-2.5">')
         
@@ -339,13 +339,13 @@ class ContentRenderer:
         # Preprocess to fix common markdown issues (like lists without preceding newline)
         # Ensure a blank line before a list item if the previous line is not empty
         # Matches a newline preceded by non-whitespace, followed by a list marker
-        markdown_content = re.sub(r'(?m)^(?<=\S)\n(?=\s*(\d+\.|[-*+]) )', r'\n\n', markdown_content)
+        markdown_content = re.sub(r'(?<=\S)\n(?=\s*(\d+\.|[-*+]) )', r'\n\n', markdown_content)
         
         # Replace Chinese colon with English colon + space to avoid list rendering issues
-        markdown_content = markdown_content.replace("：", ":")
+        # markdown_content = markdown_content.replace("：", ":")
         
         # Replace other full-width punctuation with half-width + space
-        markdown_content = markdown_content.replace("，", ",").replace("。", ".").replace("？", "?").replace("！", "!")
+        # markdown_content = markdown_content.replace("，", ",").replace("。", ".").replace("？", "?").replace("！", "!")
         
         # Remove bold markers around Chinese text (or text containing CJK characters)
         # This addresses rendering issues where bold Chinese fonts look bad or fail to render.
@@ -359,6 +359,15 @@ class ContentRenderer:
             markdown_content.strip(), 
             extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
         )
+        
+        # Post-process to style citation markers [1], [2]...
+        # We avoid replacing inside <code> tags by splitting the HTML
+        parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
+        for i, part in enumerate(parts):
+            if not part.startswith('<code'):
+                # Replace [n] with styled superscript, avoiding HTML attributes
+                parts[i] = re.sub(r'\[(\d+)\](?![^<]*>)', r'<sup class="text-pink-600 font-bold text-[10px] ml-0.5">\1</sup>', part)
+        content_html = "".join(parts)
         
         # 2. Prepare Template Variables
         timestamp = datetime.now().strftime("%H:%M:%S")
@@ -427,14 +436,27 @@ class ContentRenderer:
             # Set content
             await page.set_content(final_html)
             
-            # Force wait for all images to load
+            # Force wait for all images to load and hide broken ones
             await page.evaluate("""
                 () => Promise.all(
                     Array.from(document.images).map(img => {
-                        if (img.complete) return Promise.resolve();
+                        if (img.complete) {
+                            if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+                                img.style.display = 'none';
+                            }
+                            return Promise.resolve();
+                        }
                         return new Promise((resolve) => {
-                            img.onload = resolve;
-                            img.onerror = resolve;
+                            img.onload = () => {
+                                if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+                                    img.style.display = 'none';
+                                }
+                                resolve();
+                            };
+                            img.onerror = () => {
+                                img.style.display = 'none';
+                                resolve();
+                            };
                         });
                     })
                 )
@@ -480,10 +502,20 @@ class ContentRenderer:
         # Badges
         badges_html = ""
         if is_default:
-            badges_html += '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-100">DEFAULT</span>'
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-blue-50 text-blue-600 border border-blue-100">DEFAULT</span>'
         if is_vision_default:
-            badges_html += '<span class="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-50 text-purple-600 border border-purple-100">VISION</span>'
-            
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-600 border border-purple-100">DEFAULT</span>'
+        
+        # Capability Badges
+        if model.get("vision"):
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-purple-50 text-purple-600 border border-purple-100">VISION</span>'
+        if model.get("tools"):
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-green-50 text-green-600 border border-green-100">TOOLS</span>'
+        if model.get("online"):
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-cyan-50 text-cyan-600 border border-cyan-100">ONLINE</span>'
+        if model.get("reasoning"):
+            badges_html += '<span class="px-1.5 py-0.5 rounded text-[9px] font-bold bg-orange-50 text-orange-600 border border-orange-100">REASONING</span>'
+
         # Icon
         icon_html = ""
         if icon_data:
@@ -499,12 +531,12 @@ class ContentRenderer:
                     {icon_html}
                     <h3 class="font-bold text-gray-800 text-sm">{name}</h3>
                 </div>
-                <div class="flex gap-1">
-                    {badges_html}
-                </div>
             </div>
             
-            <div class="pl-7">
+            <div class="pl-7 flex flex-col gap-1.5">
+                <div class="flex flex-wrap gap-1">
+                    {badges_html}
+                </div>
                 <div class="flex items-center gap-1.5 text-xs text-gray-500">
                     <span class="font-mono text-gray-400">Provider:</span>
                     <div class="flex items-center gap-1.5 bg-gray-50 px-2 py-1 rounded border border-gray-100">

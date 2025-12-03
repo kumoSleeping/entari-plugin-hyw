@@ -2,7 +2,8 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 import time
 
-from arclet.entari import metadata, listen, Session, plugin_config, BasicConfModel, plugin
+from arclet.alconna import Alconna, Args, AllParam, CommandMeta, Option, Arparma, MultiVar, store_true
+from arclet.entari import metadata, listen, Session, plugin_config, BasicConfModel, plugin, command
 from arclet.entari import MessageChain, Text, Image, MessageCreatedEvent, Quote, At
 from satori.element import Custom
 from loguru import logger
@@ -12,11 +13,14 @@ from arclet.entari.event.command import CommandReceive
 from .core.hyw import HYW
 from .core.history import HistoryManager
 from .core.render import ContentRenderer
-from .utils.misc import process_onebot_json, process_images
+from .utils.misc import process_onebot_json, process_images, resolve_model_name
 from arclet.entari.event.lifespan import Startup, Ready
 
 import os
 import secrets
+import base64
+
+import re
 
 @dataclass
 class HywConfig(BasicConfModel):
@@ -36,6 +40,7 @@ class HywConfig(BasicConfModel):
     reaction: bool = True
     quote: bool = True
     jina_timeout: int = 15
+    temperature: float = 0.4
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
@@ -48,6 +53,21 @@ class GlobalCache:
 global_cache = GlobalCache()
 
 from satori.exception import ActionFailed
+from satori.adapters.onebot11.reverse import _Connection
+
+# Monkeypatch to suppress ActionFailed for get_msg
+original_call_api = _Connection.call_api
+
+async def patched_call_api(self, action: str, params: dict = None):
+    try:
+        return await original_call_api(self, action, params)
+    except ActionFailed as e:
+        if action == "get_msg":
+            logger.warning(f"Suppressed ActionFailed for get_msg: {e}")
+            return None
+        raise e
+
+_Connection.call_api = patched_call_api
 
 EMOJI_TO_CODE = {
     "✨": "10024",
@@ -86,22 +106,34 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
     logger.info(f"reply: {session.reply}")
     if session.reply:
         try:
-            try:
-                if session.reply.origin.user.id == session.event.login.user.id:
-                    logger.info("Reply is from me")
-                else:
-                    mc.extend(MessageChain(" ") + session.reply.origin.message)
-            except Exception:
+            # Check if reply is from self (the bot)
+            # 1. Check by Message ID (reliable for bot's own messages if recorded)
+            reply_msg_id = str(session.reply.origin.id) if hasattr(session.reply.origin, 'id') else None
+            is_bot = False
+            
+            if reply_msg_id and history_manager.is_bot_message(reply_msg_id):
+                is_bot = True
+                logger.info(f"Reply target {reply_msg_id} identified as bot message via history")
+
+            if is_bot:
+                logger.info("Reply is from me - ignoring content")
+            else:
+                logger.info(f"Reply is from user (or unknown) - including content")
                 mc.extend(MessageChain(" ") + session.reply.origin.message)
-        except Exception:
-            logger.error("Failed to process reply", exc_info=True)
+        except Exception as e:
+            logger.warning(f"Failed to process reply origin: {e}")
+            mc.extend(MessageChain(" ") + session.reply.origin.message)
     
-    # Filter and reconstruct MessageChain
+    # Filter and reconstruct MessageCh
+    # ain
     filtered_elements = mc.get(Text) + mc.get(Image) + mc.get(Custom)
     mc = MessageChain(filtered_elements)
     logger.info(f"mc: {mc}")
 
     text_content = str(mc.get(Text)).strip()
+    # Remove HTML image tags from text content to prevent "unreasonable code behavior"
+    text_content = re.sub(r'<img[^>]+>', '', text_content, flags=re.IGNORECASE)
+
     if not text_content and not mc.get(Image) and not mc.get(Custom):
         return
 
@@ -117,7 +149,13 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
     if conf.reaction: await react(session, "✨")
 
     try:
-        msg_text = mc.get(Text).strip() if mc.get(Text) else ""
+        msg_text = str(mc.get(Text)).strip() if mc.get(Text) else ""
+        msg_text = re.sub(r'<img[^>]+>', '', msg_text, flags=re.IGNORECASE)
+        
+        # If message is empty but has images, use a placeholder
+        if not msg_text and (mc.get(Image) or mc.get(Custom)):
+             msg_text = "[图片]"
+        
         for custom in [e for e in mc if isinstance(e, Custom)]:
             if custom.tag == 'onebot:json':
                 if decoded := process_onebot_json(custom.attributes()): msg_text += f"\n{decoded}"
@@ -130,7 +168,10 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         images, err = await process_images(mc, vision_model)
 
         # Call Agent
-        resp = await hyw.agent(str(mc), conversation_history=hist_payload, images=images, 
+        # Sanitize user_input: use extracted text only
+        safe_input = msg_text
+            
+        resp = await hyw.agent(safe_input, conversation_history=hist_payload, images=images, 
                               selected_model=model, selected_vision_model=vision_model, local_mode=local_mode)
         
         # Extract Response Data
@@ -216,10 +257,17 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             except Exception as e:
                 logger.warning(f"Failed to send extra content: {e}")
 
-        msg_chain = MessageChain(Image.of(path=Path(output_path).absolute()))
-        if conf.quote:
-            msg_chain.insert(0, Quote(session.event.message.id))
+        # Convert to base64
+        with open(output_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode()
             
+        # Use base64 data for Image
+        msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+        
+        if conf.quote:
+            msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+            
+        # Use reply_to instead of manual Quote insertion to avoid ActionFailed errors
         sent = await session.send(msg_chain)
         
         sent_id = next((str(e.id) for e in sent if hasattr(e, 'id')), None) if sent else None
@@ -234,10 +282,151 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
 
     except Exception as e:
         logger.exception(f"Error: {e}")
-        await session.send(f"Error: {e}")
+        err_msg = f"Error: {e}"
+        if conf.quote:
+             await session.send([Quote(session.event.message.id), err_msg])
+        else:
+             await session.send(err_msg)
+        
+        # Save conversation on error if response was generated
+        if 'resp' in locals() and resp and conf.save_conversation:
+            try:
+                # Use a temporary ID for error cases
+                error_id = f"error_{int(time.time())}_{secrets.token_hex(4)}"
+                history_manager.remember(error_id, resp.get("conversation_history", []), [], {"model": model_used if 'model_used' in locals() else "unknown", "error": str(e)}, context_id, code=display_session_id if 'display_session_id' in locals() else None)
+                history_manager.save_to_disk(error_id)
+                logger.info(f"Saved error conversation to {error_id}")
+            except Exception as save_err:
+                logger.error(f"Failed to save error conversation: {save_err}")
 
-# Commands
-from .command import question
+# Main Command (Question)
+alc = Alconna(
+    conf.question_command,
+    Option("-v|--vision", Args["vision_model", str], help_text="设置视觉模型(设为off禁用)"),
+    Option("-t|--text", Args["text_model", str], help_text="设置文本模型"),
+    Option("-c|--code", Args["code", str], help_text="继续指定会话"),
+    Args["list_models;?", "-m|--models"],
+    Args["all_chat;?", "-a"],
+    Args["local_mode;?", "-l"],
+    Args["all_param?", MultiVar(str | Image | Custom)],
+    meta=CommandMeta(
+        compact=False, 
+        description=f"""使用方法:
+        {conf.question_command} -a : 列出所有会话
+        {conf.question_command} -m : 列出所有模型
+        {conf.question_command} -v <模型名> -t <模型名> : 设置主要视觉模型和文本模型
+        {conf.question_command} -l : 开启本地模式 (关闭Web索引)
+        {conf.question_command} -c <4位消息码> : 继续指定会话
+        {conf.question_command} <问题> : 发起问题
+"""
+        )
+)
+
+@command.on(alc)
+async def handle_question_command(session: Session[MessageCreatedEvent], result: Arparma):
+    """Handle main Question command"""
+    logger.info(f"Question Command Triggered. Message: {session.event.message}")
+    
+    args = result.all_matched_args
+    logger.info(f"Matched Args: {args}")
+    
+    text_model_val = args.get("text_model")
+    vision_model_val = args.get("vision_model")
+    code_val = args.get("code")
+    all_flag_val = args.get("all_chat")
+    list_models_val = args.get("list_models")
+    local_mode_val = True if args.get("local_mode") else False
+    logger.info(f"Local mode: {local_mode_val} (type: {type(local_mode_val)})")
+    
+    # Handle -m (List Models)
+    if list_models_val:
+        # global_cache is already imported/defined in __init__.py
+        
+        if global_cache.models_image_path and os.path.exists(global_cache.models_image_path):
+            logger.info(f"Using cached models list: {global_cache.models_image_path}")
+            with open(global_cache.models_image_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode()
+            msg = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+            if conf.quote: msg = MessageChain(Quote(session.event.message.id)) + msg
+            await session.send(msg)
+            return
+
+        output_dir = "data/cache"
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = f"{output_dir}/models_list_cache.png"
+        
+        await renderer.render_models_list(conf.models, output_path, default_base_url=conf.base_url)
+        global_cache.models_image_path = os.path.abspath(output_path)
+        
+        with open(output_path, "rb") as f:
+            img_data = base64.b64encode(f.read()).decode()
+        msg = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+        if conf.quote: msg = MessageChain(Quote(session.event.message.id)) + msg
+        await session.send(msg)
+        return
+    
+    # Handle -a (List History)
+    if all_flag_val:
+        context_id = f"guild_{session.guild.id}" if session.guild else f"user_{session.user.id}"
+        keys = history_manager.list_by_context(context_id, limit=10)
+        if not keys:
+            msg = "暂无历史会话"
+            if conf.quote: await session.send([Quote(session.event.message.id), msg])
+            else: await session.send(msg)
+            return
+            
+        msg = "历史会话 [最近10条]\n"
+        for i, key in enumerate(keys):
+            short_code = history_manager.get_code_by_key(key) or "????"
+            hist = history_manager.get_history(key)
+            preview = "..."
+            if hist and len(hist) > 0:
+                last_content = hist[-1].get("content", "")
+                preview = (last_content[:20] + "...") if len(last_content) > 20 else last_content
+            
+            msg += f"{short_code} {preview}\n"
+        if conf.quote: await session.send([Quote(session.event.message.id), msg])
+        else: await session.send(msg)
+        return
+    
+    selected_vision_model = None
+    selected_text_model = None
+    
+    if vision_model_val:
+        if vision_model_val.lower() == "off":
+            selected_vision_model = "off"
+        else:
+            selected_vision_model, err = resolve_model_name(vision_model_val, conf.models)
+            if err:
+                if conf.quote: await session.send([Quote(session.event.message.id), err])
+                else: await session.send(err)
+                return
+        logger.info(f"Selected vision model: {selected_vision_model}")
+        
+    if text_model_val:
+        selected_text_model, err = resolve_model_name(text_model_val, conf.models)
+        if err:
+            if conf.quote: await session.send([Quote(session.event.message.id), err])
+            else: await session.send(err)
+            return
+        logger.info(f"Selected text model: {selected_text_model}")
+        
+    # Determine History to Continue
+    target_key = None
+    context_id = f"guild_{session.guild.id}" if session.guild else f"user_{session.user.id}"
+    
+    # 1. Explicit Code
+    if code_val:
+        target_code = code_val
+        target_key = history_manager.get_key_by_code(target_code)
+        if not target_key:
+            msg = f"未找到代码为 {target_code} 的会话"
+            if conf.quote: await session.send([Quote(session.event.message.id), msg])
+            else: await session.send(msg)
+            return
+        logger.info(f"Question: Continuing session {target_code} -> {target_key}")
+                
+    await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val)
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="2.3.3", config=HywConfig)
 
@@ -262,15 +451,6 @@ async def on_startup():
         logger.error(f"Failed to cache models list: {e}")
 
 
-@leto.on(MessageCreatedEvent)
-async def on_message_created(session: Session[MessageCreatedEvent]):
-    text = str(MessageChain(session.event.message).get(Text)).strip()
-    prefixes = [conf.question_command]
-    if any(text.startswith(p) for p in prefixes): return
-    
-    if session.reply:
-        qid = str(session.reply.origin.id) if hasattr(session.reply.origin, 'id') else None
-        if qid and history_manager.get_conversation_id(qid):
-            await process_request(session, MessageChain(session.event.message))
+
 
 

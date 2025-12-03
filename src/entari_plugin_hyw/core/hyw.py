@@ -11,11 +11,12 @@ from openai import AsyncOpenAI
 
 from ..utils.browser import BrowserTool
 from ..utils.prompts import (
-    BASE_SYSTEM_PROMPT, 
+    WEB_TOOLS_SYSTEM_PROMPT, 
     VISION_EXPERT_SYSTEM_PROMPT, 
     ADDITIONAL_RULES_PROMPT, 
     FINAL_TURN_PROMPT,
-    NO_WEB_PROMPT
+    NO_TOOLS_SYSTEM_PROMPT,
+    INTERNAL_SEARCH_SYSTEM_PROMPT
 )
 
 @dataclass
@@ -31,6 +32,7 @@ class HYWConfig:
     jina_api_key: Optional[str] = None
     extra_body: Optional[Dict[str, Any]] = None
     enable_browser_fallback: bool = False
+    temperature: float = 0.4
 
 class HYW:
     def __init__(self, config: HYWConfig):
@@ -47,7 +49,7 @@ class HYW:
             for m in sorted(self.config.models, key=lambda x: not x.get("is_default")):
                 if m.get("api_key"):
                     self.config.api_key = m.get("api_key")
-                    self.config.base_url = m.get("base_url", self.config.base_url)
+                    # self.config.base_url = m.get("base_url", self.config.base_url) # Do not overwrite global base_url
                     break
 
     def _init_tools(self):
@@ -100,7 +102,8 @@ class HYW:
             
             resp = await client.chat.completions.create(
                 model=model,
-                messages=[{"role": "system", "content": VISION_EXPERT_SYSTEM_PROMPT}, {"role": "user", "content": content}]
+                messages=[{"role": "system", "content": VISION_EXPERT_SYSTEM_PROMPT}, {"role": "user", "content": content}],
+                temperature=self.config.temperature
             )
             return resp.choices[0].message.content or "", model
         except Exception as e:
@@ -143,6 +146,7 @@ class HYW:
     def _clean_history(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Clean history for saving/returning: remove system/tool messages and tool_calls"""
         cleaned = []
+        last_msg = None
         for msg in messages:
             if msg.get("role") in ("system", "tool"):
                 continue
@@ -155,7 +159,13 @@ class HYW:
             if not new_msg.get("content"):
                 continue
             
+            # Deduplication: Skip if identical to last message
+            if last_msg and new_msg.get("role") == last_msg.get("role") and new_msg.get("content") == last_msg.get("content"):
+                continue
+            
             cleaned.append(new_msg)
+            last_msg = new_msg
+            
         return cleaned
 
     def _format_extra_content(self, annotations: Any) -> str:
@@ -180,6 +190,95 @@ class HYW:
                 "content": f"Error executing tool {tool_call.function.name}: {str(e)}"
             }
 
+    def _build_chat_messages(self, system_prompt: str, user_input: Any, conversation_history: List[Dict], max_turns: int, img_analysis: str = "") -> List[Dict[str, Any]]:
+        """Construct the full message list for the LLM, including system prompts and history."""
+        messages = [{"role": "system", "content": system_prompt}]
+        if img_analysis:
+            messages.append({"role": "system", "content": f"[图片分析报告]\n{img_analysis}"})
+        
+        user_turns = 1
+        if conversation_history:
+            user_turns = len([m for m in conversation_history if m.get("role") == "user"]) + 1
+            messages.append({"role": "system", "content": ADDITIONAL_RULES_PROMPT})
+            if user_turns >= max_turns:
+                messages.append({"role": "system", "content": FINAL_TURN_PROMPT})
+            
+            # Filter out system messages from history to avoid duplication or confusion
+            messages.extend([m for m in conversation_history if m.get("role") != "system"])
+            
+        messages.append({"role": "user", "content": user_input})
+        return messages
+
+    def _parse_tagged_response(self, content: str) -> Dict[str, Any]:
+        """Parse response with ===section=== tags"""
+        structured = {
+            "response": "",
+            "speculation": [],
+            "references": [],
+            "send": ""
+        }
+        
+        try:
+            # Extract sections
+            sections = {}
+            current_section = None
+            current_content = []
+            
+            for line in content.split('\n'):
+                line = line.strip()
+                if line.startswith('===') and line.endswith('==='):
+                    if current_section:
+                        sections[current_section] = '\n'.join(current_content).strip()
+                    current_section = line.strip('=')
+                    current_content = []
+                elif line == "===START===" or line == "===END===":
+                    continue
+                else:
+                    if current_section:
+                        current_content.append(line)
+            
+            # Capture last section
+            if current_section:
+                sections[current_section] = '\n'.join(current_content).strip()
+                
+            # Map to structured fields
+            if "response" in sections:
+                structured["response"] = sections["response"]
+            elif not sections:
+                structured["response"] = content
+            else:
+                pass
+
+            # Parse speculation
+            spec_text = sections.get("speculation", "")
+            if spec_text:
+                specs = []
+                for line in spec_text.split('\n'):
+                    # Remove list markers like "1. ", "- "
+                    cleaned = re.sub(r'^(\d+\.|-|\*)\s*', '', line).strip()
+                    if cleaned:
+                        specs.append(cleaned)
+                structured["speculation"] = specs
+                
+            # Parse references
+            ref_text = sections.get("references", "")
+            if ref_text:
+                refs = []
+                # Match markdown links: [Title](url)
+                matches = re.findall(r'\[(.*?)\]\((.*?)\)', ref_text)
+                for title, url in matches:
+                    refs.append({"title": title, "url": url})
+                structured["references"] = refs
+                
+            # Parse send
+            structured["send"] = sections.get("send", "")
+            
+        except Exception as e:
+            logger.error(f"Failed to parse tagged response: {e}")
+            structured["response"] = content
+            
+        return structured
+
     async def agent(self, user_input: str, conversation_history: List[Dict] = None, images: List[str] = None, 
                    selected_model: str = None, selected_vision_model: str = None, local_mode: bool = False) -> Dict[str, Any]:
         start_time = time.time()
@@ -200,6 +299,9 @@ class HYW:
         if model_conf:
             max_turns = model_conf.get("max_turns", 5)
 
+        # Check capabilities
+
+
         # Image Analysis
         vision_model = None
         if images:
@@ -217,43 +319,56 @@ class HYW:
                 content.append({"type": "image_url", "image_url": {"url": url}})
 
             # Determine model
-            model = selected_vision_model or next((m["name"] for m in self.config.models if m.get("is_vision_default")), self.config.model_name)
+            # Find first model that is vision default AND has vision capability
+            default_vision = next((m["name"] for m in self.config.models if m.get("is_vision_default") and m.get("vision")), None)
+            
+            # Debug logging
+            logger.info(f"Vision Selection Debug: selected={selected_vision_model}, default={default_vision}, global={self.config.model_name}")
+            # for m in self.config.models:
+            #     if m.get("vision"):
+            #         logger.info(f"Candidate: {m['name']} (default={m.get('is_vision_default')})")
+            
+            model = selected_vision_model or default_vision or self.config.model_name
+            logger.info(f"Final Vision Model: {model}")
+            
             client = self._get_client(model)
             
             try:
+                # Use shared message construction logic
+                messages = self._build_chat_messages(VISION_EXPERT_SYSTEM_PROMPT, content, conversation_history, max_turns)
+                
                 resp = await client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "system", "content": VISION_EXPERT_SYSTEM_PROMPT}, {"role": "user", "content": content}]
+                    messages=messages,
+                    temperature=self.config.temperature
                 )
-                description = resp.choices[0].message.content or ""
+                raw_content = resp.choices[0].message.content or ""
                 vision_model = model
+                
+                # Parse tagged response
+                structured = self._parse_tagged_response(raw_content)
+                description = structured["response"]
+                
             except Exception as e:
                 logger.error(f"Image analysis failed: {e}")
                 description = f"图片分析失败: {e}"
                 vision_model = model
+                structured = {"response": description, "speculation": [], "references": []}
 
             stats["vision_duration"] = time.time() - t0
             stats["time"] = time.time() - start_time
-            
-            # Construct structured response manually
-            structured = {
-                "response": description,
-                "speculation": ["继续研究"],
-                "references": []
-            }
             
             # Construct history
             messages = []
             if conversation_history:
                 messages.extend(conversation_history)
-            messages.append({"role": "user", "content": user_input or "[图片]"})
+            messages.append({"role": "user", "content": user_input or " "})
             
-            # Format history content like the main loop does
-            history_content = description
-            if structured.get("speculation"):
-                history_content += "\n\n[Suggestions]:\n" + "\n".join([f"- {s}" for s in structured["speculation"]])
-            
-            messages.append({"role": "assistant", "content": history_content})
+            # Format history content (using the raw content to preserve tags for future context if needed, 
+            # or just the parsed response? 
+            # The prompt asks for tags, so the model expects to see tags in history.
+            # Let's store the RAW content in history so the model sees its own format.)
+            messages.append({"role": "assistant", "content": raw_content})
             
             clean_msgs = self._clean_history(messages)
             
@@ -268,24 +383,29 @@ class HYW:
 
         # Prepare Messages
         img_analysis = ""
-        system_prompt = BASE_SYSTEM_PROMPT.format(tools_desc=self.tools_desc)
-        tools_to_use = self.tools
         
+        # Default to NO_TOOLS (Local)
+        system_prompt = NO_TOOLS_SYSTEM_PROMPT
+        tools_to_use = None
+        
+        # Check capabilities
         if local_mode:
-            system_prompt = NO_WEB_PROMPT
+            system_prompt = NO_TOOLS_SYSTEM_PROMPT
+            tools_to_use = None
+        elif model_conf.get("tools", False):
+            # Tools enabled
+            system_prompt = WEB_TOOLS_SYSTEM_PROMPT.format(tools_desc=self.tools_desc)
+            tools_to_use = self.tools
+        elif model_conf.get("online", False):
+            # Online but no tools (Internal Search)
+            system_prompt = INTERNAL_SEARCH_SYSTEM_PROMPT
+            tools_to_use = None
+        else:
+            # Default/Offline
+            system_prompt = NO_TOOLS_SYSTEM_PROMPT
             tools_to_use = None
             
-        messages = [{"role": "system", "content": system_prompt}]
-        if img_analysis: messages.append({"role": "system", "content": f"[图片分析报告]\n{img_analysis}"})
-        
-        user_turns = 1
-        if conversation_history:
-            user_turns = len([m for m in conversation_history if m.get("role") == "user"]) + 1
-            messages.append({"role": "system", "content": ADDITIONAL_RULES_PROMPT})
-            if user_turns >= max_turns: messages.append({"role": "system", "content": FINAL_TURN_PROMPT})
-            messages.extend([m for m in conversation_history if m.get("role") != "system"])
-            
-        messages.append({"role": "user", "content": user_input})
+        messages = self._build_chat_messages(system_prompt, user_input, conversation_history, max_turns, img_analysis)
         logger.info(f"Processing: {user_input[:50]}... (Model: {model})")
 
         # Main Loop
@@ -300,7 +420,8 @@ class HYW:
                 try:
                     resp = await client.chat.completions.create(
                         model=model, messages=messages, tools=tools_to_use or None, tool_choice="auto" if tools_to_use else None,
-                        extra_body=self.config.extra_body
+                        extra_body=self.config.extra_body,
+                        temperature=self.config.temperature
                     )
                     if resp and resp.choices:
                         break
@@ -380,32 +501,7 @@ class HYW:
                 
                 # Final response
                 content = msg.content or ""
-                try:
-                    # Robust JSON extraction: find first '{' and last '}'
-                    start_idx = content.find("{")
-                    end_idx = content.rfind("}")
-                    
-                    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                        json_str = content[start_idx:end_idx+1]
-                        structured = json.loads(json_str)
-                        
-                        # Manually format structured data into text for history
-                        history_content = structured.get("response", "")
-                        
-                        # Append suggestions
-                        if structured.get("speculation"):
-                            history_content += "\n\n[Suggestions]:\n" + "\n".join([f"- {s}" for s in structured["speculation"]])
-                            
-                        # Append references
-                        if structured.get("references"):
-                            history_content += "\n\n[References]:\n" + "\n".join([f"- {r.get('title', 'Link')}: {r.get('url', '#')}" for r in structured["references"]])
-                            
-                        # Update the conversation history with the formatted text
-                        if messages:
-                            messages[-1]["content"] = history_content
-                    else:
-                        structured = {}
-                except: structured = {}
+                structured = self._parse_tagged_response(content)
                 
                 clean_msgs = self._clean_history(messages)
                 stats["time"] = time.time() - start_time

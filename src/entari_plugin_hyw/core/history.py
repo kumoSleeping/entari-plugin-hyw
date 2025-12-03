@@ -14,6 +14,10 @@ class HistoryManager:
         self._key_to_code: Dict[str, str] = {} # key -> code
         self._context_history: Dict[str, List[str]] = {} # context_id -> list of keys
 
+    def is_bot_message(self, message_id: str) -> bool:
+        """Check if the message ID belongs to a bot message"""
+        return message_id in self._history
+
     def generate_short_code(self) -> str:
         """Generate a unique 4-digit hex code"""
         while True:

@@ -117,6 +117,6 @@ def resolve_model_name(input_str: str, models_config: List[Dict[str, Any]]) -> t
         if len(exact_norm) == 1:
             return exact_norm[0], None
             
-        return None, f"找到多个匹配的模型: {', '.join(matches[:5])}{'...' if len(matches)>5 else ''}"
+        return matches[0], None
     
     return None, f"未找到包含 '{input_str}' 的模型"

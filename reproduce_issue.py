@@ -1,38 +1,49 @@
+import asyncio
+import os
+import sys
 
-import markdown
-import re
+# Add the directory containing render.py to sys.path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+render_dir = os.path.join(current_dir, "src", "entari_plugin_hyw", "core")
+sys.path.insert(0, render_dir)
 
-def test_render(text):
-    # Simulate the preprocessing in render.py
-    # Fix lists
-    text = re.sub(r'(?m)^(?<=\S)\n(?=\s*(\d+\.|[-*+]) )', r'\n\n', text)
+from render import ContentRenderer
+
+async def test_render_broken_image():
+    renderer = ContentRenderer()
     
-    # Render
-    html = markdown.markdown(
-        text.strip(), 
-        extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
-    )
-    return html
+    # Markdown with a broken image
+    markdown_content = """
+# Test Broken Image
 
-# Case 1: Header with blank line (Should work)
-text1 = "Some text\n\n#### Title"
-print(f"--- Case 1 ---\nInput:\n{text1}\nOutput:\n{test_render(text1)}\n")
+Here is a broken image:
+![Broken Image](https://example.com/nonexistent.png)
 
-# Case 2: Header without blank line (Suspected failure)
-text2 = "Some text\n#### Title"
-print(f"--- Case 2 ---\nInput:\n{text2}\nOutput:\n{test_render(text2)}\n")
-
-# Case 3: Proposed fix
-def test_render_fixed(text):
-    # Fix lists
-    text = re.sub(r'(?m)^(?<=\S)\n(?=\s*(\d+\.|[-*+]) )', r'\n\n', text)
-    # Fix headers
-    text = re.sub(r'(?m)^(?<=\S)\n(?=#{1,6} )', r'\n\n', text)
+Here is a working image (logo):
+![Google Logo](https://www.google.com/images/branding/googlelogo/2x/googlelogo_color_272x92dp.png)
+    """
     
-    html = markdown.markdown(
-        text.strip(), 
-        extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
-    )
-    return html
+    output_path = "test_broken_image.png"
+    if os.path.exists(output_path):
+        os.remove(output_path)
+        
+    print("Rendering...")
+    try:
+        await renderer.render(
+            markdown_content=markdown_content,
+            output_path=output_path,
+            model_name="test-model",
+            session_id="test-session"
+        )
+        print(f"Rendered to {output_path}")
+        
+        if os.path.exists(output_path):
+            print("Success: Output file created.")
+        else:
+            print("Failure: Output file not created.")
+            
+    except Exception as e:
+        print(f"Error during rendering: {e}")
 
-print(f"--- Case 3 (Fixed) ---\nInput:\n{text2}\nOutput:\n{test_render_fixed(text2)}\n")
+if __name__ == "__main__":
+    asyncio.run(test_render_broken_image())

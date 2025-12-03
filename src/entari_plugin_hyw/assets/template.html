@@ -61,7 +61,7 @@
         .hljs-number, .hljs-symbol, .hljs-bullet { color: #ea580c !important; } /* orange-600 */
         .hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-title, .hljs-section, .hljs-doctag, .hljs-type, .hljs-name, .hljs-strong { font-weight: bold; }
 
-        .markdown-body code { @apply bg-white px-1.5 py-0.5 rounded text-sm font-mono text-pink-600 border border-gray-100; }
+        .markdown-body code { @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-pink-600; }
         .markdown-body pre { @apply bg-white p-4 rounded-lg overflow-x-auto mb-4 text-sm leading-normal border border-gray-100 shadow-sm; }
         .markdown-body pre code { @apply bg-transparent p-0 text-gray-800 border-none; }
         .markdown-body img { @apply max-w-[60%] h-auto rounded-lg my-4 shadow-sm border border-gray-100; }
@@ -159,9 +159,9 @@
 </head>
 
 <body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
-    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-3 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-0 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
         <!-- Response Card -->
-        <div class="bg-[#f2f2f2] rounded-2xl p-5 shadow-sm border-[1.5px] border-gray-300 overflow-hidden">
+        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
             {{ response_header }}
             <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800">
                 {{ content_html }}
@@ -182,26 +182,28 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            // 1. Highlight Code Blocks
-            hljs.highlightAll();
-
-            // 2. Render Mermaid
-            mermaid.initialize({
-                startOnLoad: false,
-                theme: 'default',
-                securityLevel: 'loose',
-            });
-
-            // Find mermaid blocks (rendered as code blocks with language-mermaid class by python-markdown)
+            // 1. Prepare Mermaid Blocks (Before Highlight.js)
             // Python markdown 'fenced_code' extension renders: <pre><code class="language-mermaid">...</code></pre>
-            // We need to transform this for mermaid.js
+            // We need to transform this for mermaid.js and prevent Highlight.js from messing it up
             const mermaidBlocks = document.querySelectorAll('code.language-mermaid');
             mermaidBlocks.forEach(block => {
                 const pre = block.parentElement;
                 const div = document.createElement('div');
                 div.className = 'mermaid';
+                // Decode HTML entities (e.g. &gt; -> >) just in case, though textContent usually handles it.
+                // However, if highlight.js ran, it would be complex. We are running before it now.
                 div.textContent = block.textContent;
                 pre.replaceWith(div);
+            });
+
+            // 2. Highlight Code Blocks (Skip mermaid as they are now divs)
+            hljs.highlightAll();
+
+            // 3. Render Mermaid
+            mermaid.initialize({
+                startOnLoad: false,
+                theme: 'default',
+                securityLevel: 'loose',
             });
 
             setTimeout(() => {
