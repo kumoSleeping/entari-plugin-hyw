@@ -100,7 +100,8 @@ async def react(session: Session, emoji: str):
 
 async def process_request(session: Session[MessageCreatedEvent], all_param: Optional[MessageChain] = None, 
                          selected_model: Optional[str] = None, selected_vision_model: Optional[str] = None, 
-                         conversation_key_override: Optional[str] = None, local_mode: bool = False):
+                         conversation_key_override: Optional[str] = None, local_mode: bool = False,
+                         next_prompt: Optional[str] = None, next_text_model: Optional[str] = None, next_vision_model: Optional[str] = None):
     logger.info(f"Processing request: {all_param}")
     mc = MessageChain(all_param)
     logger.info(f"reply: {session.reply}")
@@ -124,8 +125,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             logger.warning(f"Failed to process reply origin: {e}")
             mc.extend(MessageChain(" ") + session.reply.origin.message)
     
-    # Filter and reconstruct MessageCh
-    # ain
+    # Filter and reconstruct MessageChain
     filtered_elements = mc.get(Text) + mc.get(Image) + mc.get(Custom)
     mc = MessageChain(filtered_elements)
     logger.info(f"mc: {mc}")
@@ -161,28 +161,83 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
                 if decoded := process_onebot_json(custom.attributes()): msg_text += f"\n{decoded}"
                 break
         
-        # Model Selection
+        # Model Selection (Step 1)
         model = selected_model or meta.get("model")
         vision_model = selected_vision_model or meta.get("vision_model")
 
         images, err = await process_images(mc, vision_model)
 
-        # Call Agent
+        # Call Agent (Step 1)
         # Sanitize user_input: use extracted text only
         safe_input = msg_text
             
         resp = await hyw.agent(safe_input, conversation_history=hist_payload, images=images, 
                               selected_model=model, selected_vision_model=vision_model, local_mode=local_mode)
         
+        # Step 1 Results
+        step1_vision_model = resp.get("vision_model_used")
+        step1_model = resp.get("model_used")
+        step1_history = resp.get("conversation_history", [])
+        step1_stats = resp.get("stats", {})
+        
+        final_resp = resp
+        
+        # Step 2 (Optional)
+        if next_prompt:
+            logger.info(f"Executing Step 2 with prompt: {next_prompt}")
+            
+            # Use Step 1 history as base for Step 2
+            # hyw.agent already returns the updated history including the new turn
+            # So we just pass step1_history
+            
+            # Determine Step 2 models
+            # If not specified, inherit from Step 1 or config? 
+            # Usually inherit from config or meta if not specified in -n
+            step2_model = next_text_model or model
+            step2_vision_model = next_vision_model or vision_model # Probably not used if no new images, but consistent
+            
+            # No new images for Step 2 usually, unless we want to carry over images?
+            # The user said "First round image model, second round text model".
+            # Usually Step 2 is text-only follow-up.
+            # But hyw.agent stateless? No, we pass history.
+            # We don't pass 'images' again to Step 2 unless we want them re-analyzed.
+            # If Step 1 analyzed images, the analysis is in history (as assistant message or system message?).
+            # In hyw.agent, image analysis result is added to history.
+            # So we don't need to pass images again.
+            
+            resp2 = await hyw.agent(str(next_prompt), conversation_history=step1_history, images=None,
+                                   selected_model=step2_model, selected_vision_model=step2_vision_model, local_mode=local_mode)
+            
+            final_resp = resp2
+            
+            # Merge Stats
+            if "stats" in resp2:
+                for k, v in resp2["stats"].items():
+                    if isinstance(v, (int, float)) and k in step1_stats:
+                        step1_stats[k] += v
+                    elif k == "visited_domains":
+                        step1_stats[k] = list(set(step1_stats.get(k, []) + v))
+                    else:
+                        step1_stats[k] = v
+            final_resp["stats"] = step1_stats
+            
+            # Merge Model Info for Display
+            # We want to show Step 1 Vision Model AND Step 2 Text Model
+            if step1_vision_model:
+                final_resp["vision_model_used"] = step1_vision_model
+            # final_resp["model_used"] is already from Step 2
+            
+        
         # Extract Response Data
-        content = resp.get("llm_response", "")
-        structured = resp.get("structured_response", {})
+        content = final_resp.get("llm_response", "")
+        structured = final_resp.get("structured_response", {})
         
         # Render
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
             output_path = tf.name
-        model_used = resp.get("model_used")
+        model_used = final_resp.get("model_used")
+        vision_model_used = final_resp.get("vision_model_used")
         
         icon = conf.icon
         if model_used:
@@ -190,7 +245,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
                 icon = m_conf.get("icon", icon)
 
         # Calculate turns and session_id
-        turns = len([m for m in resp.get("conversation_history", []) if m.get("role") == "user"])
+        turns = len([m for m in final_resp.get("conversation_history", []) if m.get("role") == "user"])
         
         # Determine max_turns
         max_turns = 10
@@ -211,7 +266,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         # Determine vision base url and icon
         vision_base_url = None
         vision_icon = None
-        vision_model_used = resp.get("vision_model_used")
+        
         if vision_model_used:
             if v_conf := next((m for m in conf.models if m.get("name") == vision_model_used), None):
                 vision_base_url = v_conf.get("base_url")
@@ -230,7 +285,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             markdown_content=content,
             output_path=output_path,
             suggestions=structured.get("speculation", []),
-            stats=resp.get("stats", {}),
+            stats=final_resp.get("stats", {}),
             references=structured.get("references", []),
             model_name=render_model_name,
             search_provider="Jina Fetch" if conf.browser_tool == "jina" else "Playwright",
@@ -274,7 +329,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
         related = [msg_id] + ([str(session.reply.origin.id)] if session.reply and hasattr(session.reply.origin, 'id') else [])
         
-        history_manager.remember(sent_id, resp.get("conversation_history", []), related, {"model": model_used}, context_id, code=display_session_id)
+        history_manager.remember(sent_id, final_resp.get("conversation_history", []), related, {"model": model_used}, context_id, code=display_session_id)
         
         if conf.save_conversation and sent_id:
             history_manager.save_to_disk(sent_id)
@@ -299,12 +354,21 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             except Exception as save_err:
                 logger.error(f"Failed to save error conversation: {save_err}")
 
+# Secondary Parser for -n content
+next_alc = Alconna(
+    "next",
+    Option("-v|--vision", Args["vision_model", str], help_text="设置视觉模型(设为off禁用)"),
+    Option("-t|--text", Args["text_model", str], help_text="设置文本模型"),
+    Args["prompt", AllParam],
+)
+
 # Main Command (Question)
 alc = Alconna(
     conf.question_command,
     Option("-v|--vision", Args["vision_model", str], help_text="设置视觉模型(设为off禁用)"),
     Option("-t|--text", Args["text_model", str], help_text="设置文本模型"),
     Option("-c|--code", Args["code", str], help_text="继续指定会话"),
+    Option("-n|--next", Args["next_input", AllParam], help_text="后续操作"),
     Args["list_models;?", "-m|--models"],
     Args["all_chat;?", "-a"],
     Args["local_mode;?", "-l"],
@@ -317,6 +381,7 @@ alc = Alconna(
         {conf.question_command} -v <模型名> -t <模型名> : 设置主要视觉模型和文本模型
         {conf.question_command} -l : 开启本地模式 (关闭Web索引)
         {conf.question_command} -c <4位消息码> : 继续指定会话
+        {conf.question_command} -n <后续提示词> : 在第一步完成后执行后续操作 (支持 -t/-v)
         {conf.question_command} <问题> : 发起问题
 """
         )
@@ -426,7 +491,55 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
             return
         logger.info(f"Question: Continuing session {target_code} -> {target_key}")
                 
-    await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val)
+    next_input_val = args.get("next_input")
+    next_text_model = None
+    next_vision_model = None
+    next_prompt = None
+    
+    if next_input_val:
+        # Parse secondary command
+        # next_input_val is likely a MessageChain or string depending on AllParam behavior with Alconna
+        # We need to ensure it's a string or compatible input for parse
+        logger.info(f"Parsing next input: {next_input_val}")
+        try:
+            # Convert next_input_val to string
+            if isinstance(next_input_val, list):
+                # It's a list of segments (e.g. [Text(...)])
+                # We need to join them into a string
+                # Assuming they are Satori elements or similar
+                cmd_str = "".join(str(x) for x in next_input_val)
+            else:
+                cmd_str = str(next_input_val)
+            
+            # Prepend 'next' header for Alconna
+            parse_target = f"next {cmd_str}"
+            
+            next_res = next_alc.parse(parse_target)
+            if next_res.matched:
+                next_args = next_res.all_matched_args
+                next_text_model = next_args.get("text_model")
+                next_vision_model = next_args.get("vision_model")
+                next_prompt = next_args.get("prompt")
+                
+                # If prompt is AllParam, it might be captured as a list or string depending on Alconna version
+                # If it's a list, join it back to string
+                if isinstance(next_prompt, list):
+                     next_prompt = "".join(str(x) for x in next_prompt)
+                
+                logger.info(f"Next Command Parsed: text={next_text_model}, vision={next_vision_model}, prompt={next_prompt}")
+            else:
+                logger.warning(f"Next command parsing failed or no match for: {parse_target}")
+                # Fallback: treat the whole string as prompt if parsing failed (e.g. if it didn't match options but Alconna should have matched prompt)
+                # But next_alc has Args["prompt", AllParam], so it should match everything else.
+                # If it failed, maybe something else is wrong.
+                # Let's assume if it failed, we just use the raw string as prompt?
+                # But wait, if we prepend "next ", and next_alc starts with "next", it should match.
+                pass
+        except Exception as e:
+            logger.error(f"Failed to parse next command: {e}")
+
+    await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val, 
+                         next_prompt=next_prompt, next_text_model=next_text_model, next_vision_model=next_vision_model)
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="2.3.3", config=HywConfig)
 
