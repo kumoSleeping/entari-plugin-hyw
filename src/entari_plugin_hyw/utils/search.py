@@ -41,10 +41,6 @@ class SearchService:
             # Append mode
             url = f"{base}{sep}q={encoded_query}&language=zh-CN"
         
-        # Add auth token if configured
-        if getattr(self.config, "search_auth_token", None):
-            url += f"&auth_token={self.config.search_auth_token}"
-
         logger.info(f"SearchService: Fetching {url}")
 
         try:
@@ -138,9 +134,6 @@ class SearchService:
         else:
             url = f"{base}{sep}q={encoded_query}&iax=images&ia=images"
         
-        if getattr(self.config, "search_auth_token", None):
-            url += f"&auth_token={self.config.search_auth_token}"
-
         logger.info(f"SearchService: Fetching Images {url}")
         
         try:

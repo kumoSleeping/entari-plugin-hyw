@@ -92,6 +92,8 @@ class ProcessingPipeline:
         """
         start_time = time.time()
         stats = {"start_time": start_time, "tool_calls_count": 0}
+        # Token usage tracking for billing
+        usage_totals = {"input_tokens": 0, "output_tokens": 0}
         active_model = model_name or self.config.model_name
 
         current_history = conversation_history
@@ -118,12 +120,15 @@ class ProcessingPipeline:
                 )
                 vision_prompt_tpl = getattr(self.config, "vision_system_prompt", None) or VISION_SYSTEM_PROMPT
                 vision_prompt = vision_prompt_tpl.format(user_msgs=user_input or "[图片]")
-                vision_text = await self._run_vision_stage(
+                vision_text, vision_usage = await self._run_vision_stage(
                     user_input=user_input,
                     images=images,
                     model=vision_model,
                     prompt=vision_prompt,
                 )
+                # Add vision usage with vision-specific pricing
+                usage_totals["input_tokens"] += vision_usage.get("input_tokens", 0)
+                usage_totals["output_tokens"] += vision_usage.get("output_tokens", 0)
                 trace["vision"] = {
                     "model": vision_model,
                     "base_url": getattr(self.config, "vision_base_url", None) or self.config.base_url,
@@ -131,15 +136,19 @@ class ProcessingPipeline:
                     "user_input": user_input or "",
                     "images_count": len(images or []),
                     "output": vision_text,
+                    "usage": vision_usage,
                 }
 
             # Intruct + pre-search
             instruct_model = getattr(self.config, "intruct_model_name", None) or active_model
-            instruct_text, search_payloads, intruct_trace = await self._run_instruct_stage(
+            instruct_text, search_payloads, intruct_trace, intruct_usage = await self._run_instruct_stage(
                 user_input=user_input,
                 vision_text=vision_text,
                 model=instruct_model,
             )
+            # Add instruct usage
+            usage_totals["input_tokens"] += intruct_usage.get("input_tokens", 0)
+            usage_totals["output_tokens"] += intruct_usage.get("output_tokens", 0)
             trace["intruct"] = intruct_trace
 
             explicit_mcp_intent = "mcp" in (user_input or "").lower()
@@ -210,12 +219,15 @@ class ProcessingPipeline:
                 messages.extend(current_history)
 
                 tools_for_step = agent_tools if (agent_tools and step < max_steps) else None
-                response = await self._safe_llm_call(
+                response, step_usage = await self._safe_llm_call(
                     messages=messages,
                     model=active_model,
                     tools=tools_for_step,
                     tool_choice="auto" if tools_for_step else None,
                 )
+                # Accumulate agent usage
+                usage_totals["input_tokens"] += step_usage.get("input_tokens", 0)
+                usage_totals["output_tokens"] += step_usage.get("output_tokens", 0)
 
                 if response.tool_calls and tools_for_step:
                     tool_calls = response.tool_calls
@@ -270,6 +282,23 @@ class ProcessingPipeline:
             stats["total_time"] = time.time() - start_time
             stats["steps"] = step
 
+            # Calculate billing info
+            billing_info = {
+                "input_tokens": usage_totals["input_tokens"],
+                "output_tokens": usage_totals["output_tokens"],
+                "total_cost": 0.0,
+            }
+            # Calculate cost if any pricing is configured
+            input_price = getattr(self.config, "input_price", None) or 0.0
+            output_price = getattr(self.config, "output_price", None) or 0.0
+            
+            if input_price > 0 or output_price > 0:
+                # Price is per million tokens
+                input_cost = (usage_totals["input_tokens"] / 1_000_000) * input_price
+                output_cost = (usage_totals["output_tokens"] / 1_000_000) * output_price
+                billing_info["total_cost"] = input_cost + output_cost
+                logger.info(f"Billing: {usage_totals['input_tokens']} in @ ${input_price}/M + {usage_totals['output_tokens']} out @ ${output_price}/M = ${billing_info['total_cost']:.6f}")
+
             return {
                 "llm_response": final_content,
                 "structured_response": structured,
@@ -278,6 +307,7 @@ class ProcessingPipeline:
                 "vision_model_used": (selected_vision_model or getattr(self.config, "vision_model_name", None)) if images else None,
                 "conversation_history": current_history,
                 "trace_markdown": trace_markdown,
+                "billing_info": billing_info,
             }
 
         except Exception as e:
@@ -361,6 +391,7 @@ class ProcessingPipeline:
     async def _safe_llm_call(self, messages, model, tools=None, tool_choice=None, client: Optional[AsyncOpenAI] = None):
         """
         Wrap LLM calls with timeout and error handling.
+        Returns a tuple of (message, usage_dict) where usage_dict contains input_tokens and output_tokens.
         """
         try:
             return await asyncio.wait_for(
@@ -369,10 +400,10 @@ class ProcessingPipeline:
             )
         except asyncio.TimeoutError:
             logger.error("LLM Call Timed Out")
-            return type("obj", (object,), {"content": "Error: The model took too long to respond.", "tool_calls": None})()
+            return type("obj", (object,), {"content": "Error: The model took too long to respond.", "tool_calls": None})(), {"input_tokens": 0, "output_tokens": 0}
         except Exception as e:
             logger.error(f"LLM Call Failed: {e}")
-            return type("obj", (object,), {"content": f"Error: Model failure ({e})", "tool_calls": None})()
+            return type("obj", (object,), {"content": f"Error: Model failure ({e})", "tool_calls": None})(), {"input_tokens": 0, "output_tokens": 0}
 
     async def _do_llm_request(self, messages, model, tools, tool_choice, client: AsyncOpenAI):
         try:
@@ -391,7 +422,14 @@ class ProcessingPipeline:
             temperature=self.config.temperature,
         )
         logger.info(f"LLM Request RECEIVED after {time.time() - t0:.2f}s")
-        return response.choices[0].message
+        
+        # Extract usage information
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        if hasattr(response, "usage") and response.usage:
+            usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
+            usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
+        
+        return response.choices[0].message, usage
 
     async def _route_tool(self, tool_call, mcp_session=None):
         name = tool_call.function.name
@@ -412,7 +450,8 @@ class ProcessingPipeline:
 
         return f"Unknown tool {name}"
 
-    async def _run_vision_stage(self, user_input: str, images: List[str], model: str, prompt: str) -> str:
+    async def _run_vision_stage(self, user_input: str, images: List[str], model: str, prompt: str) -> Tuple[str, Dict[str, int]]:
+        """Returns (vision_text, usage_dict)."""
         content_payload: List[Dict[str, Any]] = [{"type": "text", "text": user_input or ""}]
         for img_b64 in images:
             url = f"data:image/png;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
@@ -422,16 +461,17 @@ class ProcessingPipeline:
             api_key=getattr(self.config, "vision_api_key", None),
             base_url=getattr(self.config, "vision_base_url", None),
         )
-        response = await self._safe_llm_call(
+        response, usage = await self._safe_llm_call(
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": content_payload}],
             model=model,
             client=client,
         )
-        return (response.content or "").strip()
+        return (response.content or "").strip(), usage
 
     async def _run_instruct_stage(
         self, user_input: str, vision_text: str, model: str
-    ) -> Tuple[str, List[str], Dict[str, Any]]:
+    ) -> Tuple[str, List[str], Dict[str, Any], Dict[str, int]]:
+        """Returns (instruct_text, search_payloads, trace_dict, usage_dict)."""
         tools = [self.web_search_tool, self.grant_mcp_playwright_tool]
         tools_desc = "\n".join([t["function"]["name"] for t in tools])
 
@@ -450,7 +490,7 @@ class ProcessingPipeline:
             {"role": "user", "content": user_input or "..."},
         ]
 
-        response = await self._safe_llm_call(
+        response, usage = await self._safe_llm_call(
             messages=history,
             model=model,
             tools=tools,
@@ -496,10 +536,12 @@ class ProcessingPipeline:
             # No second LLM call: tool-call arguments already include the extracted keywords/query
             # and the grant decision; avoid wasting tokens/time.
             intruct_trace["output"] = ""
-            return "", search_payloads, intruct_trace
+            intruct_trace["usage"] = usage
+            return "", search_payloads, intruct_trace, usage
 
         intruct_trace["output"] = (response.content or "").strip()
-        return "", search_payloads, intruct_trace
+        intruct_trace["usage"] = usage
+        return "", search_payloads, intruct_trace, usage
 
     def _format_search_msgs(self, search_payloads: List[str]) -> str:
         """

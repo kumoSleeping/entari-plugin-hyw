@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import os
 import markdown
 import base64
@@ -8,7 +9,9 @@ from urllib.parse import urlparse
 from typing import List, Dict, Optional, Any, Union
 import re
 import json
-from playwright.async_api import async_playwright
+from pathlib import Path
+from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+from loguru import logger
 
 class ContentRenderer:
     def __init__(self, template_path: str = None):
@@ -22,7 +25,44 @@ class ContentRenderer:
         current_dir = os.path.dirname(os.path.abspath(__file__))
         plugin_root = os.path.dirname(current_dir)
         self.assets_dir = os.path.join(plugin_root, "assets", "icon")
+        # Load JS libraries (CSS is now inline in template)
+        libs_dir = os.path.join(plugin_root, "assets", "libs")
+        
+        # Define all assets to load
+        self.assets = {}
+        assets_map = {
+            "highlight_css": os.path.join(libs_dir, "highlight.css"),
+            "highlight_js": os.path.join(libs_dir, "highlight.js"),
+            "katex_css": os.path.join(libs_dir, "katex.css"),
+            "katex_js": os.path.join(libs_dir, "katex.js"),
+            "katex_auto_render_js": os.path.join(libs_dir, "katex-auto-render.js"),
+            "tailwind_css": os.path.join(libs_dir, "tailwind.css"),
+        }
+        
+        total_size = 0
+        for key, path in assets_map.items():
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                    self.assets[key] = content
+                    total_size += len(content)
+            except Exception as exc:
+                logger.warning(f"ContentRenderer: failed to load {key} ({exc})")
+                self.assets[key] = ""
+        
+        logger.info(f"ContentRenderer: loaded {len(assets_map)} libs ({total_size} bytes)")
 
+    async def _set_content_safe(self, page, html: str, timeout_ms: int) -> bool:
+        html_size = len(html)
+        try:
+            await page.set_content(html, wait_until="domcontentloaded", timeout=timeout_ms)
+            return True
+        except PlaywrightTimeoutError:
+            logger.warning(f"ContentRenderer: page.set_content timed out after {timeout_ms}ms (html_size={html_size})")
+            return False
+        except Exception as exc:
+            logger.warning(f"ContentRenderer: page.set_content failed (html_size={html_size}): {exc}")
+            return False
 
     
     def _get_icon_data_url(self, icon_name: str) -> str:
@@ -202,66 +242,113 @@ class ContentRenderer:
         html_parts.append('</div></div>')
         return "".join(html_parts)
 
-    def _generate_status_footer(self, stats: Union[Dict[str, Any], List[Dict[str, Any]]], session_id: str, turns: int, max_turns: int = 10) -> str:
+    def _generate_status_footer(self, stats: Union[Dict[str, Any], List[Dict[str, Any]]], billing_info: Dict[str, Any] = None) -> str:
         if not stats:
             return ""
             
-        # Calculate totals for metadata
-        total_tool_count = 0
-        if isinstance(stats, list):
-            total_tool_count = sum(s.get("tool_calls_count", 0) for s in stats)
-        else:
-            total_tool_count = stats.get("tool_calls_count", 0)
-
-        # Total Time (Gray) - Calculated at Render Time
-        import time
-        start_time = 0
-        if isinstance(stats, list):
-             # Try to find start_time in the first stat object
-             if stats and "start_time" in stats[0]:
-                 start_time = stats[0]["start_time"]
-        else:
-             start_time = stats.get("start_time", 0)
+        # Check if multi-step
+        is_multi_step = isinstance(stats, list)
         
-        total_time_str = "N/A"
-        if start_time > 0:
-            duration = time.time() - start_time
-            total_time_str = f"{duration:.1f}s"
-
-        total_html = f'''
-        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-green-500"></span>
-            <span>{total_time_str}</span>
-        </div>
-        '''
+        # Billing HTML
+        billing_html = ""
+        if billing_info:
+            total_cost = billing_info.get("total_cost", 0)
+            if total_cost > 0:
+                cost_cents = total_cost * 100
+                cost_str = f"{cost_cents:.4f}¢"
+                billing_html = f'''
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                    <span class="w-2 h-2 rounded-full bg-pink-500"></span>
+                    <span>{cost_str}</span>
+                </div>
+                '''
         
-        # Tools, Turns, ID
-        extras_html = f'''
-        <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
-
-        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-            <span>{total_tool_count}</span>
-        </div>
-        
-        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-            <span class="w-2 h-2 rounded-full bg-pink-400"></span>
-            <span>{turns}</span>
-        </div>
-        
-        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
-            <span class="text-pink-600">{session_id}</span>
-        </div>
-        '''
-        
-        return f'''
-        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl px-5 py-3 overflow-hidden">
-            <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
-                {total_html}
-                {extras_html}
+        if is_multi_step:
+            # Multi-step Layout
+            step1_stats = stats[0]
+            step2_stats = stats[1] if len(stats) > 1 else {}
+            
+            step1_time = step1_stats.get("time", 0)
+            step2_time = step2_stats.get("time", 0)
+            
+            # Step 1 Time (Purple)
+            step1_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                <span>{step1_time:.1f}s</span>
             </div>
-        </div>
-        '''
+            '''
+            
+            # Step 2 Time (Green)
+            step2_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                <span>{step2_time:.1f}s</span>
+            </div>
+            '''
+            
+            return f'''
+            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                    {step1_html}
+                    {step2_html}
+                    {billing_html}
+                </div>
+            </div>
+            '''
+            
+        else:
+            # Single Step Layout
+            agent_total_time = stats.get("time", 0)
+            vision_time = stats.get("vision_duration", 0)
+            llm_time = max(0, agent_total_time - vision_time)
+            
+            # Vision Time Block
+            vision_html = ""
+            if vision_time > 0:
+                vision_html = f'''
+                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                    <span class="w-2 h-2 rounded-full bg-purple-400"></span>
+                    <span>{vision_time:.1f}s</span>
+                </div>
+                '''
+                
+            # Agent Time Block
+            agent_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-green-400"></span>
+                <span>{llm_time:.1f}s</span>
+            </div>
+            '''
+            
+            return f'''
+            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                    {vision_html}
+                    {agent_html}
+                    {billing_html}
+                </div>
+            </div>
+            '''
+            
+            total_html = f'''
+            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+                <span class="w-2 h-2 rounded-full bg-gray-400"></span>
+                <span id="total-time-display">...</span>
+            </div>
+            '''
+            
+            return f'''
+            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
+                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                    {vision_html}
+                    {agent_html}
+                    {render_html}
+                    {total_html}
+                    {billing_html}
+                </div>
+            </div>
+            '''
 
     def _generate_references_html(self, references: List[Dict[str, Any]], search_provider: str) -> str:
         if not references:
@@ -290,6 +377,7 @@ class ContentRenderer:
             url = ref.get("url", "#")
             try:
                 domain = urlparse(url).netloc
+                if domain.startswith("www."): domain = domain[4:]
             except Exception:
                 domain = "unknown"
                 
@@ -312,28 +400,25 @@ class ContentRenderer:
         return "".join(html_parts)
 
     def _generate_mcp_steps_html(self, mcp_steps: List[Dict[str, Any]]) -> str:
-        """Generate HTML for MCP execution flow display."""
         if not mcp_steps:
             return ""
         
-        # SVG icon definitions (Heroicons style)
-        STEP_ICONS = {
-            "navigate": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" /></svg>''',
-            "snapshot": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" /></svg>''',
-            "click": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59" /></svg>''',
-            "type": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>''',
-            "code": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" /></svg>''',
-            "wait": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>''',
-            "default": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z" /></svg>''',
-        }
-            
-        # Terminal/Code icon SVG for header
-        icon_svg = '''
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500">
-          <path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
-        </svg>
-        '''
+        # Pink Terminal Icon
+        icon_svg = '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500"><path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>'''
+        
+        # Using the same header helper with plain style
         header = self._generate_card_header("MCP FLOW", badge_text=None, custom_icon_html=icon_svg, is_plain=True)
+
+        # SVG icons with minimal footprint
+        I_STYLE = "width:14px;height:14px"
+        STEP_ICONS = {
+            "navigate": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18a9 9 0 0 1-9-9" /></svg>''',
+            "snapshot": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574" /></svg>''',
+            "click": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672" /></svg>''',
+            "type": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652" /></svg>''',
+            "code": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25" /></svg>''',
+            "default": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21" /></svg>''',
+        }
             
         html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
         html_parts.append(header)
@@ -344,32 +429,17 @@ class ContentRenderer:
             desc = step.get("description", "")
             icon_key = step.get("icon", "").lower()
             
-            # Get icon SVG based on explicit icon key or infer from name
-            step_icon_svg = STEP_ICONS.get(icon_key)
-            if not step_icon_svg:
-                # Fallback: infer icon from tool name
-                name_lower = name.lower()
-                if "navigate" in name_lower:
-                    step_icon_svg = STEP_ICONS["navigate"]
-                elif "snapshot" in name_lower or "screenshot" in name_lower:
-                    step_icon_svg = STEP_ICONS["snapshot"]
-                elif "click" in name_lower:
-                    step_icon_svg = STEP_ICONS["click"]
-                elif "type" in name_lower or "input" in name_lower or "fill" in name_lower:
-                    step_icon_svg = STEP_ICONS["type"]
-                elif "code" in name_lower or "run" in name_lower or "evaluate" in name_lower:
-                    step_icon_svg = STEP_ICONS["code"]
-                elif "wait" in name_lower:
-                    step_icon_svg = STEP_ICONS["wait"]
-                else:
-                    step_icon_svg = STEP_ICONS["default"]
+            icon_svg = STEP_ICONS.get(icon_key, STEP_ICONS["default"])
+            desc_html = f'<div class="text-[10px] text-gray-400 mt-0.5">{desc}</div>' if desc else ''
             
             html_parts.append(f'''
-            <div class="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-100 shadow-sm">
-                <div class="flex items-center justify-center w-6 h-6 rounded-md bg-pink-50 text-pink-600 shrink-0">{step_icon_svg}</div>
+            <div class="flex items-center gap-2.5 p-2.5 bg-white rounded-lg border border-gray-100 shadow-sm">
+                <div class="w-6 h-6 flex items-center justify-center rounded-md border border-pink-100 bg-pink-50 text-pink-600 shrink-0">
+                    {icon_svg}
+                </div>
                 <div class="flex-1 min-w-0">
-                    <div class="text-[13px] font-mono font-semibold text-gray-800">{name}</div>
-                    {f'<div class="text-[12px] text-gray-500 mt-1 line-clamp-2">{desc}</div>' if desc else ''}
+                    <div class="text-[12px] font-semibold text-gray-800 font-mono">{name}</div>
+                    {desc_html}
                 </div>
             </div>
             ''')
@@ -396,17 +466,16 @@ class ContentRenderer:
                      suggestions: List[str] = None, 
                      stats: Dict[str, Any] = None,
                      references: List[Dict[str, Any]] = None,
-                     mcp_steps: List[Dict[str, Any]] = None,
-                     model_name: str = "",
-                     search_provider: str = "Unknown Provider",
-                     icon_config: str = "openai",
-                     vision_model_name: str = None,
-                     vision_icon_config: str = None,
-                     vision_base_url: str = None,
-                     base_url: str = "https://openrouter.ai/api/v1",
-                     session_id: str = "N/A",
-                     turns: int = 1,
-                     max_turns: int = 10):
+                    mcp_steps: List[Dict[str, Any]] = None,
+                    model_name: str = "",
+                    search_provider: str = "Unknown Provider",
+                    icon_config: str = "openai",
+                    vision_model_name: str = None,
+                    vision_icon_config: str = None,
+                    vision_base_url: str = None,
+                    base_url: str = "https://openrouter.ai/api/v1",
+                    billing_info: Dict[str, Any] = None,
+                    render_timeout_ms: int = 6000):
         """
         Render markdown content to an image using Playwright.
         """
@@ -428,24 +497,7 @@ class ContentRenderer:
         # Matches **...** where content includes at least one CJK character.
         # markdown_content = re.sub(r'\*\*([^*]*[\u4e00-\u9fa5\u3000-\u303f\uff00-\uffef][^*]*)\*\*', r'\1', markdown_content)
 
-        # 1. Server-side Markdown Rendering
-        # Convert markdown to HTML using Python's markdown library
-        # We use extensions to support common features
-        content_html = markdown.markdown(
-            markdown_content.strip(), 
-            extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
-        )
-        
-        # Post-process to style citation markers [1], [2]...
-        # We avoid replacing inside <code> tags by splitting the HTML
-        parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
-        for i, part in enumerate(parts):
-            if not part.startswith('<code'):
-                # Replace [n] with styled superscript, avoiding HTML attributes
-                parts[i] = re.sub(r'\[(\d+)\](?![^<]*>)', r'<sup class="text-pink-600 font-bold text-[10px] ml-0.5">\1</sup>', part)
-        content_html = "".join(parts)
-        
-        # 2. Prepare Template Variables
+        # 1. Prepare Template Variables
         timestamp = datetime.now().strftime("%H:%M:%S")
         
         # Header for Response Card
@@ -487,93 +539,155 @@ class ContentRenderer:
         )
         
         suggestions_html = self._generate_suggestions_html(suggestions or [])
-        stats_html = self._generate_status_footer(stats or {}, session_id, turns, max_turns)
+        stats_html = self._generate_status_footer(stats or {}, billing_info=billing_info)
         # Pass search_provider to references generation
         references_html = self._generate_references_html(references or [], search_provider)
         # Generate MCP steps HTML
         mcp_steps_html = self._generate_mcp_steps_html(mcp_steps or [])
         
-        # 3. Load and Fill Template
-        with open(self.template_path, "r", encoding="utf-8") as f:
-            template = f.read()
-            
-        final_html = template.replace("{{ content_html }}", content_html)
-        final_html = final_html.replace("{{ timestamp }}", timestamp)
-        final_html = final_html.replace("{{ suggestions }}", suggestions_html)
-        final_html = final_html.replace("{{ stats }}", stats_html)
-        final_html = final_html.replace("{{ references }}", references_html)
-        final_html = final_html.replace("{{ mcp_steps }}", mcp_steps_html)
-        final_html = final_html.replace("{{ response_header }}", response_header)
-        final_html = final_html.replace("{{ references_json }}", json.dumps(references or []))
-        
-        # 4. Render with Playwright
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            # Use device_scale_factor=2 for high DPI rendering (better quality)
-            page = await browser.new_page(viewport={"width": 450, "height": 1200}, device_scale_factor=2)
-            
-            # Set content
-            await page.set_content(final_html)
-            
-            # Force wait for all images to load and hide broken ones
-            await page.evaluate("""
-                () => Promise.all(
-                    Array.from(document.images).map(img => {
-                        if (img.complete) {
-                            if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-                                img.style.display = 'none';
-                            }
-                            return Promise.resolve();
-                        }
-                        return new Promise((resolve) => {
-                            img.onload = () => {
-                                if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-                                    img.style.display = 'none';
-                                }
-                                resolve();
-                            };
-                            img.onerror = () => {
-                                img.style.display = 'none';
-                                resolve();
-                            };
-                        });
-                    })
+        # 2. Render with Playwright
+        max_attempts = 1  # No retry - if set_content fails, retrying won't help
+        last_exc = None
+        for attempt in range(1, max_attempts + 1):
+            content_html = None
+            final_html = None
+            template = None
+            parts = None
+            try:
+                # Server-side Markdown Rendering
+                content_html = markdown.markdown(
+                    markdown_content.strip(), 
+                    extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
                 )
-            """)
-            
-            # Wait for content to load/render
-            await page.wait_for_load_state("networkidle")
-            
-            # Update Timing Stats
-            if isinstance(stats, list):
-                # Sum up time from all steps
-                agent_time = sum(s.get("time", 0) for s in stats)
-            else:
-                agent_time = stats.get("time", 0) if stats else 0
-            current_time = asyncio.get_event_loop().time()
-            render_duration = current_time - render_start_time
-            total_duration = agent_time + render_duration
-            
-            await page.evaluate(f"""
-                () => {{
-                    const renderEl = document.getElementById('render-time-display');
-                    if (renderEl) renderEl.innerText = '{render_duration:.1f}s';
-                    
-                    const totalEl = document.getElementById('total-time-display');
-                    if (totalEl) totalEl.innerText = '{total_duration:.1f}s';
-                }}
-            """)
-            
-            # Locate the container to take a screenshot of just the content
-            element = await page.query_selector("#main-container")
-            
-            if element:
-                await element.screenshot(path=output_path)
-            else:
-                # Fallback to full page if container not found (shouldn't happen)
-                await page.screenshot(path=output_path, full_page=True)
                 
-            await browser.close()
+                # Post-process to style citation markers [1], [2]...
+                parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
+                for i, part in enumerate(parts):
+                    if not part.startswith('<code'):
+                        parts[i] = re.sub(r'\[(\d+)\](?![^<]*>)', r'<sup class="text-pink-600 font-bold text-[10px] ml-0.5">\1</sup>', part)
+                content_html = "".join(parts)
+                
+                # Load and Fill Template
+                logger.info(f"Loading template from {self.template_path}")
+                with open(self.template_path, "r", encoding="utf-8") as f:
+                    template = f.read()
+                logger.info(f"Template header: {template[:100]}")
+                    
+                # Inject all pre-compiled assets (CSS + JS)
+                final_html = template
+                for key, content in self.assets.items():
+                    # Regex to match {{ key }} with optional whitespace
+                    pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
+                    if re.search(pattern, final_html):
+                        final_html = re.sub(pattern, lambda _: content, final_html)
+                
+                final_html = final_html.replace("{{ content_html }}", content_html)
+                final_html = final_html.replace("{{ timestamp }}", timestamp)
+                final_html = final_html.replace("{{ suggestions }}", suggestions_html)
+                final_html = final_html.replace("{{ stats }}", stats_html)
+                final_html = final_html.replace("{{ references }}", references_html)
+                final_html = final_html.replace("{{ mcp_steps }}", mcp_steps_html)
+                final_html = final_html.replace("{{ response_header }}", response_header)
+                final_html = final_html.replace("{{ references_json }}", json.dumps(references or []))
+            except MemoryError:
+                last_exc = "memory"
+                logger.warning(f"ContentRenderer: out of memory while building HTML (attempt {attempt}/{max_attempts})")
+                continue
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"ContentRenderer: failed to build HTML (attempt {attempt}/{max_attempts}) ({exc})")
+                continue
+            
+            try:
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    try:
+                        # Use device_scale_factor=2 for high DPI rendering (better quality)
+                        page = await browser.new_page(viewport={"width": 450, "height": 1200}, device_scale_factor=2)
+                        
+                        logger.debug("ContentRenderer: page created, setting content...")
+                        
+                        # Set content (10s timeout to handle slow CDN loading)
+                        set_ok = await self._set_content_safe(page, final_html, 10000)
+                        if not set_ok or page.is_closed():
+                            raise RuntimeError("set_content failed")
+                        
+                        logger.debug("ContentRenderer: content set, waiting for images...")
+                        
+                        # Wait for images with user-configured timeout (render_timeout_ms)
+                        image_timeout_sec = render_timeout_ms / 1000.0
+                        try:
+                            await asyncio.wait_for(
+                                page.evaluate("""
+                                    () => Promise.all(
+                                        Array.from(document.images).map(img => {
+                                            if (img.complete) {
+                                                if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+                                                    img.style.display = 'none';
+                                                }
+                                                return Promise.resolve();
+                                            }
+                                            return new Promise((resolve) => {
+                                                img.onload = () => {
+                                                    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
+                                                        img.style.display = 'none';
+                                                    }
+                                                    resolve();
+                                                };
+                                                img.onerror = () => {
+                                                    img.style.display = 'none';
+                                                    resolve();
+                                                };
+                                            });
+                                        })
+                                    )
+                                """),
+                                timeout=image_timeout_sec
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning(f"ContentRenderer: image loading timed out after {image_timeout_sec}s, continuing...")
+                        
+                        logger.debug("ContentRenderer: images done, updating stats...")
+                        
+
+                        
+                        # Brief wait for layout to stabilize (CSS is pre-compiled)
+                        await asyncio.sleep(0.1)
+                        
+                        logger.debug("ContentRenderer: taking screenshot...")
+                        
+                        # Try element screenshot first, fallback to full page
+                        element = await page.query_selector("#main-container")
+                        
+                        try:
+                            if element:
+                                await element.screenshot(path=output_path)
+                            else:
+                                await page.screenshot(path=output_path, full_page=True)
+                        except Exception as screenshot_exc:
+                            # Fallback to full page screenshot if element screenshot fails
+                            logger.warning(f"ContentRenderer: element screenshot failed ({screenshot_exc}), trying full page...")
+                            await page.screenshot(path=output_path, full_page=True)
+                        
+                        logger.debug("ContentRenderer: screenshot done")
+                    finally:
+                        try:
+                            await browser.close()
+                        except Exception as exc:
+                            logger.warning(f"ContentRenderer: failed to close browser ({exc})")
+                return True
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(f"ContentRenderer: render attempt {attempt}/{max_attempts} failed ({exc})")
+            finally:
+                content_html = None
+                final_html = None
+                template = None
+                parts = None
+                gc.collect()
+                
+        logger.error(f"ContentRenderer: render failed after {max_attempts} attempts ({last_exc})")
+        return False
 
     def _generate_model_card_html(self, index: int, model: Dict[str, Any]) -> str:
         name = model.get("name", "Unknown")
@@ -630,7 +744,7 @@ class ContentRenderer:
         </div>
         '''
 
-    async def render_models_list(self, models: List[Dict[str, Any]], output_path: str, default_base_url: str = "https://openrouter.ai/api/v1"):
+    async def render_models_list(self, models: List[Dict[str, Any]], output_path: str, default_base_url: str = "https://openrouter.ai/api/v1", render_timeout_ms: int = 6000):
         """
         Render the list of models to an image.
         """
@@ -677,15 +791,18 @@ class ContentRenderer:
         
         with open(template_path, "r", encoding="utf-8") as f:
             template = f.read()
-            
-        final_html = template.replace("{{ models_list }}", models_html)
+        
+        # Inject all pre-compiled assets (CSS + JS)
+        final_html = template
+        for key, content in self.assets.items():
+            final_html = final_html.replace("{{ " + key + " }}", content)
+        final_html = final_html.replace("{{ models_list }}", models_html)
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             page = await browser.new_page(viewport={"width": 450, "height": 800}, device_scale_factor=2)
             
-            await page.set_content(final_html)
-            await page.wait_for_load_state("networkidle")
+            await self._set_content_safe(page, final_html, render_timeout_ms)
             
             element = await page.query_selector("#main-container")
             if element:

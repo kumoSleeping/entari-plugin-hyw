@@ -27,7 +27,6 @@ class PlaywrightTool:
                 context = await browser.new_context()
                 page = await context.new_page()
                 await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                await page.wait_for_timeout(500)
                 html = await page.content()
                 await context.close()
                 await browser.close()

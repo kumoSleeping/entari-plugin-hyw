@@ -17,7 +17,6 @@ class HYWConfig:
     intruct_base_url: Optional[str] = None
     search_base_url: str = "https://duckduckgo.com/?q={query}&format=json&results_per_page={limit}"
     image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images&format=json&results_per_page={limit}"
-    search_auth_token: Optional[str] = None
     extra_body: Optional[Dict[str, Any]] = None
     temperature: float = 0.4
     max_turns: int = 10
@@ -27,3 +26,13 @@ class HYWConfig:
     agent_system_prompt: Optional[str] = None
     playwright_mcp_command: str = "npx"
     playwright_mcp_args: Optional[List[str]] = None
+    # Billing configuration (price per million tokens)
+    # Main model pricing - if not set, billing is disabled
+    input_price: Optional[float] = None  # $ per 1M input tokens
+    output_price: Optional[float] = None  # $ per 1M output tokens
+    # Vision model pricing overrides (defaults to main model pricing if not set)
+    vision_input_price: Optional[float] = None
+    vision_output_price: Optional[float] = None
+    # Instruct model pricing overrides (defaults to main model pricing if not set)
+    intruct_input_price: Optional[float] = None
+    intruct_output_price: Optional[float] = None

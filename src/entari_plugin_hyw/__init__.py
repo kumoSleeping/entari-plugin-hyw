@@ -67,14 +67,26 @@ class HywConfig(BasicConfModel):
     agent_system_prompt: Optional[str] = None
     playwright_mcp_command: str = "npx"
     playwright_mcp_args: Optional[List[str]] = None
+    search_base_url: str = "https://duckduckgo.com/?q={query}&format=json&results_per_page={limit}"
+    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images&format=json&results_per_page={limit}"
     headless: bool = False
     save_conversation: bool = False
     icon: str = "openai"
+    render_timeout_ms: int = 6000
     extra_body: Optional[Dict[str, Any]] = None
     enable_browser_fallback: bool = False
     reaction: bool = True
     quote: bool = True
     temperature: float = 0.4
+    # Billing configuration (price per million tokens)
+    input_price: Optional[float] = None  # $ per 1M input tokens
+    output_price: Optional[float] = None  # $ per 1M output tokens
+    # Vision model pricing overrides (defaults to main model pricing if not set)
+    vision_input_price: Optional[float] = None
+    vision_output_price: Optional[float] = None
+    # Instruct model pricing overrides (defaults to main model pricing if not set)
+    intruct_input_price: Optional[float] = None
+    intruct_output_price: Optional[float] = None
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
@@ -331,15 +343,6 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             if m_conf := next((m for m in conf.models if m.get("name") == model_used), None):
                 icon = m_conf.get("icon", icon)
 
-        # Calculate turns and session_id
-        turns = len([m for m in final_resp.get("conversation_history", []) if m.get("role") == "user"])
-        
-        # Determine max_turns
-        max_turns = 10
-        if model_used:
-            if m_conf := next((m for m in conf.models if m.get("name") == model_used), None):
-                max_turns = m_conf.get("max_turns", 10)
-
         # Determine session short code
         if hist_key:
             display_session_id = history_manager.get_code_by_key(hist_key)
@@ -371,7 +374,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         # Use stats_list if available, otherwise standard stats
         stats_to_render = final_resp.get("stats_list", final_resp.get("stats", {}))
 
-        await renderer.render(
+        render_ok = await renderer.render(
             markdown_content=content,
             output_path=output_path,
             suggestions=[],
@@ -385,29 +388,35 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             vision_base_url=vision_base_url,
             vision_icon_config=vision_icon,
             base_url=render_base_url,
-            session_id=display_session_id,
-            turns=turns,
-            max_turns=max_turns
+            billing_info=final_resp.get("billing_info"),
+            render_timeout_ms=conf.render_timeout_ms
         )
         
         # Send & Save
-        from pathlib import Path
-        
-        # Convert to base64
-        with open(output_path, "rb") as f:
-            img_data = base64.b64encode(f.read()).decode()
-            
-        # Build single reply chain (image only now)
-        elements = []
-        elements.append(Image(src=f'data:image/png;base64,{img_data}'))
+        if not render_ok:
+            logger.error("Render failed; skipping reply. Check browser/playwright status.")
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except Exception as exc:
+                    logger.warning(f"Failed to delete render output {output_path}: {exc}")
+            sent = None
+        else:
+            # Convert to base64
+            with open(output_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode()
+                
+            # Build single reply chain (image only now)
+            elements = []
+            elements.append(Image(src=f'data:image/png;base64,{img_data}'))
 
-        msg_chain = MessageChain(*elements)
-        
-        if conf.quote:
-            msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+            msg_chain = MessageChain(*elements)
             
-        # Use reply_to instead of manual Quote insertion to avoid ActionFailed errors
-        sent = await session.send(msg_chain)
+            if conf.quote:
+                msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                
+            # Use reply_to instead of manual Quote insertion to avoid ActionFailed errors
+            sent = await session.send(msg_chain)
         
         sent_id = next((str(e.id) for e in sent if hasattr(e, 'id')), None) if sent else None
         msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
@@ -525,7 +534,12 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
         os.makedirs(output_dir, exist_ok=True)
         output_path = f"{output_dir}/models_list_cache.png"
         
-        await renderer.render_models_list(conf.models, output_path, default_base_url=conf.base_url)
+        await renderer.render_models_list(
+            conf.models,
+            output_path,
+            default_base_url=conf.base_url,
+            render_timeout_ms=conf.render_timeout_ms,
+        )
         global_cache.models_image_path = os.path.abspath(output_path)
         
         with open(output_path, "rb") as f:
