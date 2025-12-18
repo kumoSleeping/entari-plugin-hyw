@@ -14,13 +14,39 @@ from .core.hyw import HYW
 from .core.history import HistoryManager
 from .core.render import ContentRenderer
 from .utils.misc import process_onebot_json, process_images, resolve_model_name
-from arclet.entari.event.lifespan import Startup, Ready
+from arclet.entari.event.lifespan import Startup, Ready, Cleanup
 
 import os
 import secrets
 import base64
 
 import re
+
+class _RecentEventDeduper:
+    def __init__(self, ttl_seconds: float = 30.0, max_size: int = 2048):
+        self.ttl_seconds = ttl_seconds
+        self.max_size = max_size
+        self._seen: Dict[str, float] = {}
+
+    def seen_recently(self, key: str) -> bool:
+        now = time.time()
+        if len(self._seen) > self.max_size:
+            self._prune(now)
+        ts = self._seen.get(key)
+        if ts is None or now - ts > self.ttl_seconds:
+            self._seen[key] = now
+            return False
+        return True
+
+    def _prune(self, now: float):
+        expired = [k for k, ts in self._seen.items() if now - ts > self.ttl_seconds]
+        for k in expired:
+            self._seen.pop(k, None)
+        if len(self._seen) > self.max_size:
+            for k, _ in sorted(self._seen.items(), key=lambda kv: kv[1])[: len(self._seen) - self.max_size]:
+                self._seen.pop(k, None)
+
+_event_deduper = _RecentEventDeduper()
 
 @dataclass
 class HywConfig(BasicConfModel):
@@ -30,22 +56,45 @@ class HywConfig(BasicConfModel):
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: str = "https://openrouter.ai/api/v1"
+    vision_model_name: Optional[str] = None
+    vision_api_key: Optional[str] = None
+    vision_base_url: Optional[str] = None
+    vision_system_prompt: Optional[str] = None
+    intruct_model_name: Optional[str] = None
+    intruct_api_key: Optional[str] = None
+    intruct_base_url: Optional[str] = None
+    intruct_system_prompt: Optional[str] = None
+    agent_system_prompt: Optional[str] = None
+    playwright_mcp_command: str = "npx"
+    playwright_mcp_args: Optional[List[str]] = None
     headless: bool = False
     save_conversation: bool = False
-    browser_tool: str = "jina"
     icon: str = "openai"
-    jina_api_key: Optional[str] = None
     extra_body: Optional[Dict[str, Any]] = None
     enable_browser_fallback: bool = False
     reaction: bool = True
     quote: bool = True
-    jina_timeout: int = 15
     temperature: float = 0.4
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
 renderer = ContentRenderer()
 hyw = HYW(config=conf)
+
+@listen(Ready, once=True)
+async def _hyw_warmup_mcp():
+    try:
+        await hyw.pipeline.warmup_mcp()
+    except Exception as e:
+        logger.warning(f"MCP Playwright warmup error: {e}")
+
+
+@listen(Cleanup, once=True)
+async def _hyw_cleanup():
+    try:
+        await hyw.close()
+    except Exception as e:
+        logger.warning(f"HYW cleanup error: {e}")
 
 class GlobalCache:
     models_image_path: Optional[str] = None
@@ -325,11 +374,12 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         await renderer.render(
             markdown_content=content,
             output_path=output_path,
-            suggestions=structured.get("suggestion", []),
+            suggestions=[],
             stats=stats_to_render,
             references=structured.get("references", []),
+            mcp_steps=structured.get("mcp_steps", []),
             model_name=render_model_name,
-            search_provider="Jina Fetch" if conf.browser_tool == "jina" else "Playwright",
+            search_provider="Playwright",
             icon_config=render_icon,
             vision_model_name=vision_model_used,
             vision_base_url=vision_base_url,
@@ -343,22 +393,15 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         # Send & Save
         from pathlib import Path
         
-        # Handle 'tun' field from structured response
-        if structured.get("tun"):
-            try:
-                if conf.quote:
-                    await session.send([Quote(session.event.message.id), structured["tun"]])
-                else:
-                    await session.send(structured["tun"])
-            except Exception as e:
-                logger.warning(f"Failed to send tun content: {e}")
-
         # Convert to base64
         with open(output_path, "rb") as f:
             img_data = base64.b64encode(f.read()).decode()
             
-        # Use base64 data for Image
-        msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+        # Build single reply chain (image only now)
+        elements = []
+        elements.append(Image(src=f'data:image/png;base64,{img_data}'))
+
+        msg_chain = MessageChain(*elements)
         
         if conf.quote:
             msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
@@ -370,7 +413,17 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
         related = [msg_id] + ([str(session.reply.origin.id)] if session.reply and hasattr(session.reply.origin, 'id') else [])
         
-        history_manager.remember(sent_id, final_resp.get("conversation_history", []), related, {"model": model_used}, context_id, code=display_session_id)
+        history_manager.remember(
+            sent_id,
+            final_resp.get("conversation_history", []),
+            related,
+            {
+                "model": model_used,
+                "trace_markdown": final_resp.get("trace_markdown"),
+            },
+            context_id,
+            code=display_session_id,
+        )
         
         if conf.save_conversation and sent_id:
             history_manager.save_to_disk(sent_id)
@@ -426,7 +479,6 @@ alc = Alconna(
         {conf.question_command} -n <后续提示词> : 在第一步完成后执行后续操作 (支持 -t/-v)
         {conf.question_command} <问题> : 发起问题
 特性:
-        可以要求模型使用 `tun` 工具将特定内容以文本形式发送.
 """
         )
 )
@@ -434,6 +486,15 @@ alc = Alconna(
 @command.on(alc)
 async def handle_question_command(session: Session[MessageCreatedEvent], result: Arparma):
     """Handle main Question command"""
+    try:
+        mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
+        dedupe_key = f"{getattr(session.account, 'id', 'account')}:{mid}"
+        if _event_deduper.seen_recently(dedupe_key):
+            logger.warning(f"Duplicate command event ignored: {dedupe_key}")
+            return
+    except Exception:
+        pass
+
     logger.info(f"Question Command Triggered. Message: {session.event.message}")
     
     args = result.all_matched_args
@@ -591,23 +652,3 @@ metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}
 async def remove_at(content: MessageChain):
     content = content.lstrip(At)
     return content
-
-
-@leto.on(Startup)
-async def on_startup():
-    try:
-        output_dir = "data/cache"
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = f"{output_dir}/models_list_cache.png"
-        
-        logger.info("Generating models list cache...")
-        await renderer.render_models_list(conf.models, output_path, default_base_url=HywConfig.base_url)
-        global_cache.models_image_path = os.path.abspath(output_path)
-        logger.info(f"Models list cached at: {global_cache.models_image_path}")
-    except Exception as e:
-        logger.error(f"Failed to cache models list: {e}")
-
-
-
-
-

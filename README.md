@@ -10,6 +10,8 @@
 
 </div>
 
+# v3.2迎来大幅度改动、现在图文不符
+
 ## 🎑 效果展示
 
 
@@ -19,12 +21,9 @@
 </div>
 
 ## ✨ 功能特性
-- **关于搜索**：
-  - 如果不设置 jina token, 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果。
-  - 存在 jina token 时，模型会获得一个 web search 工具，~~但我没试过我喜欢白嫖~~。
-  - 也可以 OpenRouter 的 `:online` 参数，该参数会优先使用模型提供商的搜索、其次 `exa`(较贵) 进行网页搜索。
-- 给予 `Alconna` 与 `MessageChain` 混合处理, 深度优化触发体验`。
-- **网页获取**：支持通过 **Jina AI** 或 **Playwright** 进行实时页面获取。
+- **关于搜索**：一次性触发 Bing 网页与图片搜索，组合结果后再回应。
+- 给予 `Alconna` 与 `MessageChain` 混合处理, 深度优化触发体验。
+- **网页获取**：使用 Playwright 进行实时页面获取。
 - **多模态理解**：支持图片视觉分析。
 - **上下文感知**：维护对话历史记录，支持连续的多轮对话。
 - `reaction` 表情, 表示任务开始。
@@ -39,12 +38,8 @@
 pip install entari-plugin-hyw
 ```
 
-### 启用 Playwright 支持
-如果你希望使用 Playwright 进行本地网页渲染（而非仅使用 Jina AI）：
-```bash
-pip install entari-plugin-hyw[playwright]
-playwright install chromium
-```
+### 搜索
+默认通过 HTTP 请求搜索引擎（DuckDuckGo，可在配置中自定义完整搜索链接，如 `https://duckduckgo.com/?q={query}`）。
 
 ## ⚙️ 配置
 
@@ -58,7 +53,6 @@ plugins:
     command_name_list: ["zssm", "hyw"]
     
     # 主 LLM 模型配置（必需）, 如 x-ai/grok-4.1-fast:online、perplexity/sonar
-    # 如果模型不自带搜索 模型会根据提示词优先使用 jina / playwright(成功率较低) 获取渲染 bing / google 混合搜索结果
     model_name: "gx-ai/grok-4.1-fast:free"
     api_key: "your-api-key"
 
@@ -66,18 +60,7 @@ plugins:
     base_url: "openai-compatible-url"  
     
     # --- 浏览器与搜索 ---
-    # 网页浏览工具: "jina" (默认) 或 "playwright"
-    browser_tool: "jina"
-    
-    # 可选: Jina AI API Key (配置以获得更高限额)(免费方案20/min)
-    # 配置此项同时会启用 web search 工具
-    jina_api_key: "jina_..."
-    
-    # Playwright 设置
     headless: true
-    
-    # 浏览器回退: 当首选 browser_tool 失败时，尝试使用备用 browser_tool (默认: false)
-    enable_browser_fallback: false
     
     # --- 视觉配置 (可选) ---
     # 如果未设置，将回退使用主模型

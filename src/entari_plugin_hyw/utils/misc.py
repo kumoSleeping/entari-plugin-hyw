@@ -24,27 +24,7 @@ def process_onebot_json(data: Dict[str, Any]) -> str:
         logger.warning(f"Failed to process JSON element: {e}")
     return ""
 
-# async def process_images(message_chain: MessageChain) -> tuple[List[str], Optional[str]]:
-#     """Process images from message chain"""
-#     images = []
-#     for elem in message_chain.get(Image):
-#         if elem.src:
-#             img_url = str(elem.src)
-#             if img_url.startswith("http"):
-#                 try:
-#                     async with httpx.AsyncClient() as client:
-#                         resp = await client.get(img_url, timeout=30)
-#                         if resp.status_code == 200:
-#                             mime_type = resp.headers.get("content-type", "image/png")
-#                             b64_str = base64.b64encode(resp.content).decode('utf-8')
-#                             images.append(f"data:{mime_type};base64,{b64_str}")
-#                         else:
-#                             logger.warning(f"Failed to download image: {img_url}, status: {resp.status_code}")
-#                 except Exception as e:
-#                     logger.warning(f"Error downloading image {img_url}: {e}")
-#             else:
-#                 images.append(img_url)
-#     return images, None
+
 
 
 
@@ -77,46 +57,37 @@ async def process_images(mc: MessageChain, vision_model: Optional[str] = None) -
     return images, None
 
 
-def normalize_name(name: str) -> str:
-    """Normalize name for fuzzy matching: remove '-' and replace '/' with space"""
-    return name.lower().replace("/", " ").replace("-", "")
-
-def resolve_model_name(input_str: str, models_config: List[Dict[str, Any]]) -> tuple[Optional[str], Optional[str]]:
+def resolve_model_name(name: str, models_config: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
     """
-    Resolve model name from keyword matching.
-    Returns: (resolved_model_name, error_message)
+    Resolve a user input model name to the full API model name from config.
+    Supports partial matching if unique.
     """
-    if not input_str:
-        return None, None
-
-    # 1. Exact match
-    for m in models_config:
-        if m.get("name") == input_str:
-            return input_str, None
-
-    # 2. Fuzzy matching with normalization
-    # Rule: 
-    # - Replace '/' with space (treat as two words)
-    # - Remove '-' (connect as one word)
-    norm_input = normalize_name(input_str)
-    keywords = norm_input.split()
-    matches = []
-    
-    for m in models_config:
-        name = m.get("name", "")
-        norm_name = normalize_name(name)
+    if not name:
+        return None, "No model name provided"
         
-        if all(kw in norm_name for kw in keywords):
-            matches.append(name)
+    name = name.lower()
+    
+    # 1. Exact match (name or id or shortname)
+    for m in models_config:
+        if m.get("name") == name or m.get("id") == name:
+            return m.get("name"), None
             
+    # 2. Key/Shortcut match
+    # Assuming the config might have keys like 'gpt4' mapping to full name
+    # But usually models list is [{'name': '...', 'provider': '...'}, ...]
+    
+    # Check if 'name' matches any model 'name' partially?
+    # Or just return the name itself if it looks like a valid model ID (contains / or -)
+    if "/" in name or "-" in name or "." in name:
+        return name, None
+        
+    # If not found in config specific list, and doesn't look like an ID, maybe return error
+    # But let's look for partial match in config names
+    matches = [m["name"] for m in models_config if name in m.get("name", "").lower()]
     if len(matches) == 1:
         return matches[0], None
     elif len(matches) > 1:
-        # Try to find exact normalized match among candidates
-        exact_norm = [m for m in matches if normalize_name(m) == norm_input]
-        if len(exact_norm) == 1:
-            return exact_norm[0], None
-            
-        return matches[0], None
-    
-    return None, f"未找到包含 '{input_str}' 的模型"
+        return None, f"Model name '{name}' is ambiguous. Matches: {', '.join(matches[:3])}..."
+        
+    # Default: assume it's a valid ID passed directly
+    return name, None

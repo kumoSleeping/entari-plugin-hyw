@@ -78,7 +78,6 @@ class HistoryManager:
     def save_to_disk(self, key: str, save_dir: str = "data/conversations"):
         """Save conversation history to disk"""
         import os
-        import json
         import time
         
         if key not in self._history:
@@ -86,25 +85,61 @@ class HistoryManager:
 
         try:
             os.makedirs(save_dir, exist_ok=True)
-            filename = f"{save_dir}/{key}_{int(time.time())}.json"
+            filename = f"{save_dir}/{key}_{int(time.time())}.md"
             
-            # Deep copy history to avoid modifying the original in memory
-            import copy
-            history_to_save = copy.deepcopy(self._history[key])
+            # Formatter
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+            meta = self._metadata.get(key, {})
+            model_name = meta.get("model", "unknown")
+            code = self._key_to_code.get(key, "N/A")
             
-            # Ensure content is JSON serializable or stringified if needed for specific storage requirements
-            # But json.dump handles dicts fine. The issue might be when loading back and sending to API.
-            # The user's request implies that we should just save it as is, but maybe the API call failed because of it.
+            md_content = f"# Conversation Log: {key}\n\n"
+            md_content += f"**Time**: {timestamp}\n"
+            md_content += f"**Code**: {code}\n"
+            md_content += f"**Model**: {model_name}\n"
+            md_content += f"**Metadata**: {meta}\n\n"
+
+            trace_md = meta.get("trace_markdown") if isinstance(meta, dict) else None
+            if trace_md:
+                md_content += "## Trace\n\n"
+                md_content += f"{trace_md}\n\n"
+
+            md_content += "## History\n\n"
             
-            data = {
-                "key": key,
-                "timestamp": time.time(),
-                "metadata": self._metadata.get(key, {}),
-                "history": history_to_save
-            }
+            for msg in self._history[key]:
+                role = msg.get("role", "unknown").upper()
+                content = msg.get("content", "")
+                
+                md_content += f"### {role}\n\n"
+                
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                     import json
+                     try:
+                         tc_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
+                     except:
+                         tc_str = str(tool_calls)
+                     md_content += f"**Tool Calls**:\n```json\n{tc_str}\n```\n\n"
+                
+                # Special handling for tool outputs or complex content
+                if role == "TOOL":
+                    # Try to pretty print if it's JSON
+                    try:
+                        import json
+                        # Content might be a JSON string already
+                        parsed_content = json.loads(content)
+                        pretty_content = json.dumps(parsed_content, ensure_ascii=False, indent=2)
+                        md_content += f"**Output**:\n```json\n{pretty_content}\n```\n\n"
+                    except:
+                        md_content += f"**Output**:\n```text\n{content}\n```\n\n"
+                else:
+                    if content:
+                        md_content += f"{content}\n\n"
+                
+                md_content += "---\n\n"
             
             with open(filename, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.write(md_content)
                 
         except Exception as e:
             # We can't log easily here without importing logger, but it's fine

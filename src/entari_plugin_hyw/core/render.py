@@ -206,142 +206,62 @@ class ContentRenderer:
         if not stats:
             return ""
             
-        # Check if multi-step
-        is_multi_step = isinstance(stats, list)
-        
-        if is_multi_step:
-            # Multi-step Layout
-            # stats is [step1_stats, step2_stats]
-            step1_stats = stats[0]
-            step2_stats = stats[1] if len(stats) > 1 else {}
-            
-            step1_time = step1_stats.get("time", 0)
-            step2_time = step2_stats.get("time", 0)
-            
-            total_tool_count = step1_stats.get("tool_calls_count", 0) + step2_stats.get("tool_calls_count", 0)
-            
-            # Step 1 Time (Purple)
-            step1_html = f'''
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-purple-400"></span>
-                <span>{step1_time:.1f}s</span>
-            </div>
-            '''
-            
-            # Step 2 Time (Green)
-            step2_html = f'''
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-green-400"></span>
-                <span>{step2_time:.1f}s</span>
-            </div>
-            '''
-            
-            # Render Time (Orange)
-            render_html = f'''
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-orange-400"></span>
-                <span id="render-time-display">...</span>
-            </div>
-            '''
-            
-            # Total Time (Gray)
-            total_html = f'''
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-gray-400"></span>
-                <span id="total-time-display">...</span>
-            </div>
-            '''
-            
-            # Tools, Turns, ID
-            extras_html = f'''
-            <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
-
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-                <span>{total_tool_count}</span>
-            </div>
-            
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-pink-400"></span>
-                <span>{turns}</span>
-            </div>
-            
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
-                <span class="text-pink-600">{session_id}</span>
-            </div>
-            '''
-            
-            return f'''
-            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
-                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
-                    {step1_html}
-                    {step2_html}
-                    {render_html}
-                    {total_html}
-                    {extras_html}
-                </div>
-            </div>
-            '''
-            
+        # Calculate totals for metadata
+        total_tool_count = 0
+        if isinstance(stats, list):
+            total_tool_count = sum(s.get("tool_calls_count", 0) for s in stats)
         else:
-            # Single Step Layout (Existing Logic)
-            agent_total_time = stats.get("time", 0)
-            vision_time = stats.get("vision_duration", 0)
-            llm_time = max(0, agent_total_time - vision_time)
-            tool_count = stats.get("tool_calls_count", 0)
-            
-            # Vision Time Block
-            vision_html = ""
-            if vision_time > 0:
-                vision_html = f'''
-                <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                    <span class="w-2 h-2 rounded-full bg-purple-400"></span>
-                    <span>{vision_time:.1f}s</span>
-                </div>
-                '''
-                
-            # Agent Time Block
-            agent_html = f'''
-            <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                <span class="w-2 h-2 rounded-full bg-green-400"></span>
-                <span>{llm_time:.1f}s</span>
+            total_tool_count = stats.get("tool_calls_count", 0)
+
+        # Total Time (Gray) - Calculated at Render Time
+        import time
+        start_time = 0
+        if isinstance(stats, list):
+             # Try to find start_time in the first stat object
+             if stats and "start_time" in stats[0]:
+                 start_time = stats[0]["start_time"]
+        else:
+             start_time = stats.get("start_time", 0)
+        
+        total_time_str = "N/A"
+        if start_time > 0:
+            duration = time.time() - start_time
+            total_time_str = f"{duration:.1f}s"
+
+        total_html = f'''
+        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+            <span class="w-2 h-2 rounded-full bg-green-500"></span>
+            <span>{total_time_str}</span>
+        </div>
+        '''
+        
+        # Tools, Turns, ID
+        extras_html = f'''
+        <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
+
+        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+            <span class="w-2 h-2 rounded-full bg-blue-400"></span>
+            <span>{total_tool_count}</span>
+        </div>
+        
+        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
+            <span class="w-2 h-2 rounded-full bg-pink-400"></span>
+            <span>{turns}</span>
+        </div>
+        
+        <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
+            <span class="text-pink-600">{session_id}</span>
+        </div>
+        '''
+        
+        return f'''
+        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl px-5 py-3 overflow-hidden">
+            <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
+                {total_html}
+                {extras_html}
             </div>
-            '''
-            
-            return f'''
-            <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-3 overflow-hidden">
-                <div class="flex flex-wrap items-center gap-2 text-[10px] text-gray-600 font-bold font-mono uppercase tracking-wide">
-                    {vision_html}
-                    {agent_html}
-
-                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                        <span class="w-2 h-2 rounded-full bg-orange-400"></span>
-                        <span id="render-time-display">...</span>
-                    </div>
-
-                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                        <span class="w-2 h-2 rounded-full bg-gray-400"></span>
-                        <span id="total-time-display">...</span>
-                    </div>
-                    
-                    <div class="w-[1px] h-4 bg-gray-300 mx-1"></div>
-
-                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                        <span class="w-2 h-2 rounded-full bg-blue-400"></span>
-                        <span>{tool_count}</span>
-                    </div>
-                    
-                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm">
-                        <span class="w-2 h-2 rounded-full bg-pink-400"></span>
-                        <span>{turns}</span>
-                    </div>
-                    
-                    <div class="flex items-center gap-1.5 bg-white/60 px-2 py-1 rounded shadow-sm ml-auto">
-                        <span class="text-pink-600">{session_id}</span>
-                    </div>
-                </div>
-            </div>
-            '''
+        </div>
+        '''
 
     def _generate_references_html(self, references: List[Dict[str, Any]], search_provider: str) -> str:
         if not references:
@@ -391,6 +311,72 @@ class ContentRenderer:
         html_parts.append('</div></div>')
         return "".join(html_parts)
 
+    def _generate_mcp_steps_html(self, mcp_steps: List[Dict[str, Any]]) -> str:
+        """Generate HTML for MCP execution flow display."""
+        if not mcp_steps:
+            return ""
+        
+        # SVG icon definitions (Heroicons style)
+        STEP_ICONS = {
+            "navigate": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S14.485 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S9.515 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" /></svg>''',
+            "snapshot": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574c0-1.067-.75-1.994-1.802-2.169a47.865 47.865 0 0 0-1.134-.175 2.31 2.31 0 0 1-1.64-1.055l-.822-1.316a2.192 2.192 0 0 0-1.736-1.039 48.774 48.774 0 0 0-5.232 0 2.192 2.192 0 0 0-1.736 1.039l-.821 1.316Z" /><path stroke-linecap="round" stroke-linejoin="round" d="M16.5 12.75a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0ZM18.75 10.5h.008v.008h-.008V10.5Z" /></svg>''',
+            "click": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672ZM12 2.25V4.5m5.834.166-1.591 1.591M20.25 10.5H18M7.757 14.743l-1.59 1.59M6 10.5H3.75m4.007-4.243-1.59-1.59" /></svg>''',
+            "type": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L10.582 16.07a4.5 4.5 0 0 1-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 0 1 1.13-1.897l8.932-8.931Zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0 1 15.75 21H5.25A2.25 2.25 0 0 1 3 18.75V8.25A2.25 2.25 0 0 1 5.25 6H10" /></svg>''',
+            "code": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25m7.5-3-4.5 16.5" /></svg>''',
+            "wait": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>''',
+            "default": '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor" class="w-4 h-4"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21A2.652 2.652 0 0 0 21 17.25l-5.877-5.877M11.42 15.17l2.496-3.03c.317-.384.74-.626 1.208-.766M11.42 15.17l-4.655 5.653a2.548 2.548 0 1 1-3.586-3.586l6.837-5.63m5.108-.233c.55-.164 1.163-.188 1.743-.14a4.5 4.5 0 0 0 4.486-6.336l-3.276 3.277a3.004 3.004 0 0 1-2.25-2.25l3.276-3.276a4.5 4.5 0 0 0-6.336 4.486c.091 1.076-.071 2.264-.904 2.95l-.102.085m-1.745 1.437L5.909 7.5H4.5L2.25 3.75l1.5-1.5L7.5 4.5v1.409l4.26 4.26m-1.745 1.437 1.745-1.437m6.615 8.206L15.75 15.75M4.867 19.125h.008v.008h-.008v-.008Z" /></svg>''',
+        }
+            
+        # Terminal/Code icon SVG for header
+        icon_svg = '''
+        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500">
+          <path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" />
+        </svg>
+        '''
+        header = self._generate_card_header("MCP FLOW", badge_text=None, custom_icon_html=icon_svg, is_plain=True)
+            
+        html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
+        html_parts.append(header)
+        html_parts.append('<div class="flex flex-col gap-2">')
+        
+        for i, step in enumerate(mcp_steps):
+            name = step.get("name", "unknown")
+            desc = step.get("description", "")
+            icon_key = step.get("icon", "").lower()
+            
+            # Get icon SVG based on explicit icon key or infer from name
+            step_icon_svg = STEP_ICONS.get(icon_key)
+            if not step_icon_svg:
+                # Fallback: infer icon from tool name
+                name_lower = name.lower()
+                if "navigate" in name_lower:
+                    step_icon_svg = STEP_ICONS["navigate"]
+                elif "snapshot" in name_lower or "screenshot" in name_lower:
+                    step_icon_svg = STEP_ICONS["snapshot"]
+                elif "click" in name_lower:
+                    step_icon_svg = STEP_ICONS["click"]
+                elif "type" in name_lower or "input" in name_lower or "fill" in name_lower:
+                    step_icon_svg = STEP_ICONS["type"]
+                elif "code" in name_lower or "run" in name_lower or "evaluate" in name_lower:
+                    step_icon_svg = STEP_ICONS["code"]
+                elif "wait" in name_lower:
+                    step_icon_svg = STEP_ICONS["wait"]
+                else:
+                    step_icon_svg = STEP_ICONS["default"]
+            
+            html_parts.append(f'''
+            <div class="flex items-start gap-3 p-3 bg-white rounded-lg border border-gray-100 shadow-sm">
+                <div class="flex items-center justify-center w-6 h-6 rounded-md bg-pink-50 text-pink-600 shrink-0">{step_icon_svg}</div>
+                <div class="flex-1 min-w-0">
+                    <div class="text-[13px] font-mono font-semibold text-gray-800">{name}</div>
+                    {f'<div class="text-[12px] text-gray-500 mt-1 line-clamp-2">{desc}</div>' if desc else ''}
+                </div>
+            </div>
+            ''')
+            
+        html_parts.append('</div></div>')
+        return "".join(html_parts)
+
     def _get_domain(self, url: str) -> str:
         try:
             parsed = urlparse(url)
@@ -410,6 +396,7 @@ class ContentRenderer:
                      suggestions: List[str] = None, 
                      stats: Dict[str, Any] = None,
                      references: List[Dict[str, Any]] = None,
+                     mcp_steps: List[Dict[str, Any]] = None,
                      model_name: str = "",
                      search_provider: str = "Unknown Provider",
                      icon_config: str = "openai",
@@ -503,6 +490,8 @@ class ContentRenderer:
         stats_html = self._generate_status_footer(stats or {}, session_id, turns, max_turns)
         # Pass search_provider to references generation
         references_html = self._generate_references_html(references or [], search_provider)
+        # Generate MCP steps HTML
+        mcp_steps_html = self._generate_mcp_steps_html(mcp_steps or [])
         
         # 3. Load and Fill Template
         with open(self.template_path, "r", encoding="utf-8") as f:
@@ -513,6 +502,7 @@ class ContentRenderer:
         final_html = final_html.replace("{{ suggestions }}", suggestions_html)
         final_html = final_html.replace("{{ stats }}", stats_html)
         final_html = final_html.replace("{{ references }}", references_html)
+        final_html = final_html.replace("{{ mcp_steps }}", mcp_steps_html)
         final_html = final_html.replace("{{ response_header }}", response_header)
         final_html = final_html.replace("{{ references_json }}", json.dumps(references or []))
         
@@ -647,7 +637,7 @@ class ContentRenderer:
         # Resolve template path
         current_dir = os.path.dirname(os.path.abspath(__file__))
         plugin_root = os.path.dirname(current_dir)
-        template_path = os.path.join(plugin_root, "assets", "models_template.html")
+        template_path = os.path.join(plugin_root, "assets", "template.html")
         
         # Generate HTML for models
         models_html_parts = []
