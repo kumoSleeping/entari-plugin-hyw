@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "3.2.103"
+version = "3.2.104"
 description = "Use large language models to interpret chat messages"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
@@ -41,8 +41,10 @@ Homepage = "https://github.com/kumoSleeping/entari-plugin-hyw"
 Repository = "https://github.com/kumoSleeping/entari-plugin-hyw"
 "Issue Tracker" = "https://github.com/kumoSleeping/entari-plugin-hyw/issues"
 
+[tool.setuptools]
+include-package-data = true
+
 [tool.setuptools.packages.find]
 where = ["src"]
+include = ["entari_plugin_hyw*"]
 
-[tool.setuptools.package-data]
-entari_plugin_hyw = ["*.txt", "*.md"]
