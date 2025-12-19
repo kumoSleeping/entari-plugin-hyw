@@ -686,7 +686,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val, 
                          next_prompt=next_prompt, next_text_model=next_text_model, next_vision_model=next_vision_model)
 
-metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.2.104", config=HywConfig)
+metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.2.105", config=HywConfig)
 
 @leto.on(CommandReceive)
 async def remove_at(content: MessageChain):

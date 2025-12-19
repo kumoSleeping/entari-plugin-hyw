@@ -117,101 +117,51 @@ class ContentRenderer:
             b64_data = base64.b64encode(data).decode("utf-8")
             return f"data:{mime_type};base64,{b64_data}"
 
-    def _generate_card_header(self, title: str, icon_data_url: str = None, icon_emoji: str = None, custom_icon_html: str = None, badge_text: str = None, badge_class: str = "llm", provider_text: str = None, vision_title: str = None, vision_icon_data_url: str = None, vision_provider_text: str = None, is_plain: bool = False) -> str:
+    def _generate_card_header(self, title: str, icon_data_url: str = None, icon_emoji: str = None, custom_icon_html: str = None, badge_text: str = None, badge_class: str = "llm", provider_text: str = None, behavior_summary: str = None, is_plain: bool = False) -> str:
         # LLM Icon
         icon_html = ""
         if custom_icon_html:
             icon_html = custom_icon_html
         elif icon_data_url:
-            icon_html = f'<img src="{icon_data_url}" class="w-5 h-5 object-contain">'
+            icon_html = f'<img src="{icon_data_url}" class="w-8 h-8 object-contain rounded-md">'
         elif icon_emoji:
-             icon_html = f'<span class="text-lg shrink-0">{icon_emoji}</span>'
+             icon_html = f'<span class="text-2xl shrink-0">{icon_emoji}</span>'
         elif badge_text: # Fallback icon based on badge type if no image
              icon_symbol = "🔎" if "search" in badge_class else "🤖"
-             icon_html = f'<span class="text-lg shrink-0">{icon_symbol}</span>'
+             icon_html = f'<span class="text-2xl shrink-0">{icon_symbol}</span>'
 
-        # Badge (e.g. Search)
-        badge_html = ""
-        if badge_text:
-             # Map badge class to tailwind colors
-             bg_color = "bg-blue-50"
-             text_color = "text-blue-700"
-             if "search" in badge_class:
-                 bg_color = "bg-pink-50"
-                 text_color = "text-pink-700"
-             elif "vision" in badge_class:
-                 bg_color = "bg-rose-50"
-                 text_color = "text-rose-600"
-                 
-             badge_html = f'<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-semibold uppercase tracking-wide {bg_color} {text_color}">{badge_text}</span>'
+        # Text Content
+        # MC Advancement Style:
+        # Title (Model Name)
+        # Description (Provider • Behavior)
         
-        # Provider Badge
-        provider_html = ""
-        if provider_text:
-            provider_html = f'<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide bg-gray-100 text-gray-500 lowercase">{provider_text}</span>'
-
-        # Determine main badge styles
-        main_badge_bg = "bg-white"
-        title_color = "text-pink-600"
-        if vision_title:
-            main_badge_bg = "bg-white"
-            
+        main_text_color = "text-gray-800"
+        sub_text_color = "text-gray-500"
+        
         if is_plain:
-            title_color = "text-gray-900"
+             # For suggestions/MCP, usually simpler
+             # Use the same layout but maybe smaller?
+             # existing is_plain used for title color text-gray-900.
+             pass
 
-        # Main Title Group
-        main_title_group = ""
-        if title:
-            main_title_group = f'''
-                <div class="{main_badge_bg} shadow-sm rounded-md px-2.5 py-1 flex-none flex items-center gap-2 { '!bg-transparent !shadow-none !p-0' if is_plain else '' }">
-                    {icon_html}
-                    <span class="text-sm font-bold {title_color} uppercase tracking-wide whitespace-nowrap overflow-hidden text-ellipsis">{title}</span>
-                </div>
-            '''
-
-        # Vision Title Group (if present)
-        vision_row_html = ""
-        if vision_title:
-            vision_icon_html = ""
-            if vision_icon_data_url:
-                vision_icon_html = f'<img src="{vision_icon_data_url}" class="w-5 h-5 object-contain">'
-            else:
-                vision_icon_html = '<span class="text-lg shrink-0">👁️</span>'
-            
-            vision_provider_html = ""
-            if vision_provider_text:
-                vision_provider_html = f'<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium uppercase tracking-wide bg-gray-100 text-gray-500 lowercase">{vision_provider_text}</span>'
-                
-            vision_row_html = f'''
-            <div class="mb-2 flex items-center justify-between w-full">
-                <div class="bg-gradient-to-r from-pink-300 to-pink-200 text-white w-fit rounded-md px-2.5 py-1 flex items-center gap-2 flex-none">
-                    {vision_icon_html}
-                    <span class="text-sm font-bold text-white uppercase tracking-wide whitespace-nowrap overflow-hidden text-ellipsis">{vision_title}</span>
-                </div>
-                <div class="flex items-center gap-2">
-                    {vision_provider_html}
-                </div>
-            </div>
-            '''
-
-        # If no main title (vision only), we might need to adjust layout
-        main_row_html = ""
-        if main_title_group:
-             main_row_html = f'''
-                <div class="flex items-center justify-between w-full">
-                    {main_title_group}
-                    <div class="flex items-center gap-2">
-                        {provider_html}
-                        {badge_html}
-                    </div>
-                </div>
-             '''
+        provider_display = provider_text or "Unknown Provider"
+        behavior_display = behavior_summary or "Text Generation"
+        
+        # If is_plain (like Suggestions/MCP), we usually just have a title. 
+        # But if we want to reuse this for model card, we need the subtitle.
+        
+        subtitle_html = ""
+        if not is_plain:
+            subtitle_html = f'<div class="text-xs {sub_text_color} font-medium">{provider_display} &bull; {behavior_display}</div>'
 
         return f'''
-        <div class="flex items-center justify-between pb-3 mb-3 border-b border-gray-100 gap-3 { '!bg-transparent !border-none !p-0 !mb-0 !pb-0' if is_plain else '' }">
-            <div class="flex flex-col w-full">
-                {vision_row_html}
-                {main_row_html}
+        <div class="flex items-center gap-3 pb-3 mb-3 border-b border-gray-100 { '!bg-transparent !border-none !p-0 !mb-0 !pb-0' if is_plain else '' }">
+            <div class="flex items-center justify-center w-10 h-10 bg-gray-50 rounded-lg border border-gray-100 shrink-0">
+                {icon_html}
+            </div>
+            <div class="flex flex-col min-w-0">
+                <div class="text-sm font-bold {main_text_color} uppercase tracking-wide whitespace-nowrap overflow-hidden text-ellipsis">{title}</div>
+                {subtitle_html}
             </div>
         </div>
         '''
@@ -350,7 +300,7 @@ class ContentRenderer:
             </div>
             '''
 
-    def _generate_references_html(self, references: List[Dict[str, Any]], search_provider: str) -> str:
+    def _generate_references_html(self, references: List[Dict[str, Any]]) -> str:
         if not references:
             return ""
             
@@ -468,7 +418,8 @@ class ContentRenderer:
                      references: List[Dict[str, Any]] = None,
                     mcp_steps: List[Dict[str, Any]] = None,
                     model_name: str = "",
-                    search_provider: str = "Unknown Provider",
+                    provider_name: str = "Unknown",
+                    behavior_summary: str = "Text Generation",
                     icon_config: str = "openai",
                     vision_model_name: str = None,
                     vision_icon_config: str = None,
@@ -508,7 +459,8 @@ class ContentRenderer:
             
         icon_data_url = self._get_icon_data_url(icon_config)
         
-        provider_domain = self._get_domain(base_url)
+        # provider_domain = self._get_domain(base_url)
+        # We now use passed provider_name instead of strict domain inference
         
         # Prepare Vision Info if vision model was used
         vision_display = None
@@ -527,21 +479,25 @@ class ContentRenderer:
             v_icon = vision_icon_config if vision_icon_config else "openai"
             vision_icon_url = self._get_icon_data_url(v_icon)
             
-            vision_provider_domain = self._get_domain(vision_base_url or base_url)
+            # vision_provider_domain = self._get_domain(vision_base_url or base_url)
+            # New behavior: we ignore explicit vision provider text in header, just merge logic if needed or just use behavior summary.
+            # But the user might want to see the specific vision model name?
+            # User request: "Model UI Name Service Provider + Behavior Summary"
+            # It implies a SINGLE model card.
+            # If vision is used, we usually care about the main model responding.
+            # We can mention Vision in behavior summary.
         
         response_header = self._generate_card_header(
             model_display, 
             icon_data_url=icon_data_url, 
-            provider_text=provider_domain,
-            vision_title=vision_display,
-            vision_icon_data_url=vision_icon_url,
-            vision_provider_text=vision_provider_domain
+            provider_text=provider_name,
+            behavior_summary=behavior_summary
         )
         
         suggestions_html = self._generate_suggestions_html(suggestions or [])
         stats_html = self._generate_status_footer(stats or {}, billing_info=billing_info)
         # Pass search_provider to references generation
-        references_html = self._generate_references_html(references or [], search_provider)
+        references_html = self._generate_references_html(references or [])
         # Generate MCP steps HTML
         mcp_steps_html = self._generate_mcp_steps_html(mcp_steps or [])
         

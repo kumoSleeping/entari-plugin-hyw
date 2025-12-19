@@ -20,19 +20,17 @@ class HYWConfig:
     extra_body: Optional[Dict[str, Any]] = None
     temperature: float = 0.4
     max_turns: int = 10
+    icon: str = "openai"  # logo for primary model
+    vision_icon: Optional[str] = None  # logo for vision model (falls back to icon when absent)
     enable_browser_fallback: bool = False
     vision_system_prompt: Optional[str] = None
     intruct_system_prompt: Optional[str] = None
     agent_system_prompt: Optional[str] = None
     playwright_mcp_command: str = "npx"
     playwright_mcp_args: Optional[List[str]] = None
-    # Billing configuration (price per million tokens)
-    # Main model pricing - if not set, billing is disabled
     input_price: Optional[float] = None  # $ per 1M input tokens
     output_price: Optional[float] = None  # $ per 1M output tokens
-    # Vision model pricing overrides (defaults to main model pricing if not set)
     vision_input_price: Optional[float] = None
     vision_output_price: Optional[float] = None
-    # Instruct model pricing overrides (defaults to main model pricing if not set)
     intruct_input_price: Optional[float] = None
     intruct_output_price: Optional[float] = None
