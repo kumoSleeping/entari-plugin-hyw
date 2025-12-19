@@ -374,6 +374,31 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         # Use stats_list if available, otherwise standard stats
         stats_to_render = final_resp.get("stats_list", final_resp.get("stats", {}))
 
+        # Determine Behavior Summary & Provider Name
+        
+        # 1. Behavior Summary
+        behavior_summary = "Text Generation"
+        if structured.get("mcp_steps"):
+            behavior_summary = "Agentic Loop"
+        elif vision_model_used:
+             behavior_summary = "Visual Analysis"
+        
+        # 2. Provider Name
+        # Try to get from m_conf (resolved above)
+        provider_name = "Unknown Provider"
+        if model_used and m_conf:
+            provider_name = m_conf.get("provider", "Unknown Provider")
+        elif not model_used and vision_model_used:
+             # If only vision model used (unlikely but possible in code logic)
+             if 'v_conf' in locals() and v_conf:
+                 provider_name = v_conf.get("provider", "Unknown Provider")
+        
+        # If still unknown and we have base_url, maybe use domain as last resort fallback?
+        # User said: "provider does not automatically get from url if not filled"
+        # So if it's "Unknown Provider", we leave it or maybe empty string?
+        # Let's stick to "Unknown Provider" or just empty if we want to be clean.
+        # But for UI validation it's better to show something if missing config.
+             
         render_ok = await renderer.render(
             markdown_content=content,
             output_path=output_path,
@@ -382,7 +407,8 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             references=structured.get("references", []),
             mcp_steps=structured.get("mcp_steps", []),
             model_name=render_model_name,
-            search_provider="Playwright",
+            provider_name=provider_name,
+            behavior_summary=behavior_summary,
             icon_config=render_icon,
             vision_model_name=vision_model_used,
             vision_base_url=vision_base_url,
@@ -660,7 +686,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val, 
                          next_prompt=next_prompt, next_text_model=next_text_model, next_vision_model=next_vision_model)
 
-metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="2.3.3", config=HywConfig)
+metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.2.103", config=HywConfig)
 
 @leto.on(CommandReceive)
 async def remove_at(content: MessageChain):
