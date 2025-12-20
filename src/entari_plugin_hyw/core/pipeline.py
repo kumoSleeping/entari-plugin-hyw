@@ -111,6 +111,10 @@ class ProcessingPipeline:
 
             # Vision stage
             vision_text = ""
+            vision_start = time.time()
+            vision_time = 0
+            vision_cost = 0.0
+            vision_usage = {}
             if images:
                 vision_model = (
                     selected_vision_model
@@ -129,6 +133,15 @@ class ProcessingPipeline:
                 # Add vision usage with vision-specific pricing
                 usage_totals["input_tokens"] += vision_usage.get("input_tokens", 0)
                 usage_totals["output_tokens"] += vision_usage.get("output_tokens", 0)
+                
+                # Calculate Vision Cost
+                v_in_price = float(getattr(self.config, "vision_input_price", None) or getattr(self.config, "input_price", 0.0) or 0.0)
+                v_out_price = float(getattr(self.config, "vision_output_price", None) or getattr(self.config, "output_price", 0.0) or 0.0)
+                if v_in_price > 0 or v_out_price > 0:
+                     vision_cost = (vision_usage.get("input_tokens", 0) / 1_000_000 * v_in_price) + (vision_usage.get("output_tokens", 0) / 1_000_000 * v_out_price)
+
+                vision_time = time.time() - vision_start
+                
                 trace["vision"] = {
                     "model": vision_model,
                     "base_url": getattr(self.config, "vision_base_url", None) or self.config.base_url,
@@ -137,18 +150,33 @@ class ProcessingPipeline:
                     "images_count": len(images or []),
                     "output": vision_text,
                     "usage": vision_usage,
+                    "time": vision_time,
+                    "cost": vision_cost
                 }
 
             # Intruct + pre-search
+            instruct_start = time.time()
             instruct_model = getattr(self.config, "intruct_model_name", None) or active_model
-            instruct_text, search_payloads, intruct_trace, intruct_usage = await self._run_instruct_stage(
+            instruct_text, search_payloads, intruct_trace, intruct_usage, search_time = await self._run_instruct_stage(
                 user_input=user_input,
                 vision_text=vision_text,
                 model=instruct_model,
             )
+            instruct_time = time.time() - instruct_start
+            
+            # Calculate Instruct Cost
+            instruct_cost = 0.0
+            i_in_price = float(getattr(self.config, "intruct_input_price", None) or getattr(self.config, "input_price", 0.0) or 0.0)
+            i_out_price = float(getattr(self.config, "intruct_output_price", None) or getattr(self.config, "output_price", 0.0) or 0.0)
+            if i_in_price > 0 or i_out_price > 0:
+                instruct_cost = (intruct_usage.get("input_tokens", 0) / 1_000_000 * i_in_price) + (intruct_usage.get("output_tokens", 0) / 1_000_000 * i_out_price)
+            
             # Add instruct usage
             usage_totals["input_tokens"] += intruct_usage.get("input_tokens", 0)
             usage_totals["output_tokens"] += intruct_usage.get("output_tokens", 0)
+            
+            intruct_trace["time"] = instruct_time
+            intruct_trace["cost"] = instruct_cost
             trace["intruct"] = intruct_trace
 
             explicit_mcp_intent = "mcp" in (user_input or "").lower()
@@ -162,6 +190,7 @@ class ProcessingPipeline:
                 logger.warning(f"MCP Playwright granted for this request: reason={intruct_trace.get('grant_reason')!r}")
 
             # Start agent loop
+            agent_start_time = time.time()
             current_history.append({"role": "user", "content": user_input or "..."})
 
             max_steps = 6
@@ -269,6 +298,22 @@ class ProcessingPipeline:
             structured = self._parse_tagged_response(final_response_content)
             final_content = structured.get("response") or final_response_content
 
+            agent_time = time.time() - agent_start_time
+            
+            # Calculate Agent Cost (accumulated steps)
+            agent_cost = 0.0
+            a_in_price = float(getattr(self.config, "input_price", 0.0) or 0.0)
+            a_out_price = float(getattr(self.config, "output_price", 0.0) or 0.0)
+            
+            # Agent usage is already in usage_totals, but that includes ALL stages.
+            # We need just Agent tokens for Agent cost.
+            # Agent inputs = Total inputs - Vision inputs - Instruct inputs
+            agent_input_tokens = usage_totals["input_tokens"] - vision_usage.get("input_tokens", 0) - intruct_usage.get("input_tokens", 0)
+            agent_output_tokens = usage_totals["output_tokens"] - vision_usage.get("output_tokens", 0) - intruct_usage.get("output_tokens", 0)
+            
+            if a_in_price > 0 or a_out_price > 0:
+                agent_cost = (agent_input_tokens / 1_000_000 * a_in_price) + (agent_output_tokens / 1_000_000 * a_out_price)
+
             trace["agent"] = {
                 "model": active_model,
                 "base_url": self.config.base_url,
@@ -276,6 +321,8 @@ class ProcessingPipeline:
                 "steps": agent_trace_steps,
                 "final_output": final_response_content,
                 "mcp_granted": grant_mcp,
+                "time": agent_time,
+                "cost": agent_cost
             }
             trace_markdown = self._render_trace_markdown(trace)
 
@@ -297,7 +344,96 @@ class ProcessingPipeline:
                 input_cost = (usage_totals["input_tokens"] / 1_000_000) * input_price
                 output_cost = (usage_totals["output_tokens"] / 1_000_000) * output_price
                 billing_info["total_cost"] = input_cost + output_cost
-                logger.info(f"Billing: {usage_totals['input_tokens']} in @ ${input_price}/M + {usage_totals['output_tokens']} out @ ${output_price}/M = ${billing_info['total_cost']:.6f}")
+                # logger.info(f"Billing: {usage_totals['input_tokens']} in @ ${input_price}/M + {usage_totals['output_tokens']} out @ ${output_price}/M = ${billing_info['total_cost']:.6f}")
+
+            # Build stages_used list for UI display
+            # Order: Vision (if used) -> Search (if performed) -> Agent
+            stages_used = []
+            
+            # Helper to infer icon from model name or base_url
+            def infer_icon(model_name: str, base_url: str) -> str:
+                model_lower = (model_name or "").lower()
+                url_lower = (base_url or "").lower()
+                
+                if "deepseek" in model_lower or "deepseek" in url_lower:
+                    return "deepseek"
+                elif "claude" in model_lower or "anthropic" in url_lower:
+                    return "anthropic"
+                elif "gemini" in model_lower or "google" in url_lower:
+                    return "google"
+                elif "gpt" in model_lower or "openai" in url_lower:
+                    return "openai"
+                elif "qwen" in model_lower:
+                    return "qwen"
+                elif "openrouter" in url_lower:
+                    return "openrouter"
+                return "openai"  # Default fallback
+            
+            # Helper to infer provider from base_url
+            def infer_provider(base_url: str) -> str:
+                url_lower = (base_url or "").lower()
+                if "openrouter" in url_lower:
+                    return "OpenRouter"
+                elif "openai" in url_lower:
+                    return "OpenAI"
+                elif "anthropic" in url_lower:
+                    return "Anthropic"
+                elif "google" in url_lower:
+                    return "Google"
+                elif "deepseek" in url_lower:
+                    return "DeepSeek"
+                return ""  # Empty string = don't show provider
+            
+            if trace.get("vision"):
+                v = trace["vision"]
+                v_model = v.get("model", "")
+                v_base_url = v.get("base_url", "") or self.config.base_url
+                stages_used.append({
+                    "name": "Vision",
+                    "model": v_model,
+                    "icon_config": getattr(self.config, "vision_icon", None) or infer_icon(v_model, v_base_url),
+                    "provider": infer_provider(v_base_url),
+                    "time": v.get("time", 0),
+                    "cost": v.get("cost", 0.0)
+                })
+            
+            if trace.get("intruct"):
+                i = trace["intruct"]
+                i_model = i.get("model", "")
+                i_base_url = i.get("base_url", "") or self.config.base_url
+                stages_used.append({
+                    "name": "Instruct",
+                    "model": i_model,
+                    "icon_config": getattr(self.config, "intruct_icon", None) or infer_icon(i_model, i_base_url),
+                    "provider": infer_provider(i_base_url),
+                    "time": i.get("time", 0),
+                    "cost": i.get("cost", 0.0)
+                })
+
+            # Show Search stage only when search was actually performed
+            if search_payloads:
+                # Use dedicated SearXNG metadata as requested
+                stages_used.append({
+                    "name": "Search",
+                    "model": "SearXNG",
+                    "icon_config": "search", # Ensure mapping exists or handle specially in render
+                    "provider": "SearXNG",
+                    "time": search_time,
+                    "cost": 0.0 # Search is free in this plugin
+                })
+            
+            if trace.get("agent"):
+                a = trace["agent"]
+                a_model = a.get("model", "") or active_model
+                a_base_url = a.get("base_url", "") or self.config.base_url
+                stages_used.append({
+                    "name": "Agent",
+                    "model": a_model,
+                    "icon_config": getattr(self.config, "icon", None) or infer_icon(a_model, a_base_url),
+                    "provider": infer_provider(a_base_url),
+                    "time": a.get("time", 0),
+                    "cost": a.get("cost", 0.0)
+                })
 
             return {
                 "llm_response": final_content,
@@ -308,6 +444,7 @@ class ProcessingPipeline:
                 "conversation_history": current_history,
                 "trace_markdown": trace_markdown,
                 "billing_info": billing_info,
+                "stages_used": stages_used,
             }
 
         except Exception as e:
@@ -470,8 +607,8 @@ class ProcessingPipeline:
 
     async def _run_instruct_stage(
         self, user_input: str, vision_text: str, model: str
-    ) -> Tuple[str, List[str], Dict[str, Any], Dict[str, int]]:
-        """Returns (instruct_text, search_payloads, trace_dict, usage_dict)."""
+    ) -> Tuple[str, List[str], Dict[str, Any], Dict[str, int], float]:
+        """Returns (instruct_text, search_payloads, trace_dict, usage_dict, search_time)."""
         tools = [self.web_search_tool, self.grant_mcp_playwright_tool]
         tools_desc = "\n".join([t["function"]["name"] for t in tools])
 
@@ -511,12 +648,20 @@ class ProcessingPipeline:
             "tool_results": [],
             "output": "",
         }
+        
+        search_time = 0.0
+
         if response.tool_calls:
             plan_dict = response.model_dump() if hasattr(response, "model_dump") else response
             history.append(plan_dict)
 
             tasks = [self._safe_route_tool(tc) for tc in response.tool_calls]
+            
+            # Measure search/tool execution time
+            st = time.time()
             results = await asyncio.gather(*tasks)
+            search_time = time.time() - st
+            
             for i, result in enumerate(results):
                 tc = response.tool_calls[i]
                 history.append(
@@ -537,11 +682,11 @@ class ProcessingPipeline:
             # and the grant decision; avoid wasting tokens/time.
             intruct_trace["output"] = ""
             intruct_trace["usage"] = usage
-            return "", search_payloads, intruct_trace, usage
+            return "", search_payloads, intruct_trace, usage, search_time
 
         intruct_trace["output"] = (response.content or "").strip()
         intruct_trace["usage"] = usage
-        return "", search_payloads, intruct_trace, usage
+        return "", search_payloads, intruct_trace, usage, 0.0
 
     def _format_search_msgs(self, search_payloads: List[str]) -> str:
         """

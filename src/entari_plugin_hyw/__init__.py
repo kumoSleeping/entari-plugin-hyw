@@ -338,10 +338,29 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         model_used = final_resp.get("model_used")
         vision_model_used = final_resp.get("vision_model_used")
         
+        # Helper to infer icon from model name
+        def infer_icon_from_model(model_name: str) -> str:
+            """Infer icon name from model name (e.g. 'google/gemini-3-flash' -> 'google' or 'gemini')"""
+            if not model_name:
+                return conf.icon
+            name_lower = model_name.lower()
+            # Check for known providers/models in the name
+            known_icons = ["google", "gemini", "openai", "anthropic", "deepseek", "mistral", 
+                          "qwen", "grok", "xai", "perplexity", "microsoft", "minimax", "nvidia"]
+            for icon_name in known_icons:
+                if icon_name in name_lower:
+                    return icon_name
+            return conf.icon
+        
         icon = conf.icon
+        m_conf = None
         if model_used:
-            if m_conf := next((m for m in conf.models if m.get("name") == model_used), None):
-                icon = m_conf.get("icon", icon)
+            m_conf = next((m for m in conf.models if m.get("name") == model_used), None)
+            if m_conf:
+                icon = m_conf.get("icon", infer_icon_from_model(model_used))
+            else:
+                # Model not in config list, infer from name
+                icon = infer_icon_from_model(model_used)
 
         # Determine session short code
         if hist_key:
@@ -358,14 +377,17 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         vision_icon = None
         
         if vision_model_used:
-            if v_conf := next((m for m in conf.models if m.get("name") == vision_model_used), None):
+            v_conf = next((m for m in conf.models if m.get("name") == vision_model_used), None)
+            if v_conf:
                 vision_base_url = v_conf.get("base_url")
-                vision_icon = v_conf.get("icon")
+                vision_icon = v_conf.get("icon", infer_icon_from_model(vision_model_used))
+            else:
+                vision_icon = infer_icon_from_model(vision_model_used)
         
         # Handle Vision Only Mode (suppress text model display)
         render_model_name = model_used or conf.model_name or "unknown"
         render_icon = icon
-        render_base_url = m_conf.get("base_url", conf.base_url) if model_used and (m_conf := next((m for m in conf.models if m.get("name") == model_used), None)) else conf.base_url
+        render_base_url = m_conf.get("base_url", conf.base_url) if m_conf else conf.base_url
         
         if not model_used and vision_model_used:
             render_model_name = ""
@@ -406,6 +428,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             stats=stats_to_render,
             references=structured.get("references", []),
             mcp_steps=structured.get("mcp_steps", []),
+            stages_used=final_resp.get("stages_used", []),
             model_name=render_model_name,
             provider_name=provider_name,
             behavior_summary=behavior_summary,

@@ -45,9 +45,8 @@ AGENT_SYSTEM_PROMPT = """
 
 [回复格式要求]
 当不调用工具发送文本, 即会变成最终回复, 请遵守: 
-
 - 语言: 简体中文, 百科式风格.
-- 正文格式: 使用 Markdown.
+- 正文格式: 使用 Markdown, 有大标题, 可以使用数学公式, 格式内容丰富.
 """
 
 AGENT_SYSTEM_PROMPT_INTRUCT_VISION_ADD = """

@@ -117,7 +117,7 @@ class ContentRenderer:
             b64_data = base64.b64encode(data).decode("utf-8")
             return f"data:{mime_type};base64,{b64_data}"
 
-    def _generate_card_header(self, title: str, icon_data_url: str = None, icon_emoji: str = None, custom_icon_html: str = None, badge_text: str = None, badge_class: str = "llm", provider_text: str = None, behavior_summary: str = None, is_plain: bool = False) -> str:
+    def _generate_card_header(self, title: str, icon_data_url: str = None, icon_emoji: str = None, custom_icon_html: str = None, badge_text: str = None, badge_class: str = "llm", provider_text: str = None, behavior_summary: str = None, is_plain: bool = False, icon_box_class: str = None) -> str:
         # LLM Icon
         icon_html = ""
         if custom_icon_html:
@@ -135,7 +135,7 @@ class ContentRenderer:
         # Title (Model Name)
         # Description (Provider • Behavior)
         
-        main_text_color = "text-gray-800"
+        main_text_color = "text-pink-600"
         sub_text_color = "text-gray-500"
         
         if is_plain:
@@ -144,19 +144,26 @@ class ContentRenderer:
              # existing is_plain used for title color text-gray-900.
              pass
 
-        provider_display = provider_text or "Unknown Provider"
-        behavior_display = behavior_summary or "Text Generation"
+        # Restore behavior_display definition
+        behavior_display = behavior_summary if behavior_summary is not None else "Text Generation"
         
         # If is_plain (like Suggestions/MCP), we usually just have a title. 
         # But if we want to reuse this for model card, we need the subtitle.
         
         subtitle_html = ""
         if not is_plain:
-            subtitle_html = f'<div class="text-xs {sub_text_color} font-medium">{provider_display} &bull; {behavior_display}</div>'
+            if provider_text and provider_text.lower() not in ("unknown", "unknown provider"):
+                subtitle_html = f'<div class="text-xs {sub_text_color} font-medium">{provider_text} &bull; {behavior_display}</div>'
+            else:
+                 subtitle_html = f'<div class="text-xs {sub_text_color} font-medium">{behavior_display}</div>'
+        
+        # Default icon box class if not provided
+        if not icon_box_class:
+            icon_box_class = "bg-gray-50 rounded-lg border border-gray-100"
 
         return f'''
         <div class="flex items-center gap-3 pb-3 mb-3 border-b border-gray-100 { '!bg-transparent !border-none !p-0 !mb-0 !pb-0' if is_plain else '' }">
-            <div class="flex items-center justify-center w-10 h-10 bg-gray-50 rounded-lg border border-gray-100 shrink-0">
+            <div class="flex items-center justify-center w-10 h-10 {icon_box_class} shrink-0">
                 {icon_html}
             </div>
             <div class="flex flex-col min-w-0">
@@ -165,7 +172,7 @@ class ContentRenderer:
             </div>
         </div>
         '''
-
+        
     def _generate_suggestions_html(self, suggestions: List[str]) -> str:
         if not suggestions:
             return ""
@@ -300,101 +307,229 @@ class ContentRenderer:
             </div>
             '''
 
-    def _generate_references_html(self, references: List[Dict[str, Any]]) -> str:
-        if not references:
-            return ""
-            
-        # Limit to 8 references
-        refs = references[:8]
+    def _render_list_card(
+        self,
+        icon_html: str,
+        title_html: str, # Allow HTML for complex titles (like stage name + model)
+        subtitle_html: str = None,
+        link_url: str = None,
+        right_content_html: str = None,
+        is_link: bool = False,
+        icon_box_class: str = "bg-gray-50 rounded-md shrink-0 ring-1 ring-inset ring-black/5",
+        is_compact: bool = False
+    ) -> str:
+        tag = "a" if link_url else "div"
+        href_attr = f'href="{link_url}" target="_blank"' if link_url else ""
+        hover_class = "transition-colors hover:bg-gray-50" if (link_url or is_link) else ""
         
-        # provider_display = search_provider.replace("_", " ").title()
-        provider_display = "REFERENCES"
+        # Compact Logic
+        padding_class = "px-4 py-3.5"
+        align_class = "items-start"
+        icon_size_class = "w-8 h-8"
         
-        # Pink Globe SVG
-        icon_svg = '''
-        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S12 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" />
-        </svg>
-        '''
-        header = self._generate_card_header(provider_display, badge_text=None, custom_icon_html=icon_svg, is_plain=True) # Title is the provider
-            
-        html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
-        html_parts.append(header)
-        html_parts.append('<div class="grid grid-cols-2 gap-2.5">')
-        
-        for i, ref in enumerate(refs):
-            title = ref.get("title", "No Title")
-            url = ref.get("url", "#")
-            try:
-                domain = urlparse(url).netloc
-                if domain.startswith("www."): domain = domain[4:]
-            except Exception:
-                domain = "unknown"
-                
-            favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
-            
-            html_parts.append(f'''
-            <a href="{url}" class="flex items-center gap-2.5 p-2.5 bg-white rounded-lg border border-gray-100 no-underline text-inherit transition-colors hover:bg-gray-50 shadow-sm" target="_blank">
-                <div class="w-5 h-5 bg-pink-50 text-pink-600 border border-pink-100 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0">{i+1}</div>
-                <div class="flex-1 overflow-hidden flex flex-col gap-0.5">
-                    <div class="text-[13px] font-semibold text-gray-800 line-clamp-2" title="{title}">{title}</div>
-                    <div class="text-[11px] text-gray-400 flex items-center gap-1 whitespace-nowrap overflow-hidden text-ellipsis">
-                        <img src="{favicon_url}" class="w-3 h-3 rounded-sm" onerror="this.style.display='none'">
-                        {domain}
-                    </div>
-                </div>
-            </a>
-            ''')
-            
-        html_parts.append('</div></div>')
-        return "".join(html_parts)
+        if is_compact:
+            padding_class = "p-2.5"
+            align_class = "items-center"
+            icon_size_class = "w-6 h-6"
 
-    def _generate_mcp_steps_html(self, mcp_steps: List[Dict[str, Any]]) -> str:
-        if not mcp_steps:
-            return ""
-        
-        # Pink Terminal Icon
-        icon_svg = '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500"><path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>'''
-        
-        # Using the same header helper with plain style
-        header = self._generate_card_header("MCP FLOW", badge_text=None, custom_icon_html=icon_svg, is_plain=True)
+        if icon_box_class and "w-" in icon_box_class and "h-" in icon_box_class:
+             # If custom class provides size, don't override unless necessary.
+             # Actually, just trust the caller's class if they provide one?
+             # For now, let's append icon_size_class ONLY if icon_box_class is default
+             pass 
+        else:
+             # If default class was passed (or user passed class without size), we might want to enforce size?
+             # But the default argument includes size? No, default arg is "bg-gray-50...".
+             # Wait, default arg doesn't include w-8 h-8.
+             # The old code had: class="flex items-center justify-center w-8 h-8 ...
+             pass
 
-        # SVG icons with minimal footprint
-        I_STYLE = "width:14px;height:14px"
-        STEP_ICONS = {
-            "navigate": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18a9 9 0 0 1-9-9" /></svg>''',
-            "snapshot": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574" /></svg>''',
-            "click": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672" /></svg>''',
-            "type": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652" /></svg>''',
-            "code": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25" /></svg>''',
-            "default": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21" /></svg>''',
-        }
-            
-        html_parts = ['<div class="flex flex-col gap-3 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">']
-        html_parts.append(header)
-        html_parts.append('<div class="flex flex-col gap-2">')
-        
-        for i, step in enumerate(mcp_steps):
-            name = step.get("name", "unknown")
-            desc = step.get("description", "")
-            icon_key = step.get("icon", "").lower()
-            
-            icon_svg = STEP_ICONS.get(icon_key, STEP_ICONS["default"])
-            desc_html = f'<div class="text-[10px] text-gray-400 mt-0.5">{desc}</div>' if desc else ''
-            
-            html_parts.append(f'''
-            <div class="flex items-center gap-2.5 p-2.5 bg-white rounded-lg border border-gray-100 shadow-sm">
-                <div class="w-6 h-6 flex items-center justify-center rounded-md border border-pink-100 bg-pink-50 text-pink-600 shrink-0">
-                    {icon_svg}
-                </div>
-                <div class="flex-1 min-w-0">
-                    <div class="text-[12px] font-semibold text-gray-800 font-mono">{name}</div>
-                    {desc_html}
-                </div>
+        # Consistent Card Style
+        return f'''
+        <{tag} {href_attr} class="flex {align_class} gap-3 {padding_class} rounded-lg border border-gray-100 bg-white shadow-sm no-underline text-inherit {hover_class}">
+            <div class="flex items-center justify-center {icon_size_class} {icon_box_class}">
+                {icon_html}
             </div>
-            ''')
+            <div class="flex flex-col flex-1 min-w-0 gap-0.5">
+                <div class="flex items-center gap-2 leading-tight min-w-0">
+                    {title_html}
+                </div>
+                {f'<div>{subtitle_html}</div>' if subtitle_html else ''}
+            </div>
+            {f'<div class="shrink-0 ml-2">{right_content_html}</div>' if right_content_html else ''}
+        </{tag}>
+        '''
+
+
+
+    def _generate_pipeline_html(self, stages: List[Dict[str, Any]], mcp_steps: List[Dict[str, Any]] = None, references: List[Dict[str, Any]] = None) -> str:
+        """Generate HTML for unified pipeline display containing Stages, MCP Flow, and References.
+        """
+        if not stages and not mcp_steps and not references:
+            return ""
+        
+        html_parts = ['<div class="flex flex-col gap-1.5">']
+        
+        # --- 1. Pipeline Stages ---
+        STAGE_COLORS = {
+            "Vision": "bg-purple-50 text-purple-600 border-purple-100",
+            "Instruct": "bg-blue-50 text-blue-600 border-blue-100",
+            "Search": "bg-orange-50 text-orange-600 border-orange-100",
+            "Agent": "bg-green-50 text-green-600 border-green-100",
+        }
+        
+        if stages:
+            for i, stage in enumerate(stages):
+                name = stage.get("name", "Step")
+                model = stage.get("model", "")
+                icon_config = stage.get("icon_config", "")
+                provider = stage.get("provider", "")
+                
+                # Get model icon using the existing method
+                icon_data_url = self._get_icon_data_url(icon_config) if icon_config else ""
+                
+                # Extract short model name for display
+                if "/" in model:
+                    model_short = model.split("/")[-1]
+                else:
+                    model_short = model
+                # Truncate if too long
+                if len(model_short) > 25:
+                    model_short = model_short[:23] + "…"
+                
+                # Build icon HTML
+                if name == "Search":
+                    # Use Pink Globe SVG for Search stage, consistent with References
+                    icon_html = '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S12 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" /></svg>'''
+                elif icon_data_url:
+                    icon_html = f'<img src="{icon_data_url}" class="w-5 h-5 object-contain rounded">'
+                else:
+                    # Fallback
+                    stage_emoji = {"Vision": "👁️", "Search": "🔍", "Agent": "✨", "Instruct": "📝"}
+                    emoji = stage_emoji.get(name, "⚙️")
+                    icon_html = f'<span class="text-sm">{emoji}</span>'
+                
+                # Define color
+                color = STAGE_COLORS.get(name, "bg-gray-50 text-gray-600 border-gray-100")
+                
+                provider_html = ""
+                if provider and provider.lower() not in ("unknown", "unknown provider", ""):
+                    provider_html = f'<span class="text-[10px] text-gray-400 shrink-0 truncate max-w-[80px]">{provider}</span>'
+
+                time_val = stage.get("time", 0)
+                cost_val = stage.get("cost", 0.0)
+                time_str = f"{time_val:.2f}s"
+                cost_str = f"${cost_val:.6f}" if cost_val > 0 else "$0"
+                if name == "Search": cost_str = "$0"
+
+                stats_html = f'<div class="flex items-center gap-3 text-[11px] text-gray-500 font-mono mt-0.5"><span>{time_str}</span><span>{cost_str}</span></div>'
+
+                icon_box_class = f"{color} rounded-md border shrink-0"
+
+                title_html = f'''
+                        <span class="text-[11px] font-bold uppercase text-pink-600 shrink-0">{name}</span>
+                        <span class="text-[11px] font-medium text-gray-700 truncate min-w-0" title="{model}">{model_short}</span>
+                        <span class="ml-auto">{provider_html}</span>
+                '''
+                
+                html_parts.append(self._render_list_card(
+                    icon_html=icon_html,
+                    title_html=title_html,
+                    subtitle_html=stats_html,
+                    right_content_html=None,
+                    is_compact=True,
+                    icon_box_class=icon_box_class
+                ))
+        
+        # --- 2. MCP Flow ---
+        if mcp_steps:
+             # Header with Separator logic (or just simple header)
+             # Use the simple header from _generate_card_header, but maybe simplified margin?
+             # Pink Terminal Icon
+            mcp_icon_svg = '''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500"><path stroke-linecap="round" stroke-linejoin="round" d="m6.75 7.5 3 2.25-3 2.25m4.5 0h3m-9 8.25h13.5A2.25 2.25 0 0 0 21 18V6a2.25 2.25 0 0 0-2.25-2.25H5.25A2.25 2.25 0 0 0 3 6v12a2.25 2.25 0 0 0 2.25 2.25Z" /></svg>'''
+            mcp_header = self._generate_card_header("MCP FLOW", badge_text=None, custom_icon_html=mcp_icon_svg, is_plain=True)
+            # Add some spacing before section if there were stages
+            if stages:
+                html_parts.append('<div class="mt-2"></div>')
+            html_parts.append(mcp_header)
             
-        html_parts.append('</div></div>')
+            # SVG icons
+            I_STYLE = "width:14px;height:14px"
+            STEP_ICONS = {
+                "navigate": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18a9 9 0 0 1-9-9" /></svg>''',
+                "snapshot": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M6.827 6.175A2.31 2.31 0 0 1 5.186 7.23c-.38.054-.757.112-1.134.175C2.999 7.58 2.25 8.507 2.25 9.574V18a2.25 2.25 0 0 0 2.25 2.25h15A2.25 2.25 0 0 0 21.75 18V9.574" /></svg>''',
+                "click": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M15.042 21.672 13.684 16.6m0 0-2.51 2.225.569-9.47 5.227 7.917-3.286-.672" /></svg>''',
+                "type": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652" /></svg>''',
+                "code": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M17.25 6.75 22.5 12l-5.25 5.25m-10.5 0L1.5 12l5.25-5.25" /></svg>''',
+                "default": f'''<svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" style="{I_STYLE}"><path stroke-linecap="round" stroke-linejoin="round" d="M11.42 15.17 17.25 21" /></svg>''',
+            }
+
+            for i, step in enumerate(mcp_steps):
+                name = step.get("name", "unknown")
+                desc = step.get("description", "")
+                icon_key = step.get("icon", "").lower()
+                
+                icon_svg = STEP_ICONS.get(icon_key, STEP_ICONS["default"])
+                
+                icon_box_class = "rounded-md border border-pink-100 bg-pink-50 text-pink-600 shrink-0"
+                title_html = f'<div class="text-[12px] font-semibold text-gray-800 font-mono">{name}</div>'
+                subtitle_html = f'<div class="text-[10px] text-gray-400">{desc}</div>' if desc else None
+                
+                html_parts.append(self._render_list_card(
+                    icon_html=icon_svg, 
+                    title_html=title_html,
+                    subtitle_html=subtitle_html,
+                    is_compact=True,
+                    icon_box_class=icon_box_class
+                ))
+
+        # --- 3. References ---
+        if references:
+            # Pink Globe SVG
+            ref_icon_svg = '''
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor" class="w-5 h-5 text-pink-500">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 21a9.004 9.004 0 0 0 8.716-6.747M12 21a9.004 9.004 0 0 1-8.716-6.747M12 21c2.485 0 4.5-4.03 4.5-9S12 3 12 3m0 18c-2.485 0-4.5-4.03-4.5-9S12 3 12 3m0 0a8.997 8.997 0 0 1 7.843 4.582M12 3a8.997 8.997 0 0 0-7.843 4.582m15.686 0A11.953 11.953 0 0 1 12 10.5c-2.998 0-5.74-1.1-7.843-2.918m15.686 0A8.959 8.959 0 0 1 21 12c0 .778-.099 1.533-.284 2.253m0 0A17.919 17.919 0 0 1 12 16.5c-3.162 0-6.133-.815-8.716-2.247m0 0A9.015 9.015 0 0 1 3 12c0-1.605.42-3.113 1.157-4.418" />
+            </svg>
+            '''
+            ref_header = self._generate_card_header("REFERENCES", badge_text=None, custom_icon_html=ref_icon_svg, is_plain=True)
+            if stages or mcp_steps:
+                html_parts.append('<div class="mt-2"></div>')
+            html_parts.append(ref_header)
+            
+            # Limit to 8 references
+            refs = references[:8]
+            
+            for i, ref in enumerate(refs):
+                title = ref.get("title", "No Title")
+                url = ref.get("url", "#")
+                try:
+                    domain = urlparse(url).netloc
+                    if domain.startswith("www."): domain = domain[4:]
+                except Exception:
+                    domain = "unknown"
+                    
+                favicon_url = f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+                
+                icon_box = f'<div class="w-full h-full flex items-center justify-center text-[10px] font-bold text-pink-600 bg-pink-50 rounded-md border border-pink-100">{i+1}</div>'
+                title_html = f'<div class="text-[12px] font-medium text-gray-800 truncate" title="{title}">{title}</div>'
+                
+                subtitle_html = f'''
+                <div class="flex items-center gap-1 text-[10px] text-gray-400">
+                    <img src="{favicon_url}" class="w-3 h-3 rounded-sm opacity-60" onerror="this.style.display='none'">
+                    <span>{domain}</span>
+                </div>
+                '''
+                
+                html_parts.append(self._render_list_card(
+                    icon_html=icon_box,
+                    title_html=title_html,
+                    subtitle_html=subtitle_html,
+                    link_url=url,
+                    is_compact=True,
+                    icon_box_class="bg-pink-50 border border-pink-100 rounded-md shrink-0 ring-0" # Override default ring
+                ))
+
+        html_parts.append('</div>')
         return "".join(html_parts)
 
     def _get_domain(self, url: str) -> str:
@@ -417,6 +552,7 @@ class ContentRenderer:
                      stats: Dict[str, Any] = None,
                      references: List[Dict[str, Any]] = None,
                     mcp_steps: List[Dict[str, Any]] = None,
+                    stages_used: List[Dict[str, Any]] = None,
                     model_name: str = "",
                     provider_name: str = "Unknown",
                     behavior_summary: str = "Text Generation",
@@ -487,19 +623,27 @@ class ContentRenderer:
             # If vision is used, we usually care about the main model responding.
             # We can mention Vision in behavior summary.
         
+        # New "Automated Pipeline" Header
+        # Pink/White style
+        flowchart_icon = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="w-6 h-6 text-pink-600"><rect x="3" y="3" width="7" height="7"></rect><rect x="14" y="3" width="7" height="7"></rect><rect x="14" y="14" width="7" height="7"></rect><rect x="3" y="14" width="7" height="7"></rect></svg>'
+        
         response_header = self._generate_card_header(
-            model_display, 
-            icon_data_url=icon_data_url, 
-            provider_text=provider_name,
-            behavior_summary=behavior_summary
+            title="Automated Pipeline",
+            custom_icon_html=flowchart_icon,
+            badge_text="PIPELINE", 
+            provider_text="", 
+            behavior_summary="", 
+            is_plain=False,
+            icon_box_class="bg-gray-50 rounded-lg border border-gray-100"
         )
         
         suggestions_html = self._generate_suggestions_html(suggestions or [])
-        stats_html = self._generate_status_footer(stats or {}, billing_info=billing_info)
+        # Stats Footer REMOVED (now displayed in stages)
+        stats_html = "" 
         # Pass search_provider to references generation
-        references_html = self._generate_references_html(references or [])
-        # Generate MCP steps HTML
-        mcp_steps_html = self._generate_mcp_steps_html(mcp_steps or [])
+        mcp_steps_html = "" # self._generate_mcp_steps_html(mcp_steps or [])
+        # Generate pipeline (stages + mcp + references) HTML
+        pipeline_html = self._generate_pipeline_html(stages_used or [], mcp_steps or [], references or [])
         
         # 2. Render with Playwright
         max_attempts = 1  # No retry - if set_content fails, retrying won't help
@@ -520,29 +664,40 @@ class ContentRenderer:
                 parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
                 for i, part in enumerate(parts):
                     if not part.startswith('<code'):
-                        parts[i] = re.sub(r'\[(\d+)\](?![^<]*>)', r'<sup class="text-pink-600 font-bold text-[10px] ml-0.5">\1</sup>', part)
+                        parts[i] = re.sub(r'\[(\d+)\](?![^<]*>)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-pink-600 bg-pink-50 border border-pink-100 rounded mx-0.5 align-middle">\1</span>', part)
                 content_html = "".join(parts)
                 
                 # Load and Fill Template
                 logger.info(f"Loading template from {self.template_path}")
                 with open(self.template_path, "r", encoding="utf-8") as f:
                     template = f.read()
-                logger.info(f"Template header: {template[:100]}")
+                logger.info(f"Template size: {len(template)} bytes, header: {template[:100]}")
                     
                 # Inject all pre-compiled assets (CSS + JS)
                 final_html = template
+                injected_assets = []
                 for key, content in self.assets.items():
-                    # Regex to match {{ key }} with optional whitespace
-                    pattern = r"\{\{\s*" + re.escape(key) + r"\s*\}\}"
-                    if re.search(pattern, final_html):
+                    # Regex to match {{ key }} allowing for whitespace even between braces
+                    # Matches {{key}}, { { key } }, {{ key }}, etc.
+                    pattern = r"\{\s*\{\s*" + re.escape(key) + r"\s*\}\s*\}"
+                    match = re.search(pattern, final_html)
+                    if match:
                         final_html = re.sub(pattern, lambda _: content, final_html)
+                        injected_assets.append(f"{key}({len(content)})")
+                    else:
+                        logger.warning(f"Asset placeholder NOT FOUND: {key}, pattern: {pattern}")
+                        # Debug: show first 500 chars of template to see placeholders
+                        logger.debug(f"Template start: {template[:500]}")
+                
+                logger.info(f"Injected assets: {', '.join(injected_assets)}")
                 
                 final_html = final_html.replace("{{ content_html }}", content_html)
                 final_html = final_html.replace("{{ timestamp }}", timestamp)
                 final_html = final_html.replace("{{ suggestions }}", suggestions_html)
                 final_html = final_html.replace("{{ stats }}", stats_html)
-                final_html = final_html.replace("{{ references }}", references_html)
-                final_html = final_html.replace("{{ mcp_steps }}", mcp_steps_html)
+                final_html = final_html.replace("{{ references }}", "") # Removed
+                final_html = final_html.replace("{{ mcp_steps }}", "") # Removed
+                final_html = final_html.replace("{{ stages }}", pipeline_html)
                 final_html = final_html.replace("{{ response_header }}", response_header)
                 final_html = final_html.replace("{{ references_json }}", json.dumps(references or []))
             except MemoryError:
@@ -555,7 +710,9 @@ class ContentRenderer:
                 continue
             
             try:
+                logger.info("ContentRenderer: launching playwright...")
                 async with async_playwright() as p:
+                    logger.info("ContentRenderer: playwright context ready, launching browser...")
                     browser = await p.chromium.launch(headless=True)
                     try:
                         # Use device_scale_factor=2 for high DPI rendering (better quality)

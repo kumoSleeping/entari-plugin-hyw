@@ -5,7 +5,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Entari Render</title>
-    <!-- Tailwind CSS (Local) -->
+    <!-- @formatter:off -->
+    <!-- prettier-ignore -->
+    <!-- IMPORTANT: Asset placeholders MUST be {{ name }} on single line! -->
     <style>
         {
                 {
@@ -13,8 +15,6 @@
             }
         }
     </style>
-
-    <!-- Highlight.js (Local) -->
     <style>
         {
                 {
@@ -22,11 +22,7 @@
             }
         }
     </style>
-    <script>
-        { { highlight_js } }
-    </script>
-
-    <!-- KaTeX (Local) -->
+    <script>{ { highlight_js } }</script>
     <style>
         {
                 {
@@ -34,34 +30,42 @@
             }
         }
     </style>
-    <script>
-        { { katex_js } }
-    </script>
-    <script>
-        { { katex_auto_render_js } }
-    </script>
-
-
+    <script>{ { katex_js } }</script>
+    <script>{ { katex_auto_render_js } }</script>
+    <!-- @formatter:on -->
+    <style>
+        #markdown-content h1,
+        #markdown-content h2,
+        #markdown-content h3,
+        #markdown-content h4,
+        #markdown-content h5,
+        #markdown-content h6 {
+            color: #db2777;
+            /* text-pink-600 */
+        }
+    </style>
 </head>
 
 <body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
-    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-0 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
-        <!-- Response Card -->
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-4 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
+        <!-- Response Card (Content First) -->
         <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
-            {{ response_header }}
             <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800">
                 {{ content_html }}
             </div>
         </div>
 
-        <!-- References Card (Optional) -->
-        {{ references }}
 
-        <!-- MCP Steps Card (Optional) -->
-        {{ mcp_steps }}
 
         <!-- Speculation Card (Optional) -->
         {{ suggestions }}
+
+        <!-- Model Header (Moved to Bottom) -->
+        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
+            {{ response_header }}
+            <!-- Pipeline Stages -->
+            {{ stages }}
+        </div>
 
         <!-- Stats Footer -->
         {{ stats }}
@@ -70,26 +74,20 @@
     <script>window.REFERENCES = {{ references_json }};</script>
 
     <script>
-        document.addEventListener('DOMContentLoaded', () => {
-
-
-            // 3. Render Math (KaTeX)
-            const contentDiv = document.getElementById('markdown-content');
+        document.addEventListener("DOMContentLoaded", () => {
+            // Render Math (KaTeX)
+            const contentDiv = document.getElementById("markdown-content");
             renderMathInElement(contentDiv, {
                 delimiters: [
-                    { left: '$$', right: '$$', display: true },
-                    { left: '$', right: '$', display: false },
-                    { left: '\(', right: '\)', display: false },
-                    { left: '\[', right: '\]', display: true }
+                    { left: "$$", right: "$$", display: true },
+                    { left: "$", right: "$", display: false },
+                    { left: "\\(", right: "\\)", display: false },
+                    { left: "\\[", right: "\\]", display: true }
                 ],
                 throwOnError: false
             });
 
-            // 4. Process Citations (Manual replacement since we don't have marked extension anymore)
-            // We can do a simple regex replace on the HTML content for [1], [2] etc.
-            // Be careful not to replace inside attributes.
-            // A safer way is to walk text nodes.
-
+            // Process Citations
             function processCitations(rootNode) {
                 const walker = document.createTreeWalker(
                     rootNode,
@@ -101,7 +99,7 @@
                 const nodesToReplace = [];
                 let node;
                 while (node = walker.nextNode()) {
-                    if (node.parentElement.tagName === 'SCRIPT' || node.parentElement.tagName === 'STYLE' || node.parentElement.tagName === 'A') continue;
+                    if (node.parentElement.tagName === "SCRIPT" || node.parentElement.tagName === "STYLE" || node.parentElement.tagName === "A") continue;
                     if (/\[\d+\]/.test(node.nodeValue)) {
                         nodesToReplace.push(node);
                     }
@@ -115,17 +113,16 @@
                     let match;
 
                     while ((match = regex.exec(text)) !== null) {
-                        // Text before match
                         fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
 
                         const id = match[1];
                         const ref = window.REFERENCES ? window.REFERENCES.find(r => r.id == id) : null;
 
                         if (ref) {
-                            const span = document.createElement('span');
-                            const title = ref.title.replace(/"/g, '&quot;');
+                            const span = document.createElement("span");
+                            const title = ref.title.replace(/"/g, "&quot;");
                             const url = ref.url;
-                            let domain = 'unknown';
+                            let domain = "unknown";
                             try { domain = new URL(url).hostname; } catch (e) { }
                             const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
 
@@ -147,7 +144,6 @@
                         lastIndex = regex.lastIndex;
                     }
 
-                    // Remaining text
                     fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
                     textNode.parentNode.replaceChild(fragment, textNode);
                 });
