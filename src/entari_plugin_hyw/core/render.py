@@ -178,11 +178,47 @@ class ContentRenderer:
         last_exc = None
         for attempt in range(1, max_attempts + 1):
             try:
-                # Server-side Markdown Rendering
+                # 1. Protect math blocks
+                # We look for $$...$$, \[...\], \(...\)
+                # We'll replace them with placeholders so markdown extensions (like nl2br) don't touch them.
+                math_blocks = {}
+                
+                def protect_math(match):
+                    key = f"__MATH_BLOCK_{len(math_blocks)}__"
+                    math_blocks[key] = match.group(0)
+                    return key
+
+                # Patterns for math:
+                # 1) $$ ... $$ (display math)
+                # 2) \[ ... \] (display math)
+                # 3) \( ... \) (inline math)
+                # Note: We must handle multiline for $$ and \[
+                
+                # Regex for $$...$$
+                markdown_content = re.sub(r'\$\$(.*?)\$\$\s*', protect_math, markdown_content, flags=re.DOTALL)
+                
+                # Regex for \[...\]
+                markdown_content = re.sub(r'\\\[(.*?)\\\]\s*', protect_math, markdown_content, flags=re.DOTALL)
+                
+                # Regex for \(...\) (usually single line, but DOTALL is safest if user wraps lines)
+                markdown_content = re.sub(r'\\\((.*?)\\\)', protect_math, markdown_content, flags=re.DOTALL)
+
+                # 2. Render Markdown
+                # Use 'nl2br' to turn newlines into <br>, 'fenced_code' for code blocks
                 content_html = markdown.markdown(
-                    markdown_content.strip(), 
+                    markdown_content.strip(),
                     extensions=['fenced_code', 'tables', 'nl2br', 'sane_lists']
                 )
+                
+                # 3. Restore math blocks
+                def restore_math(text):
+                    # We assume placeholders are intact. We do a simple string replace or regex.
+                    # Since placeholders are unique strings, we can just replace them.
+                    for key, val in math_blocks.items():
+                        text = text.replace(key, val)
+                    return text
+
+                content_html = restore_math(content_html)
                 
                 # Post-process to style citation markers
                 parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
