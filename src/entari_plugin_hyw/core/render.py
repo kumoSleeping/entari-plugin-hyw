@@ -221,14 +221,32 @@ class ContentRenderer:
                 content_html = restore_math(content_html)
                 
                 # Post-process to style citation markers
+                # We split by code blocks to avoid messing up real code, BUT our citations ARE code blocks now.
+                # So we need to look at the code blocks themselves.
                 parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
                 for i, part in enumerate(parts):
-                    if not part.startswith('<code'):
-                        # 1. Numeric Citations [references](/1) -> Blue Style (References)
-                        part = re.sub(r'\[references\]\(/(\d+)\)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
-                        # 2. Alphabetical Citations [mcp](/a) -> Orange Style (MCP Flow)
-                        part = re.sub(r'\[mcp\]\(/([a-zA-Z]+)\)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
-                        parts[i] = part
+                    # Check if this part is a code block containing our specific citation format
+                    if part.startswith('<code'):
+                        # Match <code>ref:123</code> or <code>mcp:abc</code>
+                        # Note: attributes like class might be present if we are unlucky, but `ref:` inside usually means inline code.
+                        
+                        # 1. Numeric: <code>ref:123</code>
+                        ref_match = re.match(r'^<code.*?>ref:(\d+)</code>$', part)
+                        if ref_match:
+                            citation_id = ref_match.group(1)
+                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{citation_id}</span>'
+                            continue
+
+                        # 2. Alpha: <code>mcp:abc</code>
+                        mcp_match = re.match(r'^<code.*?>mcp:([a-zA-Z]+)</code>$', part)
+                        if mcp_match:
+                            mcp_id = mcp_match.group(1)
+                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{mcp_id}</span>'
+                            continue
+                            
+                    # If it's NOT a code block, or a code block we didn't transform, we leave it alone.
+                    # (Previous logic was to regex replace inside non-code blocks. We don't need that anymore 
+                    # because the prompt now enforces code spans).
                 content_html = "".join(parts)
                 
                 # Strip out the structured JSON blocks if they leaked into the content
