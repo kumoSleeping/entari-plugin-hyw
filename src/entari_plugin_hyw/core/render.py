@@ -227,32 +227,21 @@ class ContentRenderer:
                 for i, part in enumerate(parts):
                     # Check if this part is a code block containing our specific citation format
                     if part.startswith('<code'):
-                        # Match <code>ref:123</code> or <code>ref:1, 2</code>
+                        # Match <code>ref:123</code> or <code>mcp:abc</code>
+                        # Note: attributes like class might be present if we are unlucky, but `ref:` inside usually means inline code.
                         
-                        # 1. Numeric: <code>ref:1, 2</code>
-                        # Allow digits, commas, and spaces
-                        ref_match = re.match(r'^<code.*?>ref:\s*([\d,\s]+)\s*</code>$', part)
+                        # 1. Numeric: <code>ref:123</code>
+                        ref_match = re.match(r'^<code.*?>ref:(\d+)</code>$', part)
                         if ref_match:
-                            # Split by comma and strip
-                            raw_ids = ref_match.group(1).split(',')
-                            spans = []
-                            for raw_id in raw_ids:
-                                cid = raw_id.strip()
-                                if cid:
-                                    spans.append(f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{cid}</span>')
-                            parts[i] = "".join(spans)
+                            citation_id = ref_match.group(1)
+                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{citation_id}</span>'
                             continue
 
-                        # 2. Alpha: <code>mcp:a, b</code>
-                        mcp_match = re.match(r'^<code.*?>mcp:\s*([a-zA-Z,\s]+)\s*</code>$', part)
+                        # 2. Alpha: <code>mcp:abc</code>
+                        mcp_match = re.match(r'^<code.*?>mcp:([a-zA-Z]+)</code>$', part)
                         if mcp_match:
-                            raw_ids = mcp_match.group(1).split(',')
-                            spans = []
-                            for raw_id in raw_ids:
-                                mid = raw_id.strip()
-                                if mid:
-                                    spans.append(f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{mid}</span>')
-                            parts[i] = "".join(spans)
+                            mcp_id = mcp_match.group(1)
+                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{mcp_id}</span>'
                             continue
                             
                     # If it's NOT a code block, or a code block we didn't transform, we leave it alone.
