@@ -224,10 +224,10 @@ class ContentRenderer:
                 parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
                 for i, part in enumerate(parts):
                     if not part.startswith('<code'):
-                        # 1. Numeric Citations [1] -> Blue Style (References)
-                        part = re.sub(r'\[(\d+)\](?![^<]*>)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
-                        # 2. Alphabetical Citations [a] -> Orange Style (MCP Flow)
-                        part = re.sub(r'\[([a-zA-Z]+)\](?![^<]*>)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
+                        # 1. Numeric Citations [references](/1) -> Blue Style (References)
+                        part = re.sub(r'\[references\]\(/(\d+)\)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
+                        # 2. Alphabetical Citations [mcp](/a) -> Orange Style (MCP Flow)
+                        part = re.sub(r'\[mcp\]\(/([a-zA-Z]+)\)', r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>', part)
                         parts[i] = part
                 content_html = "".join(parts)
                 
