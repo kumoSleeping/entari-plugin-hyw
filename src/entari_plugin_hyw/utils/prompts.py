@@ -60,7 +60,7 @@ AGENT_SYSTEM_PROMPT_SEARCH_ADD = """
 
 [最终回复]
 - 图片: 如果本次回答适合配图, 对搜索到的图片, 选择 1-3 张合适的尽量类型、来源、不同、主题契合的图片, 美观分布嵌入正文 `![alt](url)`.
-- 引用: 在正文中使用 `[id]` 标注来源, 并在文末通过 `references` 代码块列出.
+- 搜索引用: 在正文中使用 `[数字id]` 如 `[1]` 标注来源, 并在文末通过 `references` 代码块列出.
 - 你需要在最终回复底部添加 `references` 代码块.
 
 ```references
@@ -77,13 +77,14 @@ AGENT_SYSTEM_PROMPT_MCP_ADD = """
 > 积极使用工具完成任务，工具优先于文本回复。
 
 [最终回复格式]
-底部添加 `mcp` 代码块列出工具调用流程:
+- 工具引用: 在正文中使用 `[字母id]` 如 `[a]` 标注来源, 并在文末通过 `mcp` 代码块列出.
+- 底部添加 `mcp` 代码块列出工具调用流程:
 - 格式: `[图标] 工具名称` + 文本描述
 - 图标: navigate, snapshot, click, type, code, wait, default
 
 ```mcp
-[code] browser_run_code
-  执行JavaScript计算
+1. [code] browser_run_code: 执行JavaScript计算
+2. [navigate] navigate: 导航到xxx网站
 ```
 """
 

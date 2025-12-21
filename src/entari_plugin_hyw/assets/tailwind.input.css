@@ -51,7 +51,7 @@ pre::-webkit-scrollbar-thumb {
 }
 
 .markdown-body a {
-    @apply text-pink-600 underline decoration-pink-300 underline-offset-2 hover:text-pink-700 hover:decoration-pink-700 transition-colors;
+    @apply text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-700 hover:decoration-blue-700 transition-colors;
 }
 
 .markdown-body blockquote {
@@ -109,11 +109,11 @@ pre::-webkit-scrollbar-thumb {
 }
 
 .markdown-body code {
-    @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-pink-600;
+    @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-gray-700;
 }
 
 .markdown-body pre {
-    @apply bg-white p-4 rounded-lg overflow-x-auto mb-4 text-sm leading-normal border border-gray-100 shadow-sm;
+    @apply bg-gray-50 p-4 rounded-lg overflow-x-auto mb-4 text-sm leading-normal border border-gray-100 shadow-sm;
 }
 
 .markdown-body pre code {
@@ -159,12 +159,12 @@ pre::-webkit-scrollbar-thumb {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    vertical-align: super;
+    vertical-align: baseline;
     font-size: 0.75em;
     font-weight: bold;
-    color: #db2777;
-    background-color: #fdf2f8;
-    border: 1px solid #fce7f3;
+    color: #4b5563;
+    background-color: #f3f4f6;
+    border: 1px solid #e5e7eb;
     border-radius: 9999px;
     width: 1.4em;
     height: 1.4em;
@@ -178,7 +178,7 @@ pre::-webkit-scrollbar-thumb {
 }
 
 .citation-ref:hover {
-    background-color: #db2777;
+    background-color: #4b5563;
     color: white;
     text-decoration: none !important;
 }

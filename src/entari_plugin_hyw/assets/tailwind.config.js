@@ -1,5 +1,5 @@
 module.exports = {
-    content: ["./template.html", "../core/render.py"],
+    content: ["./template.j2", "../core/render.py"],
     theme: {
         extend: {
             fontFamily: {

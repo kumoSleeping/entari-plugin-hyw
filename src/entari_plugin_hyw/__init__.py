@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import time
 
 from arclet.alconna import Alconna, Args, AllParam, CommandMeta, Option, Arparma, MultiVar, store_true
@@ -87,6 +87,15 @@ class HywConfig(BasicConfModel):
     # Instruct model pricing overrides (defaults to main model pricing if not set)
     intruct_input_price: Optional[float] = None
     intruct_output_price: Optional[float] = None
+    
+    # Provider Names
+    search_name: str = "SearXNG"
+    search_provider: str = "SearXNG"
+    model_provider: Optional[str] = None
+    vision_model_provider: Optional[str] = None
+    intruct_model_provider: Optional[str] = None
+    
+    start_test: Optional[Union[str, bool]] = None
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
@@ -99,6 +108,93 @@ async def _hyw_warmup_mcp():
         await hyw.pipeline.warmup_mcp()
     except Exception as e:
         logger.warning(f"MCP Playwright warmup error: {e}")
+
+@listen(Ready, once=True)
+async def _run_ui_test():
+    """Run UI rendering test on startup if configured."""
+    # Debug log to confirm listener is active
+    logger.info(f"UI TEST Listener Active. start_test config: {conf.start_test} (type: {type(conf.start_test)})")
+    
+    if not conf.start_test:
+        return
+        
+    test_file = ""
+    if isinstance(conf.start_test, str):
+        test_file = conf.start_test
+    elif conf.start_test is True:
+        # User enabled boolean toggle, assume default path
+        # Try a few locations
+        candidates = ["data/conversations/ui-test.md", "ui-test.md", "README.md"]
+        for c in candidates:
+            if os.path.exists(c):
+                test_file = c
+                break
+        if not test_file:
+            logger.warning("UI TEST: start_test=True but no default test file found (tried: data/conversations/ui-test.md, ui-test.md, README.md)")
+            return
+            
+    logger.info(f"UI TEST: Starting render test with file {test_file}")
+    
+    if not os.path.exists(test_file):
+        logger.error(f"UI TEST: File not found: {test_file}")
+        return
+        
+    try:
+        with open(test_file, "r", encoding="utf-8") as f:
+            content = f.read()
+            
+        # Mock Data for Full UI Test
+        stats = {
+            "time": 12.5,
+            "vision_duration": 3.2,
+            "cost": 0.0015
+        }
+        
+        stages = [
+            {"name": "Vision", "model": "google/gemini-pro-vision", "time": 3.2, "cost": 0.0005, "provider": "Google"},
+            {"name": "Search", "model": "duckduckgo", "time": 1.5, "cost": 0.0, "provider": "DDG"},
+            {"name": "Agent", "model": "anthropic/claude-3-5-sonnet", "time": 7.8, "cost": 0.0010, "provider": "Anthropic"}
+        ]
+        
+        mcp_steps = [
+            {"name": "search_google", "description": "searching for 'latest entari news'", "icon": "search"},
+            {"name": "visit_page", "description": "visiting python.org", "icon": "navigate"},
+            {"name": "click_element", "description": "clicking 'Downloads'", "icon": "click"}
+        ]
+        
+        references = [
+            {"title": "Entari Docs", "url": "https://entari.onebot.dev", "domain": "entari.onebot.dev"},
+            {"title": "Python Language", "url": "https://python.org", "domain": "python.org"}
+        ]
+        
+        output_dir = "data/cache"
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = f"{output_dir}/ui_test_result.png"
+        
+        logger.info(f"UI TEST: Rendering to {output_path}...")
+        
+        start = time.time()
+        success = await renderer.render(
+            markdown_content=content,
+            output_path=output_path,
+            stats=stats,
+            stages_used=stages,
+            mcp_steps=mcp_steps,
+            references=references,
+            model_name="CLAUDE-3-5-SONNET",
+            provider_name="Anthropic",
+            behavior_summary="Automated Test",
+            icon_config="anthropic",
+            render_timeout_ms=10000
+        )
+        
+        if success:
+            logger.success(f"UI TEST: Render completed in {time.time() - start:.2f}s. Saved to {output_path}")
+        else:
+            logger.error("UI TEST: Render FAILED.")
+            
+    except Exception as e:
+        logger.error(f"UI TEST: Exception during test: {e}")
 
 
 @listen(Cleanup, once=True)

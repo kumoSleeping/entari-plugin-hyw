@@ -54,3 +54,5 @@ saved_conversations
 design.md
 images
 data
+# Node
+node_modules/

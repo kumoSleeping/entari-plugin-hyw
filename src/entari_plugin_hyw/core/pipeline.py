@@ -495,29 +495,53 @@ class ProcessingPipeline:
             current_step = None
             
             for line in lines:
-                # Check if this is a tool line: [icon] tool_name
-                tool_match = re.match(r'\[(\w+)\]\s+(.+)', line.strip())
-                if tool_match:
-                    # Save previous step if exists
-                    if current_step:
-                        parsed["mcp_steps"].append(current_step)
+                line_stripped = line.strip()
+                if not line_stripped: continue
+
+                # New Format: "1. [icon] name: description" OR "[icon] name: description"
+                # Regex details:
+                # ^(?:(?:\d+\.|[-*])\s+)?  -> Optional numbering (1. or - or *)
+                # \[(\w+)\]                 -> Icon in brackets [icon] -> group 1
+                # \s+                       -> separating space
+                # ([^:]+)                   -> Tool Name (chars before colon) -> group 2
+                # :                         -> Colon separator
+                # \s*(.+)                   -> Description -> group 3
+                new_format_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
+                
+                # Old/Flexible Format: "[icon] name" (description might be on next line)
+                flexible_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+(.+)$', line_stripped)
+
+                if new_format_match:
+                    if current_step: parsed["mcp_steps"].append(current_step)
                     current_step = {
-                        "icon": tool_match.group(1).lower(),
-                        "name": tool_match.group(2).strip(),
+                        "icon": new_format_match.group(1).lower(),
+                        "name": new_format_match.group(2).strip(),
+                        "description": new_format_match.group(3).strip()
+                    }
+                elif flexible_match:
+                    # Could be just "[icon] name" without description, or mixed
+                    if current_step: parsed["mcp_steps"].append(current_step)
+                    current_step = {
+                        "icon": flexible_match.group(1).lower(),
+                        "name": flexible_match.group(2).strip(),
                         "description": ""
                     }
                 elif line.startswith("  ") and current_step:
-                    # This is an indented description line
-                    current_step["description"] = line.strip()
-                elif line.strip() and not line.startswith("[") and current_step is None:
-                    # Fallback: plain tool name without icon
-                    current_step = {
-                        "icon": "",
-                        "name": line.strip(),
-                        "description": ""
-                    }
+                    # Indented description line (continuation)
+                    if current_step["description"]:
+                        current_step["description"] += " " + line.strip()
+                    else:
+                        current_step["description"] = line.strip()
+                elif line_stripped and not line_stripped.startswith("[") and current_step is None:
+                     # Plain text line without icon, treat as name if no current step
+                     # (This handles cases where LLM forgets brackets but lists steps)
+                     if current_step: parsed["mcp_steps"].append(current_step)
+                     current_step = {
+                         "icon": "default", 
+                         "name": line_stripped,
+                         "description": ""
+                     }
             
-            # Don't forget the last step
             if current_step:
                 parsed["mcp_steps"].append(current_step)
             remaining_text = remaining_text.replace(mcp_block_match.group(0), "").strip()
