@@ -432,6 +432,25 @@ class ContentRenderer:
                         "billing_html": billing_html
                     }
 
+                # 5. Feature Flags for Header Icons
+                feature_flags = {
+                    "has_vision": False,
+                    "has_search": False,
+                    "has_mcp": False
+                }
+                
+                # Check Vision
+                if stats_dict.get("vision_duration", 0) > 0:
+                    feature_flags["has_vision"] = True
+                
+                # Check Search
+                if any(s.get("name") == "Search" for s in stages_used or []):
+                    feature_flags["has_search"] = True
+                
+                # Check MCP
+                if mcp_steps or any(s.get("mcp_steps") for s in stages_used or []):
+                    feature_flags["has_mcp"] = True
+
                 # Render Template
                 context = {
                     "content_html": content_html,
@@ -440,6 +459,7 @@ class ContentRenderer:
                     "references": processed_refs,
                     "references_json": json.dumps(references or []),
                     "stats": processed_stats,
+                    "flags": feature_flags,
                     **self.assets
                 }
                 

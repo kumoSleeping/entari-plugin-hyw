@@ -19,7 +19,7 @@
 </head>
 
 <body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
-    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-2 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-0 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit pb-8">
 
         {# --- MACROS --- #}
 
@@ -30,7 +30,7 @@
         {% endmacro %}
 
         {% macro card_header(title, icon_html=None, subtitle_html=None, is_plain=False, icon_box_class=None) %}
-            {% set container_class = "flex items-center gap-3" if is_plain else "flex items-center gap-3 pb-3 mb-3 border-b border-gray-100" %}
+            {% set container_class = "flex items-center gap-3" if is_plain else "flex items-center gap-3 pb-3 mb-3 border-gray-100 border-b" %}
             {% set default_box_class = icon_box_class if icon_box_class else "bg-gray-50 rounded-lg border border-gray-100" %}
             <div class="{{ container_class }}">
                 {{ icon_container(icon_html, box_class=default_box_class) }}
@@ -73,9 +73,18 @@
 
         {# --- MAIN CONTENT --- #}
 
+        <!-- Header / Top Safe Area -->
+        <div class="flex justify-between items-center px-5 pt-5 pb-5">
+             <!-- Top Left Brand Badge (Pill) -->
+            <div class="flex items-center gap-1.5 px-3 py-1.5 bg-white/60 backdrop-blur rounded-lg shadow-sm border border-white/50">
+                <i class="ri-sparkling-2-fill text-pink-500 text-xs"></i>
+                <span class="text-[11px] font-bold text-gray-600 tracking-wide">HYW<span class="font-normal text-gray-400">&nbsp;AGENT</span></span>
+            </div>
+        </div>
+
         <!-- Response Card (Content First) -->
-        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-5 pb-2 overflow-hidden">
-            <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800">
+        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-0 pb-2 overflow-hidden">
+            <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800 [&>*:first-child]:!mt-0">
                 {{ content_html | safe }}
             </div>
         </div>
@@ -154,7 +163,7 @@
                                      {% for step in stage.mcp_steps %}
                                         {% set icon_box_class = "rounded-md border border-gray-100 bg-white text-gray-500 shrink-0" %}
                                         
-                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 font-mono">' + step.name + '</div>' %}
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + step.name + '</div>' %}
                                         {% set subtitle_html = '<div class="text-[12px] text-gray-700 leading-tight">' + step.description + '</div>' if step.description else None %}
                                         {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
                                         
@@ -168,8 +177,7 @@
                 {% endfor %}
             {% endif %}
         </div>
-
-
+        
     </div>
 
     <script>window.REFERENCES = {{ references_json | safe }};</script>
