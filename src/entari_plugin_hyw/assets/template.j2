@@ -111,13 +111,13 @@
                         {% set icon_box_class = color_class + " rounded-md border shrink-0" %}
                         
                         {% set title_html %}
-                            <span class="text-[11px] font-bold uppercase text-gray-700 shrink-0">{{ stage.name }}</span>
-                            <span class="text-[11px] font-medium text-gray-700 truncate min-w-0" title="{{ stage.model }}">{{ stage.model_short }}</span>
-                            <span class="ml-auto text-[10px] text-gray-400 shrink-0 truncate max-w-[80px]">{{ stage.provider }}</span>
+                            <span class="text-[13px] font-bold uppercase text-gray-700 shrink-0">{{ stage.name }}</span>
+                            <span class="text-[13px] font-medium text-gray-700 truncate min-w-0" title="{{ stage.model }}">{{ stage.model_short }}</span>
+                            <span class="ml-auto text-[12px] text-gray-400 shrink-0 truncate max-w-[80px]">{{ stage.provider }}</span>
                         {% endset %}
                         
                         {% set stats_html %}
-                        <div class="flex items-center gap-3 text-[11px] text-gray-500 font-mono mt-0.5">
+                        <div class="flex items-center gap-3 text-[12px] text-gray-500 font-mono mt-0.5">
                             <span>{{ stage.time_str }}</span><span>{{ stage.cost_str }}</span>
                         </div>
                         {% endset %}
@@ -130,7 +130,7 @@
                                 
                                 {# References #}
                                 {% if stage.references %}
-                                    <div class="text-[11px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">References</div>
+                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">References</div>
                                     {% for ref in stage.references %}
                                         {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + ref.domain + "&sz=32" %}
                                         
@@ -140,9 +140,9 @@
                                         
                                         {% set ref_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
                                         
-                                        {% set title_html = '<div class="text-[11px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + ref.title + '</div>' %}
-                                        {% set subtitle_html = '<div class="text-[10px] text-gray-700 truncate">' + ref.domain + '</div>' %}
-                                        {% set right_html = '<div class="flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded">' + (loop.index|string) + '</div>' %}
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + ref.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 truncate">' + ref.domain + '</div>' %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded">' + (loop.index|string) + '</div>' %}
                                         
                                         {{ list_card(ref_icon, title_html, subtitle_html=subtitle_html, link_url=ref.url, right_content_html=right_html, is_compact=True, icon_box_class=ref_icon_box) }}
                                     {% endfor %}
@@ -150,13 +150,13 @@
 
                                 {# MCP Steps #}
                                 {% if stage.mcp_steps %}
-                                     <div class="text-[11px] uppercase font-bold text-orange-600 tracking-wider mb-1 mt-1">MCP Flow</div>
+                                     <div class="text-[12px] uppercase font-bold text-orange-600 tracking-wider mb-1 mt-1">MCP Flow</div>
                                      {% for step in stage.mcp_steps %}
                                         {% set icon_box_class = "rounded-md border border-gray-100 bg-white text-gray-500 shrink-0" %}
                                         
-                                        {% set title_html = '<div class="text-[11px] font-medium text-gray-900 font-mono">' + step.name + '</div>' %}
-                                        {% set subtitle_html = '<div class="text-[10px] text-gray-700 leading-tight">' + step.description + '</div>' if step.description else None %}
-                                        {% set right_html = '<div class="flex items-center justify-center min-w-[14px] h-3.5 px-0.5 text-[9px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 font-mono">' + step.name + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 leading-tight">' + step.description + '</div>' if step.description else None %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
                                         
                                         {{ list_card(step.icon_svg, title_html, subtitle_html=subtitle_html, right_content_html=right_html, is_compact=True, icon_box_class=icon_box_class) }}
                                      {% endfor %}

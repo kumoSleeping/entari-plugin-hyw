@@ -460,8 +460,8 @@ class ContentRenderer:
                     # logger.info("ContentRenderer: playwright context ready, launching browser...")
                     browser = await p.chromium.launch(headless=True)
                     try:
-                        # Use device_scale_factor=2 for high DPI rendering (better quality)
-                        page = await browser.new_page(viewport={"width": 450, "height": 1200}, device_scale_factor=2)
+                        # Use device_scale_factor=3 for high DPI rendering (better quality)
+                        page = await browser.new_page(viewport={"width": 450, "height": 1200}, device_scale_factor=3)
                         
                         # Set content (10s timeout to handle slow CDN loading)
                         set_ok = await self._set_content_safe(page, final_html, 10000)
