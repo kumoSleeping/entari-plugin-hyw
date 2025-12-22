@@ -19,7 +19,7 @@
 </head>
 
 <body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
-    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-4 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-2 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
 
         {# --- MACROS --- #}
 
@@ -74,7 +74,7 @@
         {# --- MAIN CONTENT --- #}
 
         <!-- Response Card (Content First) -->
-        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
+        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-5 pb-2 overflow-hidden">
             <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800">
                 {{ content_html | safe }}
             </div>
@@ -82,7 +82,7 @@
 
         <!-- Speculation Card (Optional) -->
         {% if suggestions %}
-        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
+        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl px-5 py-2 overflow-hidden">
             {% set sug_icon %}
             <i class="ri-magic-line text-lg text-pink-600"></i>
             {% endset %}
@@ -100,7 +100,7 @@
         {% endif %}
 
         <!-- Pipeline & Children (Nested) -->
-        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden flex flex-col gap-4">
+        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-2 pb-5 overflow-hidden flex flex-col gap-4">
             
             {% if stages %}
                 {% for stage in stages %}
