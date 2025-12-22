@@ -22,6 +22,7 @@ class HYWConfig:
     max_turns: int = 10
     icon: str = "openai"  # logo for primary model
     vision_icon: Optional[str] = None  # logo for vision model (falls back to icon when absent)
+    instruct_icon: Optional[str] = None # logo for instruct model
     enable_browser_fallback: bool = False
     vision_system_prompt: Optional[str] = None
     intruct_system_prompt: Optional[str] = None

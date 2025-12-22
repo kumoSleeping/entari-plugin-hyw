@@ -3,6 +3,7 @@ import gc
 import os
 import markdown
 import base64
+import html # Import html for escaping
 import mimetypes
 from datetime import datetime
 from urllib.parse import urlparse
@@ -184,8 +185,11 @@ class ContentRenderer:
                 math_blocks = {}
                 
                 def protect_math(match):
-                    key = f"__MATH_BLOCK_{len(math_blocks)}__"
-                    math_blocks[key] = match.group(0)
+                    key = f"MATHBLOCK{len(math_blocks)}PLACEHOLDER"
+                    # Escape ONLY < and > to prevent them from being parsed as HTML tags
+                    # We preserve & and other chars to avoid breaking LaTeX alignment
+                    escaped_math = match.group(0).replace("<", "&lt;").replace(">", "&gt;")
+                    math_blocks[key] = escaped_math
                     return key
 
                 # Patterns for math:
@@ -195,10 +199,10 @@ class ContentRenderer:
                 # Note: We must handle multiline for $$ and \[
                 
                 # Regex for $$...$$
-                markdown_content = re.sub(r'\$\$(.*?)\$\$\s*', protect_math, markdown_content, flags=re.DOTALL)
+                markdown_content = re.sub(r'\$\$(.*?)\$\$', protect_math, markdown_content, flags=re.DOTALL)
                 
                 # Regex for \[...\]
-                markdown_content = re.sub(r'\\\[(.*?)\\\]\s*', protect_math, markdown_content, flags=re.DOTALL)
+                markdown_content = re.sub(r'\\\[(.*?)\\\]', protect_math, markdown_content, flags=re.DOTALL)
                 
                 # Regex for \(...\) (usually single line, but DOTALL is safest if user wraps lines)
                 markdown_content = re.sub(r'\\\((.*?)\\\)', protect_math, markdown_content, flags=re.DOTALL)

@@ -35,6 +35,7 @@ class ProcessingPipeline:
         self.config = config
         self.search_service = SearchService(config)
         self.client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
+        self.all_web_results = [] # Cache for search results
         # Build Playwright MCP args with headless flag if configured
         playwright_args = getattr(self.config, "playwright_mcp_args", None)
         if playwright_args is None:
@@ -51,7 +52,7 @@ class ProcessingPipeline:
         self.web_search_tool = {
             "type": "function",
             "function": {
-                "name": "web_search",
+                "name": "internal_web_search",
                 "description": "Search the web for text and images.",
                 "parameters": {
                     "type": "object",
@@ -99,6 +100,9 @@ class ProcessingPipeline:
         current_history = conversation_history
         final_response_content = ""
         structured: Dict[str, Any] = {}
+        
+        # Reset search cache for this execution
+        self.all_web_results = []
 
         try:
             logger.info(f"Pipeline: Starting workflow for '{user_input}' using {active_model}")
@@ -223,8 +227,8 @@ class ProcessingPipeline:
 
                 user_msgs_text = user_input or ""
 
-                search_msgs_text = self._format_search_msgs(search_payloads)
-                has_search_results = bool(search_payloads)  # Only append if search was actually performed
+                search_msgs_text = self._format_search_msgs()
+                has_search_results = bool(self.all_web_results)  # Only append if search was actually performed
 
                 # Build agent system prompt with modular ADD sections
                 agent_prompt_tpl = getattr(self.config, "agent_system_prompt", None) or AGENT_SYSTEM_PROMPT
@@ -404,7 +408,7 @@ class ProcessingPipeline:
                 stages_used.append({
                     "name": "Instruct",
                     "model": i_model,
-                    "icon_config": getattr(self.config, "intruct_icon", None) or infer_icon(i_model, i_base_url),
+                    "icon_config": getattr(self.config, "instruct_icon", None) or getattr(self.config, "intruct_icon", None) or infer_icon(i_model, i_base_url),
                     "provider": infer_provider(i_base_url),
                     "time": i.get("time", 0),
                     "cost": i.get("cost", 0.0)
@@ -473,21 +477,48 @@ class ProcessingPipeline:
         import re
         
         remaining_text = text
+        id_map = {} # Map original ID (str) -> new index (int)
 
-        # Parse references block
+        # Parse References Block
+        # Format: [1] [Title](url) OR [1]
         ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
         if ref_block_match:
             ref_content = ref_block_match.group(1).strip()
             for line in ref_content.split("\n"):
                 line = line.strip()
-                link_match = re.search(r"\[(.*?)\]\((.*?)\)", line)
-                if link_match:
+                if not line: continue
+                
+                # Check for ID prefix: [1] ...
+                id_match = re.match(r"^\[(\d+)\]", line)
+                # Check for explicit link: [Title](URL) (anywhere in line)
+                # Use ([^\[]+) for title to avoid matching the starting [1] if present before
+                link_match = re.search(r"\[([^\[]+)\]\((.*?)\)", line)
+                
+                if id_match and self.all_web_results:
+                    try:
+                        idx = int(id_match.group(1))
+                        # Look up in cache (1-based ID -> 0-based index)
+                        if 1 <= idx <= len(self.all_web_results):
+                            result = self.all_web_results[idx-1]
+                            parsed["references"].append({
+                                "title": result.get("title"), 
+                                "url": result.get("url"),
+                                "domain": result.get("domain", "")
+                            })
+                            # MAPPING: Old ID -> New Index (1-based)
+                            new_index = len(parsed["references"])
+                            id_map[str(idx)] = new_index
+                    except Exception:
+                        pass
+                elif link_match:
+                    # Explicit link without valid ID mapping (or cache miss)
                     parsed["references"].append({"title": link_match.group(1), "url": link_match.group(2)})
+                    # No ID mapping for pure explicit links without ID prefix
+                        
             remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
 
-        # Parse mcp block - supports format:
-        # [icon] tool_name
-        #   description
+        # Parse MCP Block
+        # Format: [a] [icon] name: description
         mcp_block_match = re.search(r'```mcp\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
         if mcp_block_match:
             mcp_content = mcp_block_match.group(1).strip()
@@ -498,43 +529,42 @@ class ProcessingPipeline:
                 line_stripped = line.strip()
                 if not line_stripped: continue
 
-                # New Format: "1. [icon] name: description" OR "[icon] name: description"
-                # Regex details:
-                # ^(?:(?:\d+\.|[-*])\s+)?  -> Optional numbering (1. or - or *)
-                # \[(\w+)\]                 -> Icon in brackets [icon] -> group 1
-                # \s+                       -> separating space
-                # ([^:]+)                   -> Tool Name (chars before colon) -> group 2
-                # :                         -> Colon separator
-                # \s*(.+)                   -> Description -> group 3
-                new_format_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
+                # New Format with Letter: [a] [icon] name: description
+                # ^\[([a-zA-Z0-9]+)\]\s+\[(\w+)\]\s+([^:]+):\s*(.+)$
+                letter_match = re.match(r'^\[([a-zA-Z0-9]+)\]\s+\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
                 
-                # Old/Flexible Format: "[icon] name" (description might be on next line)
-                flexible_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+(.+)$', line_stripped)
+                # Numbered/Bullet Format: 1. [icon] name: description
+                num_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
+                
+                # Fallback/Simple: [icon] name
+                simple_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+(.+)$', line_stripped)
 
-                if new_format_match:
+                if letter_match:
                     if current_step: parsed["mcp_steps"].append(current_step)
                     current_step = {
-                        "icon": new_format_match.group(1).lower(),
-                        "name": new_format_match.group(2).strip(),
-                        "description": new_format_match.group(3).strip()
+                        "id": letter_match.group(1), # Capture ID if needed (e.g. 'a')
+                        "icon": letter_match.group(2).lower(),
+                        "name": letter_match.group(3).strip(),
+                        "description": letter_match.group(4).strip()
                     }
-                elif flexible_match:
-                    # Could be just "[icon] name" without description, or mixed
+                elif num_match:
                     if current_step: parsed["mcp_steps"].append(current_step)
                     current_step = {
-                        "icon": flexible_match.group(1).lower(),
-                        "name": flexible_match.group(2).strip(),
+                        "icon": num_match.group(1).lower(),
+                        "name": num_match.group(2).strip(),
+                        "description": num_match.group(3).strip()
+                    }
+                elif simple_match:
+                    if current_step: parsed["mcp_steps"].append(current_step)
+                    current_step = {
+                        "icon": simple_match.group(1).lower(),
+                        "name": simple_match.group(2).strip(),
                         "description": ""
                     }
                 elif line.startswith("  ") and current_step:
-                    # Indented description line (continuation)
-                    if current_step["description"]:
-                        current_step["description"] += " " + line.strip()
-                    else:
-                        current_step["description"] = line.strip()
+                    # Continuation
+                    current_step["description"] += " " + line.strip()
                 elif line_stripped and not line_stripped.startswith("[") and current_step is None:
-                     # Plain text line without icon, treat as name if no current step
-                     # (This handles cases where LLM forgets brackets but lists steps)
                      if current_step: parsed["mcp_steps"].append(current_step)
                      current_step = {
                          "icon": "default", 
@@ -545,6 +575,30 @@ class ProcessingPipeline:
             if current_step:
                 parsed["mcp_steps"].append(current_step)
             remaining_text = remaining_text.replace(mcp_block_match.group(0), "").strip()
+
+        # Normalization
+        
+        # 1. References: [8] or ref:8 -> `ref:NewIndex`
+        if id_map:
+            def replace_citation(match):
+                old_id = match.group(1) or match.group(2) 
+                if old_id in id_map:
+                    return f"`ref:{id_map[old_id]}`"
+                return match.group(0)
+
+            # Match [N]
+            remaining_text = re.sub(r'\[(\d+)\]', replace_citation, remaining_text)
+            # Match ref:N (not inside backticks check simplified)
+            remaining_text = re.sub(r'(?<!`)ref:(\d+)(?!`)', replace_citation, remaining_text)
+            # Match `ref:N` - update index even if already code format
+            remaining_text = re.sub(r'`ref:(\d+)`', replace_citation, remaining_text)
+
+        # 2. MCP: mcp:a -> `mcp:a`
+        # Regex to find mcp:Letter not inside backticks
+        def replace_mcp(match):
+            return f"`{match.group(0)}`"
+            
+        remaining_text = re.sub(r'(?<!`)mcp:[a-zA-Z0-9]+(?!`)', replace_mcp, remaining_text)
 
         parsed["response"] = remaining_text.strip()
         return parsed
@@ -596,12 +650,33 @@ class ProcessingPipeline:
         name = tool_call.function.name
         args = json.loads(html.unescape(tool_call.function.arguments))
 
-        if name == "web_search":
+        if name == "internal_web_search" or name == "web_search": # Backward compatibility
             query = args.get("query")
             text_task = self.search_service.search(query)
             image_task = self.search_service.image_search(query)
             results = await asyncio.gather(text_task, image_task)
-            return json.dumps({"web_results": results[0], "image_results": results[1][:5]}, ensure_ascii=False)
+            
+            web = results[0]
+            images = results[1][:5]
+            
+            # Cache results and assign IDs
+            current_count = len(self.all_web_results)
+            for item in web:
+                current_count += 1
+                item["_id"] = current_count
+                item["query"] = query
+                self.all_web_results.append(item)
+            
+            # Also cache image results
+            for item in images:
+                current_count += 1
+                item["_id"] = current_count
+                item["query"] = query
+                item["is_image"] = True  # Mark as image for Agent/Renderer
+                self.all_web_results.append(item)
+            
+            # Return summary for tool history (LLM sees formatted logic in prompt next turn)
+            return json.dumps({"web_results_count": len(web), "image_results_count": len(images), "status": "cached_for_prompt"}, ensure_ascii=False)
 
         if name == "grant_mcp_playwright":
             return "OK"  # Minimal response, LLM already knows what it passed
@@ -638,8 +713,12 @@ class ProcessingPipeline:
 
         prompt_tpl = getattr(self.config, "intruct_system_prompt", None) or INTRUCT_SYSTEM_PROMPT
         prompt = prompt_tpl.format(user_msgs=user_input or "", tools_desc=tools_desc)
+        
         if vision_text:
             prompt = f"{prompt}\\n\\n{INTRUCT_SYSTEM_PROMPT_VISION_ADD.format(vision_msgs=vision_text)}"
+
+        # DEBUG: Log the instruct prompt
+        # logger.info(f"Instruct Prompt: {prompt}")
 
         client = self._client_for(
             api_key=getattr(self.config, "intruct_api_key", None),
@@ -693,8 +772,10 @@ class ProcessingPipeline:
                 )
                 intruct_trace["tool_calls"].append(self._tool_call_to_trace(tc))
                 intruct_trace["tool_results"].append({"name": tc.function.name, "content": str(result)})
-                if tc.function.name == "web_search":
+                
+                if tc.function.name in ["web_search", "internal_web_search"]:
                     search_payloads.append(str(result))
+
                 elif tc.function.name == "grant_mcp_playwright":
                     try:
                         args = json.loads(html.unescape(tc.function.arguments))
@@ -712,47 +793,27 @@ class ProcessingPipeline:
         intruct_trace["usage"] = usage
         return "", search_payloads, intruct_trace, usage, 0.0
 
-    def _format_search_msgs(self, search_payloads: List[str]) -> str:
+    def _format_search_msgs(self) -> str:
         """
-        Keep only tool results for the agent (no extra Intruct free-text output).
-        Also compress payloads to reduce prompt tokens.
+        Format all cached search results for the Agent.
+        Prefix each result with its cached ID [N].
         """
-        merged_web: List[Dict[str, str]] = []
-        merged_img: List[Dict[str, str]] = []
-
-        for payload in search_payloads or []:
-            try:
-                obj = json.loads(payload)
-            except Exception:
-                continue
-            merged_web.extend(obj.get("web_results") or [])
-            merged_img.extend(obj.get("image_results") or [])
-
-        def dedupe(items: List[Dict[str, str]]) -> List[Dict[str, str]]:
-            seen = set()
-            out = []
-            for it in items:
-                url = it.get("url") or ""
-                if not url or url in seen:
-                    continue
-                seen.add(url)
-                out.append(it)
-            return out
-
-        merged_web = dedupe(merged_web)[:6]
-        merged_img = dedupe(merged_img)[:3]
+        if not self.all_web_results:
+            return ""
 
         def clip(s: str, n: int) -> str:
             s = (s or "").strip()
             return s if len(s) <= n else s[: n - 1] + "…"
 
-        compact_web = [
-            {"title": clip(r.get("title", ""), 80), "url": r.get("url", ""), "content": clip(r.get("content", ""), 180)}
-            for r in merged_web
-        ]
-        compact_img = [{"title": clip(r.get("title", ""), 80), "url": r.get("url", "")} for r in merged_img]
-
-        return json.dumps({"web_results": compact_web, "image_results": compact_img}, ensure_ascii=False)
+        lines = []
+        for res in self.all_web_results:
+            idx = res.get("_id")
+            title = clip(res.get("title", ""), 80)
+            url = res.get("url", "")
+            content = clip(res.get("content", ""), 200) 
+            lines.append(f"[{idx}] Title: {title}\nURL: {url}\nContent: {content}\n")
+        
+        return "\n".join(lines)
 
     def _client_for(self, api_key: Optional[str], base_url: Optional[str]) -> AsyncOpenAI:
         if api_key or base_url:
