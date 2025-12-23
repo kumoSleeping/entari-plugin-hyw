@@ -33,7 +33,7 @@ class SearchService:
     """
     def __init__(self, config: Any):
         self.config = config
-        self._default_limit = 8
+        self._default_limit = getattr(config, "search_limit", 8)
         self._crawler: Optional[AsyncWebCrawler] = None
 
     def _build_search_url(self, query: str) -> str:

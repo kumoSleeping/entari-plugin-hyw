@@ -18,6 +18,7 @@ class HYWConfig:
     search_base_url: str = "https://lite.duckduckgo.com/lite/?q={query}"
     image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images"
     search_params: Optional[str] = None  # e.g. "&kl=cn-zh" for China region
+    search_limit: int = 8 
     extra_body: Optional[Dict[str, Any]] = None
     temperature: float = 0.4
     max_turns: int = 10
