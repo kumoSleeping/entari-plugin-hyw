@@ -19,7 +19,7 @@ INTRUCT_SP = """# 你是一个专业的指导专家.
   - 用户消息包含链接: 调用 crawl_page 获取内容, 无需其他工具
   - 用户消息包含典型名词、可能的专有名词组合: 调用 internal_web_search 
     - 提炼出关键词搜索关键词本身, 不添加任何其他助词, 搜索效果最好
-    - 同时调用 internal_image_search
+    - 如果用户消息关键词清晰, 使用图片搜索能搜索出诸如海报、地标、物品、角色立绘等, 调用 internal_image_search
   - 用户消息不需要搜索: 不调用工具
 - 调用 set_mode:
   - 绝大部分常规问题: standard

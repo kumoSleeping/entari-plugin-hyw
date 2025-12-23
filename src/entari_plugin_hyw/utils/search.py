@@ -90,8 +90,16 @@ class SearchService:
         results: List[Dict[str, str]] = []
 
         def find_snippet(url: str, domain: str) -> str:
-            for ln in lines:
+            for i, ln in enumerate(lines):
+                # Avoid matching DDG internal links (filter by site, etc) which contain the target URL in query params
+                if "duckduckgo.com" in ln:
+                    continue
+                
                 if url in ln or (domain and domain in ln):
+                    # If this line looks like the title/link line (e.g. starts with [Title](url) or similar), 
+                    # and the NEXT line exists, return the next line as snippet.
+                    if i + 1 < len(lines) and len(ln) < 300: # heuristic: title lines are usually shorter
+                         return lines[i+1][:400]
                     return ln[:400]
             # fallback to first non-empty line
             return lines[0][:400] if lines else ""
