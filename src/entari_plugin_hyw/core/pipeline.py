@@ -1058,8 +1058,5 @@ class ProcessingPipeline:
             await self.search_service.close()
         except Exception:
             pass
-        try:
-            from ..utils.search import close_shared_crawler
-            await close_shared_crawler()
-        except Exception:
-            pass
+        # Do NOT close shared crawler here, as pipeline instances are now per-request.
+        # Shared crawler lifecycle is managed by HYW.close() or global cleanup.

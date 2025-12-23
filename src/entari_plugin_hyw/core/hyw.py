@@ -11,31 +11,38 @@ class HYW:
     """
     def __init__(self, config: HYWConfig):
         self.config = config
-        self.pipeline = ProcessingPipeline(config)
+        # No persistent pipeline - we create one per request to ensure thread safety
+        # self.pipeline = ProcessingPipeline(config) 
         logger.info(f"HYW V2 (Ironclad) initialized - Model: {config.model_name}")
 
     async def agent(self, user_input: str, conversation_history: List[Dict] = None, images: List[str] = None, 
                    selected_model: str = None, selected_vision_model: str = None, local_mode: bool = False) -> Dict[str, Any]:
         """
         Main entry point for the plugin (called by __init__.py).
+        Creates a fresh pipeline instance for each request to avoid state contamination (race conditions).
         """
-        # Note: 'images' handling is skipped for V2 initial stability MVP as per user focus on 'search hangs'.
-        # We can re-integrate vision later, but for now we focus on Text/Search stability.
-        
-        # Delegate completely to pipeline
-        result = await self.pipeline.execute(
-            user_input,
-            conversation_history or [],
-            model_name=selected_model,
-            images=images,
-            selected_vision_model=selected_vision_model,
-        )
-        return result
+        pipeline = ProcessingPipeline(self.config)
+        try:
+            # Delegate completely to pipeline
+            result = await pipeline.execute(
+                user_input,
+                conversation_history or [],
+                model_name=selected_model,
+                images=images,
+                selected_vision_model=selected_vision_model,
+            )
+            return result
+        finally:
+             await pipeline.close()
 
     async def close(self):
         """Explicit async close method. NO __del__."""
-        if self.pipeline:
-            await self.pipeline.close()
+        # Close shared resources
+        try:
+            from ..utils.search import close_shared_crawler
+            await close_shared_crawler()
+        except Exception:
+            pass
 
     # Legacy Compatibility (optional attributes just to prevent blind attribute errors if referenced externally)
     # in V2 we strongly discourage accessing internal tools directly.
