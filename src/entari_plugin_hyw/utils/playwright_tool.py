@@ -1,46 +1,36 @@
-import asyncio
-from typing import Any, Optional
-
-import trafilatura
+from typing import Any
 from loguru import logger
-
-try:
-    from playwright.async_api import async_playwright
-except Exception:  # pragma: no cover
-    async_playwright = None
+from crawl4ai.async_configs import CrawlerRunConfig
+from crawl4ai.cache_context import CacheMode
+from .search import get_shared_crawler
 
 
 class PlaywrightTool:
+    """
+    Backwards-compatible wrapper now powered by Crawl4AI.
+    """
     def __init__(self, config: Any):
         self.config = config
 
     async def navigate(self, url: str) -> str:
         if not url:
             return "Error: Missing url"
-        if async_playwright is None:
-            return "Error: Playwright is not available in this environment."
 
-        headless = bool(getattr(self.config, "headless", True))
         try:
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=headless)
-                context = await browser.new_context()
-                page = await context.new_page()
-                await page.goto(url, wait_until="domcontentloaded", timeout=15000)
-                html = await page.content()
-                await context.close()
-                await browser.close()
-
-            content = await asyncio.to_thread(
-                trafilatura.extract,
-                html,
-                include_links=True,
-                include_images=True,
-                include_tables=True,
-                output_format="markdown",
+            crawler = await get_shared_crawler()
+            result = await crawler.arun(
+                url=url,
+                config=CrawlerRunConfig(
+                    wait_until="networkidle",
+                    wait_for_images=True,
+                    cache_mode=CacheMode.BYPASS,
+                    word_count_threshold=1,
+                    screenshot=False,
+                ),
             )
-            return content or html[:4000]
+            if not result.success:
+                return f"Error: crawl failed ({result.error_message or result.status_code})"
+            return (result.markdown or result.extracted_content or result.cleaned_html or result.html or "")[:8000]
         except Exception as e:
-            logger.warning(f"Playwright navigation failed: {e}")
-            return f"Error: Playwright navigation failed: {e}"
-
+            logger.warning(f"Crawl navigation failed: {e}")
+            return f"Error: Crawl navigation failed: {e}"

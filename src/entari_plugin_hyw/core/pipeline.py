@@ -9,16 +9,18 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from .config import HYWConfig
-from ..utils.mcp_playwright import MCPPlaywrightManager
 from ..utils.search import SearchService
 from ..utils.prompts import (
-    AGENT_SYSTEM_PROMPT,
-    AGENT_SYSTEM_PROMPT_INTRUCT_VISION_ADD,
-    AGENT_SYSTEM_PROMPT_MCP_ADD,
-    AGENT_SYSTEM_PROMPT_SEARCH_ADD,
-    INTRUCT_SYSTEM_PROMPT,
-    INTRUCT_SYSTEM_PROMPT_VISION_ADD,
-    VISION_SYSTEM_PROMPT,
+    AGENT_SP,
+    AGENT_SP_INTRUCT_VISION_ADD,
+    AGENT_SP_TOOLS_STANDARD_ADD,
+    AGENT_SP_TOOLS_AGENT_ADD,
+    AGENT_SP_SEARCH_ADD,
+    AGENT_SP_PAGE_ADD,
+    AGENT_SP_IMAGE_SEARCH_ADD,
+    INTRUCT_SP,
+    INTRUCT_SP_VISION_ADD,
+    VISION_SP,
 )
 
 @asynccontextmanager
@@ -36,24 +38,13 @@ class ProcessingPipeline:
         self.search_service = SearchService(config)
         self.client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         self.all_web_results = [] # Cache for search results
-        # Build Playwright MCP args with headless flag if configured
-        playwright_args = getattr(self.config, "playwright_mcp_args", None)
-        if playwright_args is None:
-            playwright_args = ["-y", "@playwright/mcp@latest"]
-            # Add --headless flag if headless mode is enabled
-            if getattr(self.config, "headless", True):
-                playwright_args.append("--headless")
-        
-        self.mcp_playwright = MCPPlaywrightManager(
-            command=getattr(self.config, "playwright_mcp_command", "npx"),
-            args=playwright_args,
-        )
+        self.current_mode = "standard"  # standard | agent
 
         self.web_search_tool = {
             "type": "function",
             "function": {
                 "name": "internal_web_search",
-                "description": "Search the web for text and images.",
+                "description": "Search the web for text.",
                 "parameters": {
                     "type": "object",
                     "properties": {"query": {"type": "string"}},
@@ -61,18 +52,44 @@ class ProcessingPipeline:
                 },
             },
         }
-        self.grant_mcp_playwright_tool = {
+        self.image_search_tool = {
             "type": "function",
             "function": {
-                "name": "grant_mcp_playwright",
-                "description": "Decide whether to grant Playwright MCP browser tools to the agent for this request.",
+                "name": "internal_image_search",
+                "description": "Search for images related to a query.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+        self.set_mode_tool = {
+            "type": "function",
+            "function": {
+                "name": "set_mode",
+                "description": "设定后续 Agent 的运行模式: standard | agent",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "grant": {"type": "boolean"},
+                        "mode": {"type": "string", "enum": ["standard", "agent"]},
                         "reason": {"type": "string"},
                     },
-                    "required": ["grant"],
+                    "required": ["mode"],
+                },
+            },
+        }
+        self.crawl_page_tool = {
+            "type": "function",
+            "function": {
+                "name": "crawl_page",
+                "description": "使用 Crawl4AI 抓取网页并返回 Markdown 文本。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": {"type": "string"},
+                    },
+                    "required": ["url"],
                 },
             },
         }
@@ -126,7 +143,7 @@ class ProcessingPipeline:
                     or getattr(self.config, "vision_model_name", None)
                     or active_model
                 )
-                vision_prompt_tpl = getattr(self.config, "vision_system_prompt", None) or VISION_SYSTEM_PROMPT
+                vision_prompt_tpl = getattr(self.config, "vision_system_prompt", None) or VISION_SP
                 vision_prompt = vision_prompt_tpl.format(user_msgs=user_input or "[图片]")
                 vision_text, vision_usage = await self._run_vision_stage(
                     user_input=user_input,
@@ -183,38 +200,31 @@ class ProcessingPipeline:
             intruct_trace["cost"] = instruct_cost
             trace["intruct"] = intruct_trace
 
-            explicit_mcp_intent = "mcp" in (user_input or "").lower()
-            grant_requested = bool(intruct_trace.get("grant_mcp_playwright", False))
-            grant_mcp = bool(grant_requested and explicit_mcp_intent)
-            intruct_trace["explicit_mcp_intent"] = explicit_mcp_intent
-            intruct_trace["grant_effective"] = grant_mcp
-            if grant_requested and not explicit_mcp_intent:
-                logger.info("Intruct requested MCP grant, but user did not express MCP intent. Grant ignored.")
-            if grant_mcp:
-                logger.warning(f"MCP Playwright granted for this request: reason={intruct_trace.get('grant_reason')!r}")
-
             # Start agent loop
             agent_start_time = time.time()
             current_history.append({"role": "user", "content": user_input or "..."})
 
-            max_steps = 6
+            mode = intruct_trace.get("mode", self.current_mode).lower()
+            logger.success(f"Instruct Mode: {mode}")
+            self.current_mode = mode
+            
+            # Determine max iterations
+            max_steps = 10 if mode == "agent" else 1 
+            
             step = 0
             agent_trace_steps: List[Dict[str, Any]] = []
             last_system_prompt = ""
 
-            mcp_tools_openai: Optional[List[Dict[str, Any]]] = None
-            if grant_mcp:
-                mcp_tools_openai = await self.mcp_playwright.tools_openai()
-                if not mcp_tools_openai:
-                    logger.warning("MCP Playwright was granted but tools are unavailable (connect failed).")
-                    grant_mcp = False
+            agent_tools: Optional[List[Dict[str, Any]]] = None
+            if mode == "agent":
+                agent_tools = [self.web_search_tool, self.image_search_tool, self.crawl_page_tool]
 
-            # Agent loop - always runs regardless of MCP grant status
+            # Agent loop
             while step < max_steps:
                 step += 1
                 logger.info(f"Pipeline: Agent step {step}/{max_steps}")
 
-                if step == 5:
+                if step == 5 and mode == "agent":
                     current_history.append(
                         {
                             "role": "system",
@@ -222,42 +232,73 @@ class ProcessingPipeline:
                         }
                     )
 
-                agent_tools = mcp_tools_openai if grant_mcp else None
-                tools_desc = "\n".join([t["function"]["name"] for t in (agent_tools or [])]) if agent_tools else ""
+                tools_desc = ""
+                if agent_tools:
+                    tools_desc = "\n".join([
+                        "- internal_web_search(query): 触发搜索并缓存结果",
+                        "- crawl_page(url): 使用 Crawl4AI 抓取网页返回 Markdown"
+                    ])
 
                 user_msgs_text = user_input or ""
 
                 search_msgs_text = self._format_search_msgs()
-                has_search_results = bool(self.all_web_results)  # Only append if search was actually performed
+                image_msgs_text = self._format_image_search_msgs()
+                
+                has_search_results = any(not r.get("is_image") for r in self.all_web_results)
+                has_image_results = any(r.get("is_image") for r in self.all_web_results)
 
-                # Build agent system prompt with modular ADD sections
-                agent_prompt_tpl = getattr(self.config, "agent_system_prompt", None) or AGENT_SYSTEM_PROMPT
-                system_prompt = agent_prompt_tpl.format(user_msgs=user_msgs_text)
+                # Build agent system prompt
+                agent_prompt_tpl = getattr(self.config, "agent_system_prompt", None) or AGENT_SP
+                
+                mode_desc_text = AGENT_SP_TOOLS_AGENT_ADD.format(tools_desc=tools_desc) if mode == "agent" else AGENT_SP_TOOLS_STANDARD_ADD
+                system_prompt = agent_prompt_tpl.format(
+                    user_msgs=user_msgs_text,
+                    mode=mode,
+                    mode_desc=mode_desc_text
+                )
                 
                 # Append vision text if available
                 if vision_text:
-                    system_prompt += AGENT_SYSTEM_PROMPT_INTRUCT_VISION_ADD.format(vision_msgs=vision_text)
+                    system_prompt += AGENT_SP_INTRUCT_VISION_ADD.format(vision_msgs=vision_text)
                 
-                # Append search results if search was performed and has results
-                if has_search_results:
-                    system_prompt += AGENT_SYSTEM_PROMPT_SEARCH_ADD.format(search_msgs=search_msgs_text)
+                # Append search results
+                if has_search_results and search_msgs_text:
+                    system_prompt += AGENT_SP_SEARCH_ADD.format(search_msgs=search_msgs_text)
                 
-                # Append MCP addon prompt when MCP is granted
-                if grant_mcp and tools_desc:
-                    system_prompt += AGENT_SYSTEM_PROMPT_MCP_ADD.format(tools_desc=tools_desc)
-                
+                # Append crawled page content
+                page_msgs_text = self._format_page_msgs()
+                if page_msgs_text:
+                    system_prompt += AGENT_SP_PAGE_ADD.format(page_msgs=page_msgs_text)
+                    
+                if has_image_results and image_msgs_text:
+                     system_prompt += AGENT_SP_IMAGE_SEARCH_ADD.format(image_search_msgs=image_msgs_text)
+
                 last_system_prompt = system_prompt
 
                 messages = [{"role": "system", "content": system_prompt}]
                 messages.extend(current_history)
 
                 tools_for_step = agent_tools if (agent_tools and step < max_steps) else None
+                
+                # Debug logging
+                if tools_for_step:
+                    logger.info(f"[Agent] Tools provided: {[t['function']['name'] for t in tools_for_step]}")
+                else:
+                    logger.warning(f"[Agent] NO TOOLS provided for step {step} (agent_tools={agent_tools is not None}, step<max={step < max_steps})")
+                
+                step_llm_start = time.time()
                 response, step_usage = await self._safe_llm_call(
                     messages=messages,
                     model=active_model,
                     tools=tools_for_step,
                     tool_choice="auto" if tools_for_step else None,
                 )
+                step_llm_time = time.time() - step_llm_start
+                
+                # Debug: Check response
+                has_tool_calls = response.tool_calls is not None and len(response.tool_calls) > 0
+                logger.info(f"[Agent] Response has_tool_calls={has_tool_calls}, has_content={bool(response.content)}")
+                
                 # Accumulate agent usage
                 usage_totals["input_tokens"] += step_usage.get("input_tokens", 0)
                 usage_totals["output_tokens"] += step_usage.get("output_tokens", 0)
@@ -266,16 +307,25 @@ class ProcessingPipeline:
                     tool_calls = response.tool_calls
                     stats["tool_calls_count"] += len(tool_calls)
 
-                    plan_dict = response.model_dump() if hasattr(response, "model_dump") else response
-                    current_history.append(plan_dict)
+                    # Use model_dump to preserve provider-specific fields (e.g., Gemini's thought_signature)
+                    assistant_msg = response.model_dump(exclude_unset=True) if hasattr(response, "model_dump") else {
+                        "role": "assistant",
+                        "content": response.content,
+                        "tool_calls": [{"id": tc.id, "type": "function", "function": {"name": tc.function.name, "arguments": tc.function.arguments}} for tc in tool_calls]
+                    }
+                    current_history.append(assistant_msg)
 
-                    tasks = [self._safe_route_tool(tc, mcp_session=self.mcp_playwright if grant_mcp else None) for tc in tool_calls]
+                    tasks = [self._safe_route_tool(tc) for tc in tool_calls]
+                    tool_start_time = time.time()
                     results = await asyncio.gather(*tasks)
+                    tool_exec_time = time.time() - tool_start_time
 
                     step_trace = {
                         "step": step,
                         "tool_calls": [self._tool_call_to_trace(tc) for tc in tool_calls],
                         "tool_results": [],
+                        "tool_time": tool_exec_time,
+                        "llm_time": step_llm_time,
                     }
                     for i, result in enumerate(results):
                         tc = tool_calls[i]
@@ -304,19 +354,16 @@ class ProcessingPipeline:
 
             agent_time = time.time() - agent_start_time
             
-            # Calculate Agent Cost (accumulated steps)
+            # Calculate Agent Cost
             agent_cost = 0.0
             a_in_price = float(getattr(self.config, "input_price", 0.0) or 0.0)
             a_out_price = float(getattr(self.config, "output_price", 0.0) or 0.0)
             
-            # Agent usage is already in usage_totals, but that includes ALL stages.
-            # We need just Agent tokens for Agent cost.
-            # Agent inputs = Total inputs - Vision inputs - Instruct inputs
             agent_input_tokens = usage_totals["input_tokens"] - vision_usage.get("input_tokens", 0) - intruct_usage.get("input_tokens", 0)
             agent_output_tokens = usage_totals["output_tokens"] - vision_usage.get("output_tokens", 0) - intruct_usage.get("output_tokens", 0)
             
             if a_in_price > 0 or a_out_price > 0:
-                agent_cost = (agent_input_tokens / 1_000_000 * a_in_price) + (agent_output_tokens / 1_000_000 * a_out_price)
+                agent_cost = (max(0, agent_input_tokens) / 1_000_000 * a_in_price) + (max(0, agent_output_tokens) / 1_000_000 * a_out_price)
 
             trace["agent"] = {
                 "model": active_model,
@@ -324,7 +371,6 @@ class ProcessingPipeline:
                 "system_prompt": last_system_prompt,
                 "steps": agent_trace_steps,
                 "final_output": final_response_content,
-                "mcp_granted": grant_mcp,
                 "time": agent_time,
                 "cost": agent_cost
             }
@@ -339,54 +385,36 @@ class ProcessingPipeline:
                 "output_tokens": usage_totals["output_tokens"],
                 "total_cost": 0.0,
             }
-            # Calculate cost if any pricing is configured
             input_price = getattr(self.config, "input_price", None) or 0.0
             output_price = getattr(self.config, "output_price", None) or 0.0
             
             if input_price > 0 or output_price > 0:
-                # Price is per million tokens
                 input_cost = (usage_totals["input_tokens"] / 1_000_000) * input_price
                 output_cost = (usage_totals["output_tokens"] / 1_000_000) * output_price
                 billing_info["total_cost"] = input_cost + output_cost
-                # logger.info(f"Billing: {usage_totals['input_tokens']} in @ ${input_price}/M + {usage_totals['output_tokens']} out @ ${output_price}/M = ${billing_info['total_cost']:.6f}")
 
             # Build stages_used list for UI display
-            # Order: Vision (if used) -> Search (if performed) -> Agent
             stages_used = []
             
-            # Helper to infer icon from model name or base_url
             def infer_icon(model_name: str, base_url: str) -> str:
                 model_lower = (model_name or "").lower()
                 url_lower = (base_url or "").lower()
-                
-                if "deepseek" in model_lower or "deepseek" in url_lower:
-                    return "deepseek"
-                elif "claude" in model_lower or "anthropic" in url_lower:
-                    return "anthropic"
-                elif "gemini" in model_lower or "google" in url_lower:
-                    return "google"
-                elif "gpt" in model_lower or "openai" in url_lower:
-                    return "openai"
-                elif "qwen" in model_lower:
-                    return "qwen"
-                elif "openrouter" in url_lower:
-                    return "openrouter"
-                return "openai"  # Default fallback
+                if "deepseek" in model_lower or "deepseek" in url_lower: return "deepseek"
+                elif "claude" in model_lower or "anthropic" in url_lower: return "anthropic"
+                elif "gemini" in model_lower or "google" in url_lower: return "google"
+                elif "gpt" in model_lower or "openai" in url_lower: return "openai"
+                elif "qwen" in model_lower: return "qwen"
+                elif "openrouter" in url_lower: return "openrouter"
+                return "openai" 
             
-            # Helper to infer provider from base_url
             def infer_provider(base_url: str) -> str:
                 url_lower = (base_url or "").lower()
-                if "openrouter" in url_lower:
-                    return "OpenRouter"
-                elif "openai" in url_lower:
-                    return "OpenAI"
-                elif "anthropic" in url_lower:
-                    return "Anthropic"
-                elif "google" in url_lower:
-                    return "Google"
-                elif "deepseek" in url_lower:
-                    return "DeepSeek"
-                return ""  # Empty string = don't show provider
+                if "openrouter" in url_lower: return "OpenRouter"
+                elif "openai" in url_lower: return "OpenAI"
+                elif "anthropic" in url_lower: return "Anthropic"
+                elif "google" in url_lower: return "Google"
+                elif "deepseek" in url_lower: return "DeepSeek"
+                return ""
             
             if trace.get("vision"):
                 v = trace["vision"]
@@ -414,30 +442,151 @@ class ProcessingPipeline:
                     "cost": i.get("cost", 0.0)
                 })
 
-            # Show Search stage only when search was actually performed
-            if search_payloads:
-                # Use dedicated SearXNG metadata as requested
+            if has_search_results and search_payloads:
                 stages_used.append({
                     "name": "Search",
-                    "model": "SearXNG",
-                    "icon_config": "search", # Ensure mapping exists or handle specially in render
-                    "provider": "SearXNG",
+                    "model": getattr(self.config, "search_name", "DuckDuckGo"),
+                    "icon_config": "search",
+                    "provider": getattr(self.config, 'search_provider', 'Crawl4AI'),
                     "time": search_time,
-                    "cost": 0.0 # Search is free in this plugin
+                    "cost": 0.0
                 })
             
+            # Add Crawler stage if Instruct used crawl_page
+            if trace.get("intruct"):
+                intruct_tool_calls = trace["intruct"].get("tool_calls", [])
+                crawl_calls = [tc for tc in intruct_tool_calls if tc.get("name") == "crawl_page"]
+                if crawl_calls:
+                    # Build crawled_pages list for UI
+                    crawled_pages = []
+                    for tc in crawl_calls:
+                        url = tc.get("arguments", {}).get("url", "")
+                        # Try to find cached result
+                        found = next((r for r in self.all_web_results if r.get("url") == url and r.get("is_crawled")), None)
+                        if found:
+                            try:
+                                from urllib.parse import urlparse
+                                domain = urlparse(url).netloc
+                            except:
+                                domain = ""
+                            crawled_pages.append({
+                                "title": found.get("title", "Page"),
+                                "url": url,
+                                "favicon_url": f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+                            })
+                    
+                    stages_used.append({
+                        "name": "Crawler",
+                        "model": "Crawl4AI",
+                        "icon_config": "search",
+                        "provider": "网页抓取",
+                        "time": search_time,  # Use existing search_time which includes fetch time
+                        "cost": 0.0,
+                        "crawled_pages": crawled_pages
+                    })
+            
+            # --- Granular Agent Stages (Grouped) ---
             if trace.get("agent"):
                 a = trace["agent"]
                 a_model = a.get("model", "") or active_model
                 a_base_url = a.get("base_url", "") or self.config.base_url
-                stages_used.append({
-                    "name": "Agent",
-                    "model": a_model,
-                    "icon_config": getattr(self.config, "icon", None) or infer_icon(a_model, a_base_url),
-                    "provider": infer_provider(a_base_url),
-                    "time": a.get("time", 0),
-                    "cost": a.get("cost", 0.0)
-                })
+                steps = a.get("steps", [])
+                agent_icon = getattr(self.config, "icon", None) or infer_icon(a_model, a_base_url)
+                agent_provider = infer_provider(a_base_url)
+
+                for s in steps:
+                    if "tool_calls" in s:
+                        # 1. Agent Thought Stage (with LLM time)
+                        stages_used.append({
+                            "name": "Agent",
+                            "model": a_model,
+                            "icon_config": agent_icon,
+                            "provider": agent_provider,
+                            "time": s.get("llm_time", 0), "cost": 0
+                        })
+                        
+                        # 2. Grouped Tool Stages
+                        # Collect results for grouping
+                        search_group_items = []
+                        crawler_group_items = []
+                        
+                        tcs = s.get("tool_calls", [])
+                        trs = s.get("tool_results", [])
+                        
+                        for idx, tc in enumerate(tcs):
+                            t_name = tc.get("name")
+                            # Try to get result content if available
+                            t_res_content = trs[idx].get("content", "") if idx < len(trs) else ""
+
+                            if t_name in ["internal_web_search", "web_search", "internal_image_search"]:
+                                # We don't have per-call metadata easily unless we parse the 'result' string (which is JSON dump now for route_tool)
+                                # But search results are cached in self.all_web_results.
+                                # The 'content' of search tool result is basically "cached_for_prompt". 
+                                # So we don't need to put items here, just show "Search" container. 
+                                # But wait, if we want to show "what was searched", we can parse args.
+                                args = tc.get("arguments", {})
+                                query = args.get("query", "")
+                                if query: 
+                                    search_group_items.append({"query": query})
+
+                            elif t_name == "crawl_page":
+                                # Get URL from arguments, title from result
+                                args = tc.get("arguments", {})
+                                url = args.get("url", "")
+                                title = "Page"
+                                try:
+                                    page_data = json.loads(t_res_content)
+                                    if isinstance(page_data, dict):
+                                        title = page_data.get("title", "Page")
+                                except:
+                                    pass
+                                
+                                if url:
+                                    try:
+                                        domain = urlparse(url).netloc
+                                    except:
+                                        domain = ""
+                                    crawler_group_items.append({
+                                        "title": title,
+                                        "url": url,
+                                        "favicon_url": f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+                                    })
+
+                        # Append Grouped Stages
+                        if search_group_items:
+                             stages_used.append({
+                                "name": "Search",
+                                "model": getattr(self.config, "search_name", "DuckDuckGo"),
+                                "icon_config": "search",
+                                "provider": "Agent Search",
+                                "time": s.get("tool_time", 0), "cost": 0,
+                                "queries": search_group_items # Render can use this if needed, or just show generic
+                            })
+                        
+                        if crawler_group_items:
+                            stages_used.append({
+                                "name": "Crawler",
+                                "model": "Crawl4AI",
+                                "icon_config": "browser", 
+                                "provider": "Page Fetcher",
+                                "time": s.get("tool_time", 0), "cost": 0,
+                                "crawled_pages": crawler_group_items 
+                            })
+
+                    elif s.get("final"):
+                        stages_used.append({
+                            "name": "Agent",
+                            "model": a_model,
+                            "icon_config": agent_icon,
+                            "provider": agent_provider,
+                            "time": 0, "cost": 0
+                        })
+
+                # Assign total time/cost to last Agent stage
+                last_agent = next((s for s in reversed(stages_used) if s["name"] == "Agent"), None)
+                if last_agent:
+                    last_agent["time"] = a.get("time", 0)
+                    last_agent["cost"] = a.get("cost", 0.0)
 
             return {
                 "llm_response": final_content,
@@ -459,28 +608,30 @@ class ProcessingPipeline:
                 "error": str(e),
             }
 
-    async def _safe_route_tool(self, tool_call, mcp_session=None):
-        """Wrapper for safe concurrent execution."""
-        try:
-            return await asyncio.wait_for(self._route_tool(tool_call, mcp_session=mcp_session), timeout=15.0)
-        except asyncio.TimeoutError:
-            return "Error: Tool execution timed out (15s limit)."
-        except Exception as e:
-            return f"Error: Tool execution failed: {e}"
-
     def _parse_tagged_response(self, text: str) -> Dict[str, Any]:
-        """Parse response for references and mcp blocks."""
-        parsed = {"response": "", "references": [], "mcp_steps": []}
+        """Parse response for references and page references."""
+        parsed = {"response": "", "references": [], "page_references": [], "flow_steps": []}
         if not text:
             return parsed
 
         import re
         
         remaining_text = text
-        id_map = {} # Map original ID (str) -> new index (int)
+        
+        # 1. Try to unwrap JSON if the model acted like a ReAct agent
+        try:
+            # Check if it looks like JSON first to avoid performance hit
+            if remaining_text.strip().startswith("{") and "action" in remaining_text:
+                data = json.loads(remaining_text)
+                if isinstance(data, dict) and "action_input" in data:
+                    remaining_text = data["action_input"]
+        except Exception:
+            pass
 
-        # Parse References Block
-        # Format: [1] [Title](url) OR [1]
+        id_map = {}        # Map original search ID (str) -> new index (int)
+        page_id_map = {}   # Map original page ID (str) -> new index (int)
+
+        # Parse References Block (unified: contains both [search] and [page] entries)
         ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
         if ref_block_match:
             ref_content = ref_block_match.group(1).strip()
@@ -488,126 +639,159 @@ class ProcessingPipeline:
                 line = line.strip()
                 if not line: continue
                 
-                # Check for ID prefix: [1] ...
+                # Match [id] [type] [title](url)
+                # e.g. [1] [search] [文本描述](url) or [5] [page] [页面标题](url)
                 id_match = re.match(r"^\[(\d+)\]", line)
-                # Check for explicit link: [Title](URL) (anywhere in line)
-                # Use ([^\[]+) for title to avoid matching the starting [1] if present before
-                link_match = re.search(r"\[([^\[]+)\]\((.*?)\)", line)
+                type_match = re.search(r"\[(search|page)\]", line, re.IGNORECASE)
+                link_match = re.search(r"\[([^\[\]]+)\]\(([^)]+)\)", line)
                 
-                if id_match and self.all_web_results:
+                idx = None
+                if id_match:
                     try:
                         idx = int(id_match.group(1))
-                        # Look up in cache (1-based ID -> 0-based index)
-                        if 1 <= idx <= len(self.all_web_results):
-                            result = self.all_web_results[idx-1]
-                            parsed["references"].append({
-                                "title": result.get("title"), 
-                                "url": result.get("url"),
-                                "domain": result.get("domain", "")
-                            })
-                            # MAPPING: Old ID -> New Index (1-based)
-                            new_index = len(parsed["references"])
-                            id_map[str(idx)] = new_index
-                    except Exception:
+                    except ValueError:
                         pass
-                elif link_match:
-                    # Explicit link without valid ID mapping (or cache miss)
-                    parsed["references"].append({"title": link_match.group(1), "url": link_match.group(2)})
-                    # No ID mapping for pure explicit links without ID prefix
+                
+                ref_type = "search"  # default
+                if type_match:
+                    ref_type = type_match.group(1).lower()
+                
+                entry = None
+                if idx is not None and self.all_web_results:
+                    # For page type, only match crawled items
+                    if ref_type == "page":
+                        found = next((r for r in self.all_web_results if r.get("_id") == idx and r.get("is_crawled")), None)
+                    else:
+                        found = next((r for r in self.all_web_results if r.get("_id") == idx and not r.get("is_crawled")), None)
+                    
+                    if found:
+                        entry = {
+                            "title": found.get("title"),
+                            "url": found.get("url"),
+                            "domain": found.get("domain", "")
+                        }
+
+                if not entry and link_match:
+                    entry = {"title": link_match.group(1), "url": link_match.group(2)}
+
+                if entry:
+                    if ref_type == "page":
+                        parsed["page_references"].append(entry)
+                        if idx is not None:
+                            page_id_map[str(idx)] = len(parsed["page_references"])
+                    else:
+                        parsed["references"].append(entry)
+                        if idx is not None:
+                            id_map[str(idx)] = len(parsed["references"])
                         
             remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
 
-        # Parse MCP Block
-        # Format: [a] [icon] name: description
-        mcp_block_match = re.search(r'```mcp\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
-        if mcp_block_match:
-            mcp_content = mcp_block_match.group(1).strip()
-            lines = mcp_content.split("\n")
-            current_step = None
-            
-            for line in lines:
-                line_stripped = line.strip()
-                if not line_stripped: continue
-
-                # New Format with Letter: [a] [icon] name: description
-                # ^\[([a-zA-Z0-9]+)\]\s+\[(\w+)\]\s+([^:]+):\s*(.+)$
-                letter_match = re.match(r'^\[([a-zA-Z0-9]+)\]\s+\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
-                
-                # Numbered/Bullet Format: 1. [icon] name: description
-                num_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+([^:]+):\s*(.+)$', line_stripped)
-                
-                # Fallback/Simple: [icon] name
-                simple_match = re.match(r'^(?:(?:\d+\.|[-*])\s+)?\[(\w+)\]\s+(.+)$', line_stripped)
-
-                if letter_match:
-                    if current_step: parsed["mcp_steps"].append(current_step)
-                    current_step = {
-                        "id": letter_match.group(1), # Capture ID if needed (e.g. 'a')
-                        "icon": letter_match.group(2).lower(),
-                        "name": letter_match.group(3).strip(),
-                        "description": letter_match.group(4).strip()
-                    }
-                elif num_match:
-                    if current_step: parsed["mcp_steps"].append(current_step)
-                    current_step = {
-                        "icon": num_match.group(1).lower(),
-                        "name": num_match.group(2).strip(),
-                        "description": num_match.group(3).strip()
-                    }
-                elif simple_match:
-                    if current_step: parsed["mcp_steps"].append(current_step)
-                    current_step = {
-                        "icon": simple_match.group(1).lower(),
-                        "name": simple_match.group(2).strip(),
-                        "description": ""
-                    }
-                elif line.startswith("  ") and current_step:
-                    # Continuation
-                    current_step["description"] += " " + line.strip()
-                elif line_stripped and not line_stripped.startswith("[") and current_step is None:
-                     if current_step: parsed["mcp_steps"].append(current_step)
-                     current_step = {
-                         "icon": "default", 
-                         "name": line_stripped,
-                         "description": ""
-                     }
-            
-            if current_step:
-                parsed["mcp_steps"].append(current_step)
-            remaining_text = remaining_text.replace(mcp_block_match.group(0), "").strip()
-
-        # Normalization
-        
-        # 1. References: [8] or ref:8 -> `ref:NewIndex`
+        # Replace search:id citations
         if id_map:
-            def replace_citation(match):
+            def replace_search_citation(match):
                 old_id = match.group(1) or match.group(2) 
                 if old_id in id_map:
-                    return f"`ref:{id_map[old_id]}`"
+                    return f"`search:{id_map[old_id]}`"
                 return match.group(0)
 
-            # Match [N]
-            remaining_text = re.sub(r'\[(\d+)\]', replace_citation, remaining_text)
-            # Match ref:N (not inside backticks check simplified)
-            remaining_text = re.sub(r'(?<!`)ref:(\d+)(?!`)', replace_citation, remaining_text)
-            # Match `ref:N` - update index even if already code format
-            remaining_text = re.sub(r'`ref:(\d+)`', replace_citation, remaining_text)
+            remaining_text = re.sub(r'\[(\d+)\]', replace_search_citation, remaining_text)
+            remaining_text = re.sub(r'(?<!`)search:(\d+)(?!`)', replace_search_citation, remaining_text)
+            remaining_text = re.sub(r'`search:(\d+)`', replace_search_citation, remaining_text)
 
-        # 2. MCP: mcp:a -> `mcp:a`
-        # Regex to find mcp:Letter not inside backticks
-        def replace_mcp(match):
-            return f"`{match.group(0)}`"
-            
-        remaining_text = re.sub(r'(?<!`)mcp:[a-zA-Z0-9]+(?!`)', replace_mcp, remaining_text)
+        # Replace page:id citations
+        if page_id_map:
+            def replace_page_citation(match):
+                old_id = match.group(1)
+                if old_id in page_id_map:
+                    return f"`page:{page_id_map[old_id]}`"
+                return match.group(0)
+
+            remaining_text = re.sub(r'(?<!`)page:(\d+)(?!`)', replace_page_citation, remaining_text)
+            remaining_text = re.sub(r'`page:(\d+)`', replace_page_citation, remaining_text)
 
         parsed["response"] = remaining_text.strip()
         return parsed
 
+    async def _safe_route_tool(self, tool_call):
+        """Wrapper for safe concurrent execution of tool calls."""
+        try:
+            return await asyncio.wait_for(self._route_tool(tool_call), timeout=30.0)
+        except asyncio.TimeoutError:
+            return "Error: Tool execution timed out (30s limit)."
+        except Exception as e:
+            return f"Error: Tool execution failed: {e}"
+
+    async def _route_tool(self, tool_call):
+        """Execute tool call and return result."""
+        name = tool_call.function.name
+        args = json.loads(html.unescape(tool_call.function.arguments))
+
+        if name == "internal_web_search" or name == "web_search": 
+            query = args.get("query")
+            web = await self.search_service.search(query)
+            
+            # Cache results and assign IDs
+            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
+            
+            for item in web:
+                current_max_id += 1
+                item["_id"] = current_max_id
+                item["query"] = query
+                self.all_web_results.append(item)
+            
+            return json.dumps({"web_results_count": len(web), "status": "cached_for_prompt"}, ensure_ascii=False)
+
+        if name == "internal_image_search":
+            query = args.get("query")
+            images = await self.search_service.image_search(query)
+
+            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
+            for item in images:
+                current_max_id += 1
+                item["_id"] = current_max_id
+                item["query"] = query
+                item["is_image"] = True
+                self.all_web_results.append(item)
+
+            return json.dumps({"image_results_count": len(images), "status": "cached_for_prompt"}, ensure_ascii=False)
+
+        if name == "crawl_page":
+            url = args.get("url")
+            logger.info(f"[Tool] Crawling page: {url}")
+            # Returns Dict: {content, title, url}
+            result_dict = await self.search_service.fetch_page(url)
+            
+            # Cache the crawled content so Agent can access it
+            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
+            current_max_id += 1
+            
+            cached_item = {
+                "_id": current_max_id,
+                "title": result_dict.get("title", "Page"),
+                "url": result_dict.get("url", url),
+                "content": result_dict.get("content", "")[:2000],  # Clip content for prompt
+                "domain": "",
+                "is_crawled": True,
+            }
+            try:
+                from urllib.parse import urlparse
+                cached_item["domain"] = urlparse(url).netloc
+            except:
+                pass
+            
+            self.all_web_results.append(cached_item)
+            
+            return json.dumps({"crawl_status": "success", "title": cached_item["title"], "content_length": len(result_dict.get("content", ""))}, ensure_ascii=False)
+
+        if name == "set_mode":
+            mode = args.get("mode", "standard")
+            self.current_mode = mode
+            return f"Mode set to {mode}"
+
+        return f"Unknown tool {name}"
+
+
     async def _safe_llm_call(self, messages, model, tools=None, tool_choice=None, client: Optional[AsyncOpenAI] = None):
-        """
-        Wrap LLM calls with timeout and error handling.
-        Returns a tuple of (message, usage_dict) where usage_dict contains input_tokens and output_tokens.
-        """
         try:
             return await asyncio.wait_for(
                 self._do_llm_request(messages, model, tools, tool_choice, client=client or self.client),
@@ -638,7 +822,6 @@ class ProcessingPipeline:
         )
         logger.info(f"LLM Request RECEIVED after {time.time() - t0:.2f}s")
         
-        # Extract usage information
         usage = {"input_tokens": 0, "output_tokens": 0}
         if hasattr(response, "usage") and response.usage:
             usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
@@ -646,48 +829,7 @@ class ProcessingPipeline:
         
         return response.choices[0].message, usage
 
-    async def _route_tool(self, tool_call, mcp_session=None):
-        name = tool_call.function.name
-        args = json.loads(html.unescape(tool_call.function.arguments))
-
-        if name == "internal_web_search" or name == "web_search": # Backward compatibility
-            query = args.get("query")
-            text_task = self.search_service.search(query)
-            image_task = self.search_service.image_search(query)
-            results = await asyncio.gather(text_task, image_task)
-            
-            web = results[0]
-            images = results[1][:5]
-            
-            # Cache results and assign IDs
-            current_count = len(self.all_web_results)
-            for item in web:
-                current_count += 1
-                item["_id"] = current_count
-                item["query"] = query
-                self.all_web_results.append(item)
-            
-            # Also cache image results
-            for item in images:
-                current_count += 1
-                item["_id"] = current_count
-                item["query"] = query
-                item["is_image"] = True  # Mark as image for Agent/Renderer
-                self.all_web_results.append(item)
-            
-            # Return summary for tool history (LLM sees formatted logic in prompt next turn)
-            return json.dumps({"web_results_count": len(web), "image_results_count": len(images), "status": "cached_for_prompt"}, ensure_ascii=False)
-
-        if name == "grant_mcp_playwright":
-            return "OK"  # Minimal response, LLM already knows what it passed
-
-        if mcp_session is not None and name.startswith("browser_"):
-            return await mcp_session.call_tool_text(name, args or {})
-
-        return f"Unknown tool {name}"
-
     async def _run_vision_stage(self, user_input: str, images: List[str], model: str, prompt: str) -> Tuple[str, Dict[str, int]]:
-        """Returns (vision_text, usage_dict)."""
         content_payload: List[Dict[str, Any]] = [{"type": "text", "text": user_input or ""}]
         for img_b64 in images:
             url = f"data:image/png;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
@@ -708,17 +850,15 @@ class ProcessingPipeline:
         self, user_input: str, vision_text: str, model: str
     ) -> Tuple[str, List[str], Dict[str, Any], Dict[str, int], float]:
         """Returns (instruct_text, search_payloads, trace_dict, usage_dict, search_time)."""
-        tools = [self.web_search_tool, self.grant_mcp_playwright_tool]
-        tools_desc = "\n".join([t["function"]["name"] for t in tools])
+        # Instruct has access to: web_search, image_search, set_mode, crawl_page
+        tools = [self.web_search_tool, self.image_search_tool, self.set_mode_tool, self.crawl_page_tool]
+        tools_desc = "- internal_web_search: 搜索文本\n- internal_image_search: 搜索图片\n- crawl_page: 获取网页内容\n- set_mode: 设定standard/agent模式"
 
-        prompt_tpl = getattr(self.config, "intruct_system_prompt", None) or INTRUCT_SYSTEM_PROMPT
+        prompt_tpl = getattr(self.config, "intruct_system_prompt", None) or INTRUCT_SP
         prompt = prompt_tpl.format(user_msgs=user_input or "", tools_desc=tools_desc)
         
         if vision_text:
-            prompt = f"{prompt}\\n\\n{INTRUCT_SYSTEM_PROMPT_VISION_ADD.format(vision_msgs=vision_text)}"
-
-        # DEBUG: Log the instruct prompt
-        # logger.info(f"Instruct Prompt: {prompt}")
+            prompt = f"{prompt}\\n\\n{INTRUCT_SP_VISION_ADD.format(vision_msgs=vision_text)}"
 
         client = self._client_for(
             api_key=getattr(self.config, "intruct_api_key", None),
@@ -745,22 +885,21 @@ class ProcessingPipeline:
             "prompt": prompt,
             "user_input": user_input or "",
             "vision_add": vision_text or "",
-            "grant_mcp_playwright": False,
-            "grant_reason": "",
             "tool_calls": [],
             "tool_results": [],
             "output": "",
         }
         
         search_time = 0.0
-
+        mode = "standard"
+        mode_reason = ""
+        
         if response.tool_calls:
             plan_dict = response.model_dump() if hasattr(response, "model_dump") else response
             history.append(plan_dict)
 
             tasks = [self._safe_route_tool(tc) for tc in response.tool_calls]
             
-            # Measure search/tool execution time
             st = time.time()
             results = await asyncio.gather(*tasks)
             search_time = time.time() - st
@@ -775,29 +914,29 @@ class ProcessingPipeline:
                 
                 if tc.function.name in ["web_search", "internal_web_search"]:
                     search_payloads.append(str(result))
-
-                elif tc.function.name == "grant_mcp_playwright":
+                elif tc.function.name == "set_mode":
                     try:
                         args = json.loads(html.unescape(tc.function.arguments))
                     except Exception:
                         args = {}
-                    intruct_trace["grant_mcp_playwright"] = bool(args.get("grant"))
-                    intruct_trace["grant_reason"] = str(args.get("reason") or "")
-            # No second LLM call: tool-call arguments already include the extracted keywords/query
-            # and the grant decision; avoid wasting tokens/time.
+                    mode = args.get("mode", mode)
+                    mode_reason = args.get("reason", "")
+
+            intruct_trace["mode"] = mode
+            if mode_reason:
+                intruct_trace["mode_reason"] = mode_reason
+            
             intruct_trace["output"] = ""
             intruct_trace["usage"] = usage
             return "", search_payloads, intruct_trace, usage, search_time
 
+        intruct_trace["mode"] = mode
         intruct_trace["output"] = (response.content or "").strip()
         intruct_trace["usage"] = usage
         return "", search_payloads, intruct_trace, usage, 0.0
 
     def _format_search_msgs(self) -> str:
-        """
-        Format all cached search results for the Agent.
-        Prefix each result with its cached ID [N].
-        """
+        """Format search snippets only (not crawled pages)."""
         if not self.all_web_results:
             return ""
 
@@ -807,12 +946,48 @@ class ProcessingPipeline:
 
         lines = []
         for res in self.all_web_results:
+            if res.get("is_image"): continue  # Skip images
+            if res.get("is_crawled"): continue  # Skip crawled pages (handled separately)
             idx = res.get("_id")
             title = clip(res.get("title", ""), 80)
             url = res.get("url", "")
             content = clip(res.get("content", ""), 200) 
+            lines.append(f"[{idx}] Title: {title}\nURL: {url}\nSnippet: {content}\n")
+        
+        return "\n".join(lines)
+
+    def _format_page_msgs(self) -> str:
+        """Format crawled page content (detailed)."""
+        if not self.all_web_results:
+            return ""
+
+        def clip(s: str, n: int) -> str:
+            s = (s or "").strip()
+            return s if len(s) <= n else s[: n - 1] + "…"
+
+        lines = []
+        for res in self.all_web_results:
+            if not res.get("is_crawled"): continue  # Only crawled pages
+            idx = res.get("_id")
+            title = clip(res.get("title", ""), 80)
+            url = res.get("url", "")
+            content = clip(res.get("content", ""), 1500)  # More content for pages
             lines.append(f"[{idx}] Title: {title}\nURL: {url}\nContent: {content}\n")
         
+        return "\n".join(lines)
+
+    def _format_image_search_msgs(self) -> str:
+        if not self.all_web_results:
+            return ""
+        
+        lines = []
+        for res in self.all_web_results:
+            if not res.get("is_image"): continue
+            idx = res.get("_id")
+            title = res.get("title", "")
+            url = res.get("image", "") or res.get("url", "")
+            thumb = res.get("thumbnail", "")
+            lines.append(f"[{idx}] Title: {title}\nURL: {url}\nThumbnail: {thumb}\n")
         return "\n".join(lines)
 
     def _client_for(self, api_key: Optional[str], base_url: Optional[str]) -> AsyncOpenAI:
@@ -852,13 +1027,6 @@ class ProcessingPipeline:
             parts.append("## Intruct\n")
             parts.append(f"- model: `{t.get('model')}`")
             parts.append(f"- base_url: `{t.get('base_url')}`\n")
-            parts.append(f"- grant_mcp_playwright: `{bool(t.get('grant_mcp_playwright'))}`")
-            if t.get("grant_reason"):
-                parts.append(f"- grant_reason: `{t.get('grant_reason')}`")
-            if "explicit_mcp_intent" in t:
-                parts.append(f"- explicit_mcp_intent: `{bool(t.get('explicit_mcp_intent'))}`")
-            if "grant_effective" in t:
-                parts.append(f"- grant_effective: `{bool(t.get('grant_effective'))}`\n")
             parts.append("### Prompt\n")
             parts.append(fence("text", t.get("prompt", "")))
             if t.get("tool_calls"):
@@ -876,7 +1044,6 @@ class ProcessingPipeline:
             parts.append("## Agent\n")
             parts.append(f"- model: `{a.get('model')}`")
             parts.append(f"- base_url: `{a.get('base_url')}`\n")
-            parts.append(f"- mcp_granted: `{bool(a.get('mcp_granted'))}`\n")
             parts.append("### System Prompt\n")
             parts.append(fence("text", a.get("system_prompt", "")))
             parts.append("\n### Steps\n")
@@ -888,14 +1055,11 @@ class ProcessingPipeline:
 
     async def close(self):
         try:
-            await self.mcp_playwright.close()
+            await self.search_service.close()
         except Exception:
             pass
-
-    async def warmup_mcp(self) -> bool:
-        ok = await self.mcp_playwright.ensure_connected()
-        if ok:
-            logger.info("MCP Playwright connected (warmup).")
-        else:
-            logger.warning("MCP Playwright warmup failed.")
-        return ok
+        try:
+            from ..utils.search import close_shared_crawler
+            await close_shared_crawler()
+        except Exception:
+            pass

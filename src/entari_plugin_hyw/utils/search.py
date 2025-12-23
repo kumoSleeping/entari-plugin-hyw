@@ -1,193 +1,241 @@
-import re
-import httpx
 import urllib.parse
 from typing import List, Dict, Optional, Any
 from loguru import logger
+from crawl4ai import AsyncWebCrawler
+from crawl4ai.async_configs import CrawlerRunConfig
+from crawl4ai.cache_context import CacheMode
+
+# Shared crawler instance to avoid repeated init
+_shared_crawler: Optional[AsyncWebCrawler] = None
+
+
+async def get_shared_crawler() -> AsyncWebCrawler:
+    global _shared_crawler
+    if _shared_crawler is None:
+        _shared_crawler = AsyncWebCrawler()
+        await _shared_crawler.start()
+    return _shared_crawler
+
+
+async def close_shared_crawler():
+    global _shared_crawler
+    if _shared_crawler:
+        try:
+            await _shared_crawler.close()
+        except Exception:
+            pass
+        _shared_crawler = None
 
 class SearchService:
     """
-    Specialized service for interacting with SearXNG.
-    Uses regex-based HTML parsing to ensure O(n) performance and zero blocking,
-    bypasssing heavy DOM parsers like Trafilatura.
+    Crawl4AI-backed search & fetch service.
+    Uses the configured search engine results page (SERP) URL and parses links from the HTML.
     """
     def __init__(self, config: Any):
         self.config = config
+        self._default_limit = 8
+        self._crawler: Optional[AsyncWebCrawler] = None
+
+    def _build_search_url(self, query: str) -> str:
+        encoded_query = urllib.parse.quote(query)
+        base = getattr(self.config, "search_base_url", "https://lite.duckduckgo.com/lite/?q={query}")
+        if "{query}" in base:
+            return base.replace("{query}", encoded_query).replace("{limit}", str(self._default_limit))
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}q={encoded_query}"
+
+    def _build_image_url(self, query: str) -> str:
+        encoded_query = urllib.parse.quote(query)
+        base = getattr(self.config, "image_search_base_url", "https://duckduckgo.com/?q={query}&iax=images&ia=images")
+        if "{query}" in base:
+            return base.replace("{query}", encoded_query).replace("{limit}", str(self._default_limit))
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}q={encoded_query}&iax=images&ia=images"
 
     async def search(self, query: str) -> List[Dict[str, str]]:
         """
-        Execute search and parse results using Regex.
-        Returns a list of dicts: {'title': str, 'url': str, 'content': str}
+        Crawl the configured SERP using Crawl4AI and return parsed results.
         """
-        # 1. Construct URL (Force HTML format since JSON is 403)
-        encoded_query = urllib.parse.quote(query)
-        base = getattr(self.config, "search_base_url", "http://127.0.0.1:8888/search?")
-        
-        # Ensure we don't have double '?' or '&' issues
-        sep = "&" if "?" in base else "?"
-        
-        # Remove any existing format=json if present in base (just in case)
-        base = base.replace("format=json&", "").replace("&format=json", "")
-        
-        # Handle {query} placeholder if present (common in config defaults)
-        if "{query}" in base:
-            # We need to handle potential other placeholders like {limit} if they exist, or escape them
-            # For simplicity, we just replace {query} and ignore format/limit changes since we parse HTML
-            # Actually, standard python format() might fail if other braces exist.
-            # safe replace:
-            url = base.replace("{query}", encoded_query)
-            # Remove other common placeholders if they linger
-            url = url.replace("{limit}", "8")
-        else:
-            # Append mode
-            url = f"{base}{sep}q={encoded_query}&language=zh-CN"
-        
-        logger.info(f"SearchService: Fetching {url}")
-
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url)
-                if resp.status_code != 200:
-                    logger.error(f"Search failed: {resp.status_code}")
-                    return []
-                html = resp.text
-                return self._parse_searxng_html(html)
-        except Exception as e:
-            logger.error(f"Search execution failed: {e}")
+        if not query:
             return []
 
-    def _parse_searxng_html(self, html: str) -> List[Dict[str, str]]:
-        """
-        Parse SearXNG HTML results using Regex.
-        Target structure:
-        <article class="result ...">
-           <h3><a href="(url)">(title)</a></h3>
-           <p class="content">(snippet)</p>
-        </article>
-        """
-        results = []
-        
-        # Regex to find result blocks. 
-        # We split by <article to find chunks, then parse each chunk.
-        # This is safer than a global regex which might get confused by nested structures.
-        chunks = html.split('<article')
-        
-        for chunk in chunks[1:]: # Skip preamble
-            try:
-                # 1. Extract URL and Title
-                # Look for <a href="..." ... >Title</a> inside h3
-                # Simplified pattern: href="([^"]+)" text is >([^<]+)<
-                link_match = re.search(r'href="([^"]+)".*?>([^<]+)<', chunk)
-                if not link_match:
-                    continue
-                
-                url = link_match.group(1)
-                title = link_match.group(2).strip()
-                
-                # Verify it's a valid result link (sometimes engine links appear)
-                if "searxng" in url or url.startswith("/"):
-                    continue
+        url = self._build_search_url(query)
+        logger.info(f"SearchService(Crawl4AI): fetching {url}")
 
-                # 2. Extract Snippet
-                # Look for class="content">...<
-                # We try to capture text until the next tag open
-                snippet_match = re.search(r'class="content"[^>]*>([\s\S]*?)</p>', chunk)
-                snippet = ""
-                if snippet_match:
-                    # Clean up HTML tags from snippet if any remain (basic check)
-                    raw_snippet = snippet_match.group(1)
-                    snippet = re.sub(r'<[^>]+>', '', raw_snippet).strip()
-                
-                if url and title:
-                    # SAFETY: Truncate snippet to 500 chars to prevent context explosion
-                    final_snippet = (snippet or title)[:500]
-                    results.append({
-                        "title": title,
-                        "url": url,
-                        "content": final_snippet
-                    })
-                    
-                if len(results) >= 8: # Limit to 8 results
-                    break
-                    
-            except Exception:
+        try:
+            crawler = await self._get_crawler()
+            result = await crawler.arun(
+                url=url,
+                config=CrawlerRunConfig(
+                    wait_until="domcontentloaded",
+                    wait_for="article",
+                    cache_mode=CacheMode.BYPASS,
+                    word_count_threshold=1,
+                    screenshot=False,
+                    capture_console_messages=False,
+                    capture_network_requests=False,
+                ),
+            )
+            return self._parse_markdown_result(result, limit=self._default_limit)
+        except Exception as e:
+            logger.error(f"Crawl4AI search failed: {e}")
+            return []
+
+    def _parse_markdown_result(self, result, limit: int = 8) -> List[Dict[str, str]]:
+        """Parse Crawl4AI result into search items without manual HTML parsing."""
+        md = (result.markdown or result.extracted_content or "").strip()
+        lines = [ln.strip() for ln in md.splitlines() if ln.strip()]
+        links = result.links.get("external", []) if getattr(result, "links", None) else []
+        seen = set()
+        results: List[Dict[str, str]] = []
+
+        def find_snippet(url: str, domain: str) -> str:
+            for ln in lines:
+                if url in ln or (domain and domain in ln):
+                    return ln[:400]
+            # fallback to first non-empty line
+            return lines[0][:400] if lines else ""
+
+        for link in links:
+            url = link.get("href") or ""
+            if not url or url in seen:
                 continue
-                
-        logger.info(f"SearchService: Parsed {len(results)} results")
+            seen.add(url)
+            domain = urllib.parse.urlparse(url).hostname or ""
+            title = link.get("title") or link.get("text") or url
+            snippet = find_snippet(url, domain)
+            results.append({
+                "title": title.strip(),
+                "url": url,
+                "domain": domain,
+                "content": snippet or title,
+            })
+            if len(results) >= limit:
+                break
+
+        if not results:
+            logger.warning(f"SearchService: no results parsed; md_length={len(md)}, links={len(links)}")
+        else:
+            logger.info(f"SearchService: parsed {len(results)} results via Crawl4AI links")
         return results
+
+    async def fetch_page(self, url: str) -> Dict[str, str]:
+        """
+        Fetch a single page via Crawl4AI and return cleaned markdown/text plus metadata.
+        """
+        if not url:
+            return {"content": "Error: missing url", "title": "Error", "url": ""}
+
+        try:
+            crawler = await self._get_crawler()
+            result = await crawler.arun(
+                url=url,
+                config=CrawlerRunConfig(
+                    wait_until="networkidle",
+                    wait_for_images=False,  # Faster: skip image loading
+                    cache_mode=CacheMode.BYPASS,
+                    word_count_threshold=1,
+                    screenshot=False,
+                    capture_console_messages=False,
+                    capture_network_requests=False,
+                ),
+            )
+            if not result.success:
+                return {"content": f"Error: crawl failed ({result.error_message or 'unknown'})", "title": "Error", "url": url}
+            
+            content = result.markdown or result.extracted_content or result.cleaned_html or result.html or ""
+            # Extract metadata if available, otherwise fallback
+            title = "No Title"
+            if result.metadata:
+                title = result.metadata.get("title") or result.metadata.get("og:title") or title
+            
+            # If metadata title is missing/generic, try to grab from links or url? No, metadata is best.
+            if title == "No Title" and result.links:
+                 # Minimal fallback not really possible without parsing HTML again or regex
+                 pass
+
+            return {
+                "content": content[:8000], 
+                "title": title, 
+                "url": result.url or url 
+            }
+        except Exception as e:
+            logger.error(f"Crawl4AI fetch failed: {e}")
+            return {"content": f"Error: crawl failed ({e})", "title": "Error", "url": url}
+
+    async def _get_crawler(self) -> AsyncWebCrawler:
+        # Prefer shared crawler to minimize INIT logs; fall back to local if needed
+        try:
+            return await get_shared_crawler()
+        except Exception as e:
+            logger.warning(f"Shared crawler unavailable, creating local: {e}")
+            if self._crawler is None:
+                self._crawler = AsyncWebCrawler()
+                await self._crawler.start()
+            return self._crawler
+
+    async def close(self):
+        if self._crawler:
+            try:
+                await self._crawler.close()
+            except Exception:
+                pass
+            self._crawler = None
 
     async def image_search(self, query: str) -> List[Dict[str, str]]:
         """
-        Perform image search using regex parsing on HTML results.
+        Image search via Crawl4AI media extraction.
         """
-        if not query: return []
-        
-        encoded_query = urllib.parse.quote(query)
-        base = getattr(self.config, "image_search_base_url", "http://127.0.0.1:8888/search?")
-        sep = "&" if "?" in base else "?"
-        
-        # Clean format=json
-        base = base.replace("format=json&", "").replace("&format=json", "")
-        
-        if "{query}" in base:
-            url = base.replace("{query}", encoded_query)
-            url = url.replace("{limit}", "8")
-        else:
-            url = f"{base}{sep}q={encoded_query}&iax=images&ia=images"
-        
-        logger.info(f"SearchService: Fetching Images {url}")
-        
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                html_content = resp.text
-        except Exception as e:
-            logger.error(f"Image Search failed: {e}")
+        if not query:
             return []
 
-        # Regex for Images (DuckDuckGo style / Generic)
-        # DDG images usually in a script or complex layout. 
-        # For simplicity in V2 regex approach, we look for common img tags with logical classes or structure
-        # OR, since the user's SearXNG likely returns standard HTML list for images too.
-        # SearXNG Image results usually: <img src="..." alt="..."> inside a result container.
-        # Let's try a generic pattern for SearXNG image results
-        
-        results = []
-        # SearXNG pattern: <div class="img-search-result"> ... <img src="URL" ...>
-        # Or just look for img tags with src that are http
-        
-        # More robust SearXNG specific regex:
-        # Pattern: <img class="image" src="(?P<url>[^"]+)" alt="(?P<title>[^"]+)"
-        # This is a guess. Let's try to match standard "result_image" or similar if possible.
-        
-        # Assuming SearXNG:
-        # More robust regex to capture images from various engines (SearXNG, Google, Bing)
-        # 1. Try generic <img ... src="..."> with http
-        # 2. Try to extract alt text if available
-        
-        # Pattern 1: Standard img tag with src
-        # We look for src="http..." and optional alt
-        image_matches = re.finditer(r'<img[^>]+src=["\'](http[^"\']+)["\'][^>]*>', html_content, re.IGNORECASE)
-        
-        for match in image_matches:
-            img_tag = match.group(0)
-            img_url = match.group(1)
-            
-            # Extract alt/title
-            alt_match = re.search(r'alt=["\']([^"\']*)["\']', img_tag, re.IGNORECASE)
-            title = alt_match.group(1) if alt_match else ""
-            
-            # Filter out tiny icons/favicons/data uris if possible
-            if "favicon" in img_url or "static" in img_url or "data:image" in img_url:
-                continue
-                
-            results.append({
-                "title": title or "Image",
-                "url": img_url,
-                "content": f"Image: {title}"
-            })
-            
-            if len(results) >= 8:
-                break
-                
-        return results
+        url = self._build_image_url(query)
+        logger.info(f"SearchService(Crawl4AI Image): fetching {url}")
+
+        try:
+            # Use image crawler (text_mode=False) for image search
+            crawler = await self._get_crawler()
+            result = await crawler.arun(
+                url=url,
+                config=CrawlerRunConfig(
+                    wait_until="networkidle",
+                    wait_for_images=True,
+                    wait_for="img",
+                    cache_mode=CacheMode.BYPASS,
+                    word_count_threshold=1,
+                    screenshot=False,
+                    capture_console_messages=False,
+                    capture_network_requests=False,
+                ),
+            )
+            images = []
+            seen = set()
+            for img in result.media.get("images", []):
+                src = img.get("src") or ""
+                if not src:
+                    continue
+                if src.startswith("//"):
+                    src = "https:" + src
+                if not src.startswith("http"):
+                    continue
+                if src in seen:
+                    continue
+                seen.add(src)
+                alt = (img.get("alt") or img.get("desc") or "").strip()
+                domain = urllib.parse.urlparse(src).hostname or ""
+                images.append({
+                    "title": alt or "Image",
+                    "url": src,
+                    "domain": domain,
+                    "content": alt or "Image",
+                })
+                if len(images) >= self._default_limit:
+                    break
+            if not images:
+                logger.warning(f"SearchService: no images parsed; media_count={len(result.media.get('images', []))}")
+            else:
+                logger.info(f"SearchService: parsed {len(images)} images via Crawl4AI media")
+            return images
+        except Exception as e:
+            logger.error(f"Crawl4AI image search failed: {e}")
+            return []

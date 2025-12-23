@@ -11,9 +11,49 @@ from typing import List, Dict, Optional, Any, Union
 import re
 import json
 from pathlib import Path
-from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from loguru import logger
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+from crawl4ai import AsyncWebCrawler
+from crawl4ai.async_configs import CrawlerRunConfig
+from crawl4ai.cache_context import CacheMode
+from crawl4ai.async_crawler_strategy import AsyncPlaywrightCrawlerStrategy
+from playwright.async_api import async_playwright
+
+# Patch Crawl4AI 0.7.x to support screenshot from raw/file HTML
+async def _c4a_generate_screenshot_from_html(self, html: str) -> str:
+    """
+    Monkey-patched fallback: render arbitrary HTML to a screenshot using Playwright.
+    """
+    page, context = await self.browser_manager.get_page(
+        crawlerRunConfig=CrawlerRunConfig(
+            adjust_viewport_to_content=True,
+            wait_until="networkidle",
+            wait_for_images=True,
+            cache_mode=CacheMode.BYPASS,
+        )
+    )
+    try:
+        try:
+            await page.set_viewport_size({"width": 520, "height": 1200})
+        except Exception:
+            pass
+            await page.set_content(html, wait_until="networkidle")
+            await page.wait_for_timeout(150)
+            element = await page.query_selector("#main-container")
+        if element:
+            screenshot_bytes = await element.screenshot()
+        else:
+            screenshot_bytes = await page.screenshot(full_page=True)
+        import base64 as _b64
+        return _b64.b64encode(screenshot_bytes).decode()
+    finally:
+        try:
+            await context.close()
+        except Exception:
+            pass
+
+if not hasattr(AsyncPlaywrightCrawlerStrategy, "_generate_screenshot_from_html"):
+    AsyncPlaywrightCrawlerStrategy._generate_screenshot_from_html = _c4a_generate_screenshot_from_html
 
 class ContentRenderer:
     def __init__(self, template_path: str = None):
@@ -66,18 +106,6 @@ class ContentRenderer:
         )
         self.template = self.env.get_template(template_name)
 
-    async def _set_content_safe(self, page, html: str, timeout_ms: int) -> bool:
-        html_size = len(html)
-        try:
-            await page.set_content(html, wait_until="networkidle", timeout=timeout_ms)
-            return True
-        except PlaywrightTimeoutError:
-            logger.warning(f"ContentRenderer: page.set_content timed out after {timeout_ms}ms (html_size={html_size})")
-            return False
-        except Exception as exc:
-            logger.warning(f"ContentRenderer: page.set_content failed (html_size={html_size}): {exc}")
-            return False
-    
     def _get_icon_data_url(self, icon_name: str) -> str:
         if not icon_name:
             return ""
@@ -144,8 +172,9 @@ class ContentRenderer:
                      suggestions: List[str] = None, 
                      stats: Dict[str, Any] = None,
                      references: List[Dict[str, Any]] = None,
-                    mcp_steps: List[Dict[str, Any]] = None,
+                     page_references: List[Dict[str, Any]] = None,
                     stages_used: List[Dict[str, Any]] = None,
+                    flow_steps: List[Dict[str, Any]] = None,
                     model_name: str = "",
                     provider_name: str = "Unknown",
                     behavior_summary: str = "Text Generation",
@@ -157,15 +186,24 @@ class ContentRenderer:
                     billing_info: Dict[str, Any] = None,
                     render_timeout_ms: int = 6000):
         """
-        Render markdown content to an image using Playwright and Jinja2.
+        Render markdown content to an image using Crawl4AI (headless) and Jinja2.
         """
         render_start_time = asyncio.get_event_loop().time()
+
+        # Resolve output path early to avoid relative URI issues
+        resolved_output_path = Path(output_path).resolve()
+        resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Preprocess to fix common markdown issues
-        markdown_content = re.sub(r'(?<=\S)\n(?=\s*(\d+\.|[-*+]) )', r'\n\n', markdown_content)
+        markdown_content = re.sub(r'(?<=\S)\n(?=\s*(\d+\.|\-|\*|\+) )', r'\n\n', markdown_content)
 
         # AGGRESSIVE CLEANING: Strip out "References" section and "[code]" blocks from the text
         # because we are rendering them as structured UI elements now.
+        
+        # 0. Remove content before first # heading (keep the heading)
+        heading_match = re.search(r'^(#[^#])', markdown_content, re.MULTILINE)
+        if heading_match:
+            markdown_content = markdown_content[heading_match.start():]
         
         # 1. Remove "References" or "Citations" header and everything after it specific to the end of file
         # Matches ### References, ## References, **References**, etc., followed by list items
@@ -231,7 +269,7 @@ class ContentRenderer:
                 for i, part in enumerate(parts):
                     # Check if this part is a code block containing our specific citation format
                     if part.startswith('<code'):
-                        # Match <code>ref:123</code> or <code>mcp:abc</code>
+                        # Match <code>ref:123</code>
                         # Note: attributes like class might be present if we are unlucky, but `ref:` inside usually means inline code.
                         
                         # 1. Numeric: <code>ref:123</code>
@@ -240,12 +278,11 @@ class ContentRenderer:
                             citation_id = ref_match.group(1)
                             parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{citation_id}</span>'
                             continue
-
-                        # 2. Alpha: <code>mcp:abc</code>
-                        mcp_match = re.match(r'^<code.*?>mcp:([a-zA-Z]+)</code>$', part)
-                        if mcp_match:
-                            mcp_id = mcp_match.group(1)
-                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{mcp_id}</span>'
+                        # 2. Flow marker: <code>flow:a</code>
+                        flow_match = re.match(r'^<code.*?>flow:([a-zA-Z])</code>$', part)
+                        if flow_match:
+                            flow_id = flow_match.group(1).lower()
+                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{flow_id}</span>'
                             continue
                             
                     # If it's NOT a code block, or a code block we didn't transform, we leave it alone.
@@ -254,12 +291,12 @@ class ContentRenderer:
                 content_html = "".join(parts)
                 
                 # Strip out the structured JSON blocks if they leaked into the content
-                # Look for <pre>... containing "mcp_steps" or "references" at the end
+                # Look for <pre>... containing "references" at the end
                 # Make regex robust to any language class or no class
-                content_html = re.sub(r'<pre><code[^>]*>[^<]*(mcp_steps|references)[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
+                content_html = re.sub(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
                 # Loop to remove multiple if present
-                while re.search(r'<pre><code[^>]*>[^<]*(mcp_steps|references)[^<]*</code></pre>\s*$', content_html, flags=re.DOTALL | re.IGNORECASE):
-                    content_html = re.sub(r'<pre><code[^>]*>[^<]*(mcp_steps|references)[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
+                while re.search(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', content_html, flags=re.DOTALL | re.IGNORECASE):
+                    content_html = re.sub(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
 
                 # --- PREPARE DATA FOR JINJA TEMPLATE ---
                 
@@ -268,6 +305,7 @@ class ContentRenderer:
                 
                 # Unified Search Icon (RemixIcon)
                 SEARCH_ICON = '<i class="ri-search-line text-[16px]"></i>'
+                BROWSER_ICON = '<i class="ri-global-line text-[16px]"></i>'
                 DEFAULT_ICON = '<i class="ri-box-3-line text-[16px]"></i>'
 
                 # Helper to infer provider/icon name from model string
@@ -305,6 +343,26 @@ class ContentRenderer:
                             "favicon_url": f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
                         })
 
+                # 2b. Page Reference Processing (crawled pages)
+                processed_page_refs = []
+                if page_references:
+                    for ref in page_references[:8]:
+                        url = ref.get("url", "#")
+                        try:
+                            domain = urlparse(url).netloc
+                            if domain.startswith("www."): domain = domain[4:]
+                        except:
+                            domain = "unknown"
+                        
+                        processed_page_refs.append({
+                            "title": ref.get("title", "No Title"),
+                            "url": url,
+                            "domain": domain,
+                            "favicon_url": f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
+                        })
+
+                flow_steps = flow_steps or []
+
                 if stages_used:
                     for stage in stages_used:
                         name = stage.get("name", "Step")
@@ -314,6 +372,8 @@ class ContentRenderer:
                         
                         if name == "Search":
                              icon_html = SEARCH_ICON
+                        elif name == "Crawler":
+                             icon_html = BROWSER_ICON
                         else:
                             # Try to find vendor logo
                             # 1. Check explicit icon_config
@@ -346,35 +406,29 @@ class ContentRenderer:
                         # References go to "Search"
                         if name == "Search" and processed_refs:
                             stage_children['references'] = processed_refs
-                            
-                        # MCP Steps go to "Agent"
-                        # Process MCP steps here for the template
-                        stage_mcp_steps = []
-                        if name == "Agent" and mcp_steps:
-                             # RemixIcon Mapping
-                            STEP_ICONS = {
-                                "navigate": '<i class="ri-compass-3-line"></i>',
-                                "snapshot": '<i class="ri-camera-lens-line"></i>',
-                                "click": '<i class="ri-cursor-fill"></i>',
-                                "type": '<i class="ri-keyboard-line"></i>',
-                                "code": '<i class="ri-code-line"></i>',
-                                "search": SEARCH_ICON, 
-                                "default": '<i class="ri-arrow-right-s-line"></i>',
+
+                        # Flow steps go to "Agent"
+                        if name == "Agent" and flow_steps:
+                            FLOW_ICONS = {
+                                "search": SEARCH_ICON,
+                                "page": '<i class="ri-file-text-line text-[16px]"></i>',
                             }
-                            for step in mcp_steps:
+                            formatted_flow = []
+                            for step in flow_steps:
                                 icon_key = step.get("icon", "").lower()
-                                if "search" in icon_key: icon_key = "search"
-                                elif "nav" in icon_key or "visit" in icon_key: icon_key = "navigate"
-                                elif "click" in icon_key: icon_key = "click"
-                                elif "type" in icon_key or "input" in icon_key: icon_key = "type"
-                                elif "shot" in icon_key: icon_key = "snapshot"
-                                
-                                stage_mcp_steps.append({
-                                    "name": step.get("name", "unknown"),
-                                    "description": step.get("description", ""),
-                                    "icon_svg": STEP_ICONS.get(icon_key, STEP_ICONS["default"])
+                                formatted_flow.append({
+                                    "icon_svg": FLOW_ICONS.get(icon_key, FLOW_ICONS.get("search")),
+                                    "description": step.get("description", "")
                                 })
-                            stage_children['mcp_steps'] = stage_mcp_steps
+                            stage_children['flow_steps'] = formatted_flow
+
+                        # Pass through Search Queries
+                        if "queries" in stage:
+                            stage_children["queries"] = stage["queries"]
+                        
+                        # Pass through Crawled Pages
+                        if "crawled_pages" in stage:
+                            stage_children["crawled_pages"] = stage["crawled_pages"]
 
                         processed_stages.append({
                             "name": name,
@@ -440,7 +494,6 @@ class ContentRenderer:
                 feature_flags = {
                     "has_vision": False,
                     "has_search": False,
-                    "has_mcp": False
                 }
                 
                 # Check Vision
@@ -451,19 +504,17 @@ class ContentRenderer:
                 if any(s.get("name") == "Search" for s in stages_used or []):
                     feature_flags["has_search"] = True
                 
-                # Check MCP
-                if mcp_steps or any(s.get("mcp_steps") for s in stages_used or []):
-                    feature_flags["has_mcp"] = True
-
                 # Render Template
                 context = {
                     "content_html": content_html,
                     "suggestions": suggestions or [],
                     "stages": processed_stages,
                     "references": processed_refs,
+                    "page_references": processed_page_refs,
                     "references_json": json.dumps(references or []),
                     "stats": processed_stats,
                     "flags": feature_flags,
+                    "total_time": stats_dict.get("total_time", 0) or 0,
                     **self.assets
                 }
                 
@@ -479,73 +530,25 @@ class ContentRenderer:
                 continue
             
             try:
-                # logger.info("ContentRenderer: launching playwright...")
+                # Use Playwright directly for crisp element screenshot (Crawl4AI already depends on it)
                 async with async_playwright() as p:
-                    # logger.info("ContentRenderer: playwright context ready, launching browser...")
                     browser = await p.chromium.launch(headless=True)
                     try:
-                        # Use device_scale_factor=3 for high DPI rendering (better quality)
-                        page = await browser.new_page(viewport={"width": 450, "height": 1200}, device_scale_factor=3)
-                        
-                        # Set content (10s timeout to handle slow CDN loading)
-                        set_ok = await self._set_content_safe(page, final_html, 10000)
-                        if not set_ok or page.is_closed():
-                            raise RuntimeError("set_content failed")
-                        
-                        # Wait for images with user-configured timeout (render_timeout_ms)
-                        image_timeout_sec = render_timeout_ms / 1000.0
-                        try:
-                            await asyncio.wait_for(
-                                page.evaluate("""
-                                    () => Promise.all(
-                                        Array.from(document.images).map(img => {
-                                            if (img.complete) {
-                                                if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-                                                    img.style.display = 'none';
-                                                }
-                                                return Promise.resolve();
-                                            }
-                                            return new Promise((resolve) => {
-                                                img.onload = () => {
-                                                    if (img.naturalWidth === 0 || img.naturalHeight === 0) {
-                                                        img.style.display = 'none';
-                                                    }
-                                                    resolve();
-                                                };
-                                                img.onerror = () => {
-                                                    img.style.display = 'none';
-                                                    resolve();
-                                                };
-                                            });
-                                        })
-                                    )
-                                """),
-                                timeout=image_timeout_sec
-                            )
-                        except asyncio.TimeoutError:
-                            logger.warning(f"ContentRenderer: image loading timed out after {image_timeout_sec}s, continuing...")
-                        
-                        # Brief wait for layout to stabilize
-                        await asyncio.sleep(0.1)
-                        
-                        # Try element screenshot first, fallback to full page
+                        page = await browser.new_page(
+                            viewport={"width": 520, "height": 1400},
+                            device_scale_factor=3,
+                        )
+                        await page.set_content(final_html, wait_until="networkidle")
+                        await page.wait_for_timeout(150)
                         element = await page.query_selector("#main-container")
-                        
-                        try:
-                            if element:
-                                await element.screenshot(path=output_path)
-                            else:
-                                await page.screenshot(path=output_path, full_page=True)
-                        except Exception as screenshot_exc:
-                            logger.warning(f"ContentRenderer: element screenshot failed ({screenshot_exc}), trying full page...")
-                            await page.screenshot(path=output_path, full_page=True)
-                        
+                        if element:
+                            await element.screenshot(path=resolved_output_path, type="jpeg", quality=98)
+                        else:
+                            await page.screenshot(path=resolved_output_path, full_page=True, type="jpeg", quality=98)
+                        return True
                     finally:
-                        try:
-                            await browser.close()
-                        except Exception as exc:
-                            logger.warning(f"ContentRenderer: failed to close browser ({exc})")
-                return True
+                        await browser.close()
+
             except Exception as exc:
                 last_exc = exc
                 logger.warning(f"ContentRenderer: render attempt {attempt}/{max_attempts} failed ({exc})")
@@ -553,3 +556,41 @@ class ContentRenderer:
                 content_html = None
                 final_html = None
                 gc.collect()
+
+        logger.error(f"ContentRenderer: render failed after {max_attempts} attempts ({last_exc})")
+        return False
+
+    async def render_models_list(
+        self,
+        models: List[Dict[str, Any]],
+        output_path: str,
+        default_base_url: str = "https://openrouter.ai/api/v1",
+        render_timeout_ms: int = 6000,
+    ) -> bool:
+        """
+        Lightweight models list renderer leveraging the main render pipeline.
+        """
+        lines = ["# 模型列表"]
+        for idx, model in enumerate(models or [], start=1):
+            name = model.get("name", "unknown")
+            base_url = model.get("base_url") or default_base_url
+            provider = model.get("provider", "")
+            lines.append(f"{idx}. **{name}**  \n   - base_url: {base_url}  \n   - provider: {provider}")
+
+        markdown_content = "\n\n".join(lines) if len(lines) > 1 else "# 模型列表\n暂无模型"
+
+        return await self.render(
+            markdown_content=markdown_content,
+            output_path=output_path,
+            suggestions=[],
+            stats={"time": 0.0},
+            references=[],
+            stages_used=[],
+            model_name="",
+            provider_name="Models",
+            behavior_summary="Model List",
+            icon_config="openai",
+            base_url=default_base_url,
+            billing_info=None,
+            render_timeout_ms=render_timeout_ms,
+        )

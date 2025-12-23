@@ -10,7 +10,9 @@
 
 </div>
 
-# v3.2迎来大幅度改动、现在图文不符
+# v3.3 迎来大幅度改动、现在图文不符
+
+
 
 ## 🎑 效果展示
 
@@ -107,3 +109,6 @@ hyw -t 一大段话。
 ### 引用回复
 支持引用消息进行追问，机器人会自动读取被引用的消息作为上下文：
 - **引用 + 命令**：机器人将理解被引用消息的内容（包括图片）通过 `MessageChain` 操作拼接 `Text`、`Image` 与部分 `Custom`。
+
+UncleCode. (2024). Crawl4AI: Open-source LLM Friendly Web Crawler & Scraper [Computer software]. 
+GitHub. https://github.com/unclecode/crawl4ai

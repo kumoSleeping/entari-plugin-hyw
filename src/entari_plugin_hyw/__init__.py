@@ -65,10 +65,8 @@ class HywConfig(BasicConfModel):
     intruct_base_url: Optional[str] = None
     intruct_system_prompt: Optional[str] = None
     agent_system_prompt: Optional[str] = None
-    playwright_mcp_command: str = "npx"
-    playwright_mcp_args: Optional[List[str]] = None
-    search_base_url: str = "https://duckduckgo.com/?q={query}&format=json&results_per_page={limit}"
-    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images&format=json&results_per_page={limit}"
+    search_base_url: str = "https://lite.duckduckgo.com/lite/?q={query}"
+    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images"
     headless: bool = False
     save_conversation: bool = False
     icon: str = "openai"
@@ -89,8 +87,8 @@ class HywConfig(BasicConfModel):
     intruct_output_price: Optional[float] = None
     
     # Provider Names
-    search_name: str = "SearXNG"
-    search_provider: str = "SearXNG"
+    search_name: str = "DuckDuckGo"
+    search_provider: str = "Crawl4AI"
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
     intruct_model_provider: Optional[str] = None
@@ -101,13 +99,6 @@ conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
 renderer = ContentRenderer()
 hyw = HYW(config=conf)
-
-@listen(Ready, once=True)
-async def _hyw_warmup_mcp():
-    try:
-        await hyw.pipeline.warmup_mcp()
-    except Exception as e:
-        logger.warning(f"MCP Playwright warmup error: {e}")
 
 @listen(Ready, once=True)
 async def _run_ui_test():
@@ -145,31 +136,43 @@ async def _run_ui_test():
             
         # Mock Data for Full UI Test
         stats = {
-            "time": 12.5,
+            "total_time": 12.5,
             "vision_duration": 3.2,
             "cost": 0.0015
         }
         
         stages = [
-            {"name": "Vision", "model": "google/gemini-pro-vision", "time": 3.2, "cost": 0.0005, "provider": "Google"},
-            {"name": "Search", "model": "duckduckgo", "time": 1.5, "cost": 0.0, "provider": "DDG"},
-            {"name": "Agent", "model": "anthropic/claude-3-5-sonnet", "time": 7.8, "cost": 0.0010, "provider": "Anthropic"}
+            {"name": "Vision", "model": "google/gemini-pro-vision", "time": 3.2, "cost": 0.0005, "provider": "Google", "icon_config": "google"},
+            {"name": "Search", "model": "duckduckgo", "time": 1.5, "cost": 0.0, "provider": "DDG", "icon_config": "search",
+             "children": {"references": [
+                 {"title": "Crawl4AI, Open-source LLM-Friendly Web Crawler & Scraper", "url": "https://docs.crawl4ai.com/core/llmtxt", "domain": "docs.crawl4ai.com"}
+             ]}},
+            {"name": "Crawler", "model": "Crawl4AI", "time": 2.5, "cost": 0.0, "provider": "Page Fetcher", "icon_config": "browser",
+             "children": {"crawled_pages": [
+                 {"title": "Quick Start - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/quickstart/", "domain": "docs.crawl4ai.com"},
+                 {"title": "Crawl4AI Explained: The AI-Friendly Web Crawling Framework", "url": "https://scrapfly.io/blog/posts/crawl4AI-explained/", "domain": "scrapfly.io"},
+                 {"title": "Llmtxt - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/llmtxt/", "domain": "docs.crawl4ai.com"},
+                 {"title": "Multi-URL Crawling - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/advanced/multi-url-crawling/", "domain": "docs.crawl4ai.com"}
+             ]}},
+            {"name": "Agent", "model": "anthropic/claude-3-5-sonnet", "time": 7.8, "cost": 0.0010, "provider": "Anthropic", "icon_config": "anthropic"}
         ]
         
-        mcp_steps = [
-            {"name": "search_google", "description": "searching for 'latest entari news'", "icon": "search"},
-            {"name": "visit_page", "description": "visiting python.org", "icon": "navigate"},
-            {"name": "click_element", "description": "clicking 'Downloads'", "icon": "click"}
-        ]
-        
+        # References come from search results
         references = [
-            {"title": "Entari Docs", "url": "https://entari.onebot.dev", "domain": "entari.onebot.dev"},
-            {"title": "Python Language", "url": "https://python.org", "domain": "python.org"}
+            {"title": "Crawl4AI, Open-source LLM-Friendly Web Crawler & Scraper", "url": "https://docs.crawl4ai.com/core/llmtxt", "domain": "docs.crawl4ai.com"}
+        ]
+        
+        # Page references come from crawled pages
+        page_references = [
+            {"title": "Quick Start - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/quickstart/", "domain": "docs.crawl4ai.com"},
+            {"title": "Crawl4AI Explained: The AI-Friendly Web Crawling Framework", "url": "https://scrapfly.io/blog/posts/crawl4AI-explained/", "domain": "scrapfly.io"},
+            {"title": "Llmtxt - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/llmtxt/", "domain": "docs.crawl4ai.com"},
+            {"title": "Multi-URL Crawling - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/advanced/multi-url-crawling/", "domain": "docs.crawl4ai.com"}
         ]
         
         output_dir = "data/cache"
         os.makedirs(output_dir, exist_ok=True)
-        output_path = f"{output_dir}/ui_test_result.png"
+        output_path = f"{output_dir}/ui_test_result.jpg"
         
         logger.info(f"UI TEST: Rendering to {output_path}...")
         
@@ -179,8 +182,9 @@ async def _run_ui_test():
             output_path=output_path,
             stats=stats,
             stages_used=stages,
-            mcp_steps=mcp_steps,
             references=references,
+            page_references=page_references,
+            flow_steps=[],
             model_name="CLAUDE-3-5-SONNET",
             provider_name="Anthropic",
             behavior_summary="Automated Test",
@@ -429,7 +433,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         
         # Render
         import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
             output_path = tf.name
         model_used = final_resp.get("model_used")
         vision_model_used = final_resp.get("vision_model_used")
@@ -496,10 +500,10 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         
         # 1. Behavior Summary
         behavior_summary = "Text Generation"
-        if structured.get("mcp_steps"):
-            behavior_summary = "Agentic Loop"
-        elif vision_model_used:
+        if vision_model_used:
              behavior_summary = "Visual Analysis"
+        elif any(s.get("name") == "Search" for s in final_resp.get("stages_used", []) or []):
+            behavior_summary = "Search-Augmented"
         
         # 2. Provider Name
         # Try to get from m_conf (resolved above)
@@ -523,7 +527,8 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             suggestions=[],
             stats=stats_to_render,
             references=structured.get("references", []),
-            mcp_steps=structured.get("mcp_steps", []),
+            page_references=structured.get("page_references", []),
+            flow_steps=structured.get("flow_steps", []),
             stages_used=final_resp.get("stages_used", []),
             model_name=render_model_name,
             provider_name=provider_name,
@@ -539,7 +544,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         
         # Send & Save
         if not render_ok:
-            logger.error("Render failed; skipping reply. Check browser/playwright status.")
+            logger.error("Render failed; skipping reply. Check Crawl4AI rendering status.")
             if os.path.exists(output_path):
                 try:
                     os.remove(output_path)

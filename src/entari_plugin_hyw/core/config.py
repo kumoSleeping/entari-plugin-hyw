@@ -15,8 +15,8 @@ class HYWConfig:
     intruct_model_name: Optional[str] = None
     intruct_api_key: Optional[str] = None
     intruct_base_url: Optional[str] = None
-    search_base_url: str = "https://duckduckgo.com/?q={query}&format=json&results_per_page={limit}"
-    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images&format=json&results_per_page={limit}"
+    search_base_url: str = "https://lite.duckduckgo.com/lite/?q={query}"
+    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images"
     extra_body: Optional[Dict[str, Any]] = None
     temperature: float = 0.4
     max_turns: int = 10
@@ -27,8 +27,6 @@ class HYWConfig:
     vision_system_prompt: Optional[str] = None
     intruct_system_prompt: Optional[str] = None
     agent_system_prompt: Optional[str] = None
-    playwright_mcp_command: str = "npx"
-    playwright_mcp_args: Optional[List[str]] = None
     input_price: Optional[float] = None  # $ per 1M input tokens
     output_price: Optional[float] = None  # $ per 1M output tokens
     vision_input_price: Optional[float] = None

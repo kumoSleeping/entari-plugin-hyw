@@ -4,17 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "3.2.113"
+version = "3.3.0"
 description = "Use large language models to interpret chat messages"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
     "arclet-entari[full]>=0.16.5",
     "openai",
-    "mcp",
     "httpx",
     "markdown>=3.10",
-    "trafilatura>=2.0.0",
-    "playwright>=1.56.0",
+    "crawl4ai>=0.7.8",
     "jinja2>=3.0",
 ]
 requires-python = ">=3.10"
@@ -31,7 +29,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-playwright = ["playwright>=1.56.0", "trafilatura>=2.0.0"]
 dev = [
     "entari-plugin-server>=0.5.0",
     "satori-python-adapter-onebot11>=0.2.5",
@@ -48,4 +45,3 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["entari_plugin_hyw*"]
-

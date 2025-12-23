@@ -76,10 +76,10 @@
         <!-- Header: Feature Icons / Badges (Centered) -->
     <!-- Increased top padding from pt-5 to pt-7 for more whitespace -->
     <div class="pt-7 pb-5 px-6 flex justify-between items-center relative z-20">
-        <!-- Replaced Feature Icons with Simple Brand Badge -->
+        <!-- Total Time Badge -->
             <div class="flex items-center gap-1.5 px-3 py-1.5 bg-white/60 backdrop-blur rounded-lg shadow-sm border border-white/50">
-                <i class="ri-sparkling-2-fill text-pink-500 text-xs"></i>
-                <span class="text-[11px] font-bold text-gray-600 tracking-wide">HYW<span class="font-normal text-gray-400">&nbsp;AGENT</span></span>
+                <i class="ri-time-line text-gray-700 font-bold text-[13px]"></i>
+                <span class="text-[13px] font-bold text-gray-900 tracking-wide">{{ "%.1f"|format(total_time) }}s</span>
             </div>
         </div>
 
@@ -135,12 +135,12 @@
                         {{ list_card(stage.icon_html, title_html, subtitle_html=stats_html, is_compact=True, icon_box_class=icon_box_class) }}
 
                         {# Nested Children (Indent & Connect) #}
-                        {% if stage.references or stage.mcp_steps %}
+                        {% if stage.references or stage.flow_steps or stage.crawled_pages %}
                             <div class="ml-4 pl-4 border-l-2 border-gray-200 mt-2 flex flex-col gap-2">
                                 
                                 {# References #}
                                 {% if stage.references %}
-                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">References</div>
+                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">Search Results</div>
                                     {% for ref in stage.references %}
                                         {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + ref.domain + "&sz=32" %}
                                         
@@ -158,17 +158,38 @@
                                     {% endfor %}
                                 {% endif %}
 
-                                {# MCP Steps #}
-                                {% if stage.mcp_steps %}
-                                     <div class="text-[12px] uppercase font-bold text-orange-600 tracking-wider mb-1 mt-1">MCP Flow</div>
-                                     {% for step in stage.mcp_steps %}
+                                {# Flow Steps #}
+                                {% if stage.flow_steps %}
+                                     <div class="text-[12px] uppercase font-bold text-orange-600 tracking-wider mb-1 mt-1">Flow</div>
+                                     {% for step in stage.flow_steps %}
                                         {% set icon_box_class = "rounded-md border border-gray-100 bg-white text-gray-500 shrink-0" %}
                                         
-                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + step.name + '</div>' %}
-                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 leading-tight">' + step.description + '</div>' if step.description else None %}
-                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
+                                        {% set title_html = '<div class="text-[13px] font-semibold text-gray-900 underline decoration-gray-300 decoration-1 underline-offset-2 truncate">' + step.description + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 leading-tight truncate">' + step.description + '</div>' %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
                                         
                                         {{ list_card(step.icon_svg, title_html, subtitle_html=subtitle_html, right_content_html=right_html, is_compact=True, icon_box_class=icon_box_class) }}
+                                     {% endfor %}
+                                {% endif %}
+
+                                {# Crawled Pages #}
+                                {% if stage.crawled_pages %}
+                                     <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">Fetched Pages</div>
+                                     {% for page in stage.crawled_pages %}
+                                        {% set domain = page.url.split('/')[2] if page.url.split('/')|length > 2 else '' %}
+                                        {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + domain + "&sz=32" %}
+                                        
+                                        {% set page_icon %}
+                                        <img src="{{ favicon_url }}" class="w-3.5 h-3.5 rounded-sm opacity-80">
+                                        {% endset %}
+                                        
+                                        {% set page_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
+                                        
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + page.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-500 truncate">' + domain + '</div>' %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + (loop.index|string) + '</div>' %}
+                                        
+                                        {{ list_card(page_icon, title_html, subtitle_html=subtitle_html, link_url=page.url, right_content_html=right_html, is_compact=True, icon_box_class=page_icon_box) }}
                                      {% endfor %}
                                 {% endif %}
 
@@ -177,14 +198,18 @@
                     </div>
                 {% endfor %}
             {% endif %}
-        </div>
         
-    </div>
+        </div>
 
     <script>window.REFERENCES = {{ references_json | safe }};</script>
 
     <script>
         document.addEventListener("DOMContentLoaded", () => {
+            // Initialize Syntax Highlighting
+            if (typeof hljs !== 'undefined') {
+                hljs.highlightAll();
+            }
+
              // Render Math (KaTeX)
             const contentDiv = document.getElementById("markdown-content");
             if(typeof renderMathInElement !== 'undefined') {
@@ -199,8 +224,33 @@
                 });
             }
 
-            // Process Citations
+            // Process Citations - handles `search:id` (blue) and `page:id` (orange) formats
             function processCitations(rootNode) {
+                // 1. Handle citations inside <code> tags (generated by markdown backticks)
+                const codeElements = rootNode.querySelectorAll('code');
+                codeElements.forEach(code => {
+                    const text = code.textContent.trim();
+                    const match = /^(search|page):(\d+)$/i.exec(text);
+                    if (match) {
+                        const type = match[1].toLowerCase();
+                        const id = match[2];
+                        const isPage = type === "page";
+                        const colorClass = isPage 
+                            ? "text-orange-600 bg-orange-50 border-orange-200" 
+                            : "text-blue-600 bg-blue-50 border-blue-200";
+                        
+                        const span = document.createElement("span");
+                        // Using same badge style
+                        span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
+                        
+                        // Replace the <code> element with our badge
+                        if (code.parentNode) {
+                            code.parentNode.replaceChild(span.firstElementChild, code);
+                        }
+                    }
+                });
+
+                // 2. Handle citations in plain text (fallback for non-backticked ones)
                 const walker = document.createTreeWalker(
                     rootNode,
                     NodeFilter.SHOW_TEXT,
@@ -211,8 +261,9 @@
                 const nodesToReplace = [];
                 let node;
                 while (node = walker.nextNode()) {
-                    if (node.parentElement.tagName === "SCRIPT" || node.parentElement.tagName === "STYLE" || node.parentElement.tagName === "A") continue;
-                    if (/\[\d+\]/.test(node.nodeValue)) {
+                    if (node.parentElement.tagName === "SCRIPT" || node.parentElement.tagName === "STYLE" || node.parentElement.tagName === "A" || node.parentElement.tagName === "CODE") continue;
+                    // Match search:id or page:id
+                    if (/(search|page):(\d+)/i.test(node.nodeValue)) {
                         nodesToReplace.push(node);
                     }
                 }
@@ -221,43 +272,31 @@
                     const fragment = document.createDocumentFragment();
                     let lastIndex = 0;
                     const text = textNode.nodeValue;
-                    const regex = /\[(\d+)\]/g;
+                    const regex = /`?(search|page):(\d+)`?/gi;
                     let match;
 
                     while ((match = regex.exec(text)) !== null) {
                         fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
 
-                        const id = match[1];
-                        const ref = window.REFERENCES ? window.REFERENCES.find(r => r.id == id) : null;
-
-                        if (ref) {
-                            const span = document.createElement("span");
-                            const title = ref.title.replace(/"/g, "&quot;");
-                            const url = ref.url;
-                            let domain = "unknown";
-                            try { domain = new URL(url).hostname; } catch (e) { }
-                            const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
-
-                            span.innerHTML = `<a href="${url}" target="_blank" class="citation-ref" data-id="${id}">
-                                ${id}
-                                <span class="citation-tooltip">
-                                    <span class="citation-tooltip-title">${title}</span>
-                                    <span class="citation-tooltip-url">
-                                        <img src="${favicon}" style="width:12px;height:12px;vertical-align:middle;margin-right:4px;">
-                                        ${domain}
-                                    </span>
-                                </span>
-                            </a>`;
-                            fragment.appendChild(span.firstElementChild);
-                        } else {
-                            fragment.appendChild(document.createTextNode(match[0]));
-                        }
+                        const type = match[1].toLowerCase();
+                        const id = match[2];
+                        
+                        const span = document.createElement("span");
+                        const isPage = type === "page";
+                        const colorClass = isPage 
+                            ? "text-orange-600 bg-orange-50 border-orange-200" 
+                            : "text-blue-600 bg-blue-50 border-blue-200";
+                        
+                        span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
+                        fragment.appendChild(span.firstElementChild);
 
                         lastIndex = regex.lastIndex;
                     }
 
                     fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
-                    textNode.parentNode.replaceChild(fragment, textNode);
+                    if (textNode.parentNode) {
+                        textNode.parentNode.replaceChild(fragment, textNode);
+                    }
                 });
             }
 
