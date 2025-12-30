@@ -441,6 +441,33 @@ class ContentRenderer:
                             **stage_children # Merge children
                         })
 
+                # Ensure references are displayed even if no "Search" stage was present
+                has_search_stage = any(s.get("name") == "Search" for s in processed_stages)
+                if not has_search_stage and (processed_refs or processed_image_refs):
+                    # Create a virtual Search stage
+                    virtual_search = {
+                        "name": "Search",
+                        "model": "DuckDuckGo", # Default assumption
+                        "model_short": "DuckDuckGo",
+                        "provider": "Reference",
+                        "icon_html": SEARCH_ICON,
+                        "time_str": "0.00s",
+                        "cost_str": "$0",
+                    }
+                    if processed_refs:
+                        virtual_search['references'] = processed_refs
+                    if processed_image_refs:
+                        virtual_search['image_references'] = processed_image_refs
+                    
+                    # Insert after Vision/Instruct (usually index 0 or 1), or at start
+                    insert_idx = 0
+                    if processed_stages and processed_stages[0]["name"] in ["Vision", "Instruct"]:
+                        insert_idx = 1
+                        if len(processed_stages) > 1 and processed_stages[1]["name"] == "Instruct":
+                            insert_idx = 2
+                    
+                    processed_stages.insert(insert_idx, virtual_search)
+
                 # 4. Stats Footer Logic
                 processed_stats = {}
                 stats_dict = {}

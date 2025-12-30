@@ -647,12 +647,7 @@ class ProcessingPipeline:
         except Exception:
             pass
 
-        # 2. Remove the original references block if present (we will rebuild it)
-        ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
-        if ref_block_match:
-            remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
-
-        # 3. Scan text for [type:id] tags and rebuild references in order of appearance
+        # 2. Extract references from text first (Order by appearance)
         # Pattern matches [search:123], [page:123], [image:123]
         pattern = re.compile(r'\[(search|page|image):(\d+)\]', re.IGNORECASE)
         
@@ -662,24 +657,12 @@ class ProcessingPipeline:
         page_map = {}
         image_map = {}
         
-        for m in matches:
-            tag_type = m.group(1).lower()
-            old_id_str = m.group(2)
-            try:
-                old_id = int(old_id_str)
-            except ValueError:
-                continue
-            
-            # Check if we already processed this ID for this type
-            if tag_type == "search" and old_id_str in search_map: continue
-            if tag_type == "page" and old_id_str in page_map: continue
-            if tag_type == "image" and old_id_str in image_map: continue
-            
+        def process_ref(tag_type, old_id):
             # Find in all_web_results
             result_item = next((r for r in self.all_web_results if r.get("_id") == old_id and r.get("_type") == tag_type), None)
             
             if not result_item:
-                continue
+                return
                 
             entry = {
                 "title": result_item.get("title", ""),
@@ -690,15 +673,56 @@ class ProcessingPipeline:
                  entry["thumbnail"] = result_item.get("thumbnail", "")
 
             # Add to respective list and map
+            # Check maps to avoid duplicates
             if tag_type == "search":
-                parsed["references"].append(entry)
-                search_map[old_id_str] = len(parsed["references"])
+                if str(old_id) not in search_map:
+                    parsed["references"].append(entry)
+                    search_map[str(old_id)] = len(parsed["references"])
             elif tag_type == "page":
-                parsed["page_references"].append(entry)
-                page_map[old_id_str] = len(parsed["page_references"])
+                if str(old_id) not in page_map:
+                    parsed["page_references"].append(entry)
+                    page_map[str(old_id)] = len(parsed["page_references"])
             elif tag_type == "image":
-                parsed["image_references"].append(entry)
-                image_map[old_id_str] = len(parsed["image_references"])
+                if str(old_id) not in image_map:
+                    parsed["image_references"].append(entry)
+                    image_map[str(old_id)] = len(parsed["image_references"])
+
+        # Pass 1: Text Body
+        for m in matches:
+            try:
+                process_ref(m.group(1).lower(), int(m.group(2)))
+            except ValueError:
+                continue
+
+        # 3. Pass 2: References Block (Capture items missed in text)
+        ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
+        if ref_block_match:
+            ref_content = ref_block_match.group(1).strip()
+            remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
+            
+            for line in ref_content.split("\n"):
+                line = line.strip()
+                if not line: continue
+                # Match [id] [type]
+                # e.g. [1] [image] ... or [image:1] ...
+                
+                # Check for [id] [type] format
+                id_match = re.match(r"^\[(\d+)\]\s*\[(search|page|image)\]", line, re.IGNORECASE)
+                if id_match:
+                    try:
+                         process_ref(id_match.group(2).lower(), int(id_match.group(1)))
+                    except ValueError:
+                        pass
+                else:
+                    # Check for [type:id] format in list
+                    alt_match = re.match(r"^\[(search|page|image):(\d+)\]", line, re.IGNORECASE)
+                    if alt_match:
+                        try:
+                            process_ref(alt_match.group(1).lower(), int(alt_match.group(2)))
+                        except ValueError:
+                            pass
+
+        # 4. Replace tags in text with new sequential IDs
 
         # 4. Replace tags in text with new sequential IDs
         def replace_tag(match):
