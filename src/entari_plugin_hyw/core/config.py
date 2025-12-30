@@ -35,3 +35,4 @@ class HYWConfig:
     vision_output_price: Optional[float] = None
     intruct_input_price: Optional[float] = None
     intruct_output_price: Optional[float] = None
+  

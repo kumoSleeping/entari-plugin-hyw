@@ -16,6 +16,40 @@
     <script>{{ katex_auto_render_js | safe }}</script>
     <!-- @formatter:on -->
 
+    <style>
+    /* Fallback style for broken images in markdown content */
+    .img-error-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        margin-bottom: 8px;
+        background: linear-gradient(135deg, #d3e4fd 0%, #b7d3fe 50%, #8bb9fc 100%);
+        border-radius: 12px;
+        color: white;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+    }
+    .img-error-fallback i {
+        font-size: 20px;
+    }
+    /* Dynamic image sizing based on aspect ratio */
+    #markdown-content img {
+        border-radius: 8px;
+        margin-bottom: 8px;
+    }
+    #markdown-content img.img-horizontal {
+        width: 100%;
+        height: auto;
+    }
+    #markdown-content img.img-vertical {
+        width: 60%;
+        height: auto;
+    }
+    </style>
 </head>
 
 <body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
@@ -135,7 +169,7 @@
                         {{ list_card(stage.icon_html, title_html, subtitle_html=stats_html, is_compact=True, icon_box_class=icon_box_class) }}
 
                         {# Nested Children (Indent & Connect) #}
-                        {% if stage.references or stage.flow_steps or stage.crawled_pages %}
+                        {% if stage.references or stage.image_references or stage.flow_steps or stage.crawled_pages %}
                             <div class="ml-4 pl-4 border-l-2 border-gray-200 mt-2 flex flex-col gap-2">
                                 
                                 {# References #}
@@ -158,18 +192,23 @@
                                     {% endfor %}
                                 {% endif %}
 
-                                {# Flow Steps #}
-                                {% if stage.flow_steps %}
-                                     <div class="text-[12px] uppercase font-bold text-orange-600 tracking-wider mb-1 mt-1">Flow</div>
-                                     {% for step in stage.flow_steps %}
-                                        {% set icon_box_class = "rounded-md border border-gray-100 bg-white text-gray-500 shrink-0" %}
+                                {# Image References #}
+                                {% if stage.image_references %}
+                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-2">Images</div>
+                                    {% for img in stage.image_references %}
+                                        {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + img.domain + "&sz=32" %}
                                         
-                                        {% set title_html = '<div class="text-[13px] font-semibold text-gray-900 underline decoration-gray-300 decoration-1 underline-offset-2 truncate">' + step.description + '</div>' %}
-                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 leading-tight truncate">' + step.description + '</div>' %}
-                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded">' + ('abcdefghijklmnopqrstuvwxyz'[loop.index0]) + '</div>' %}
+                                        {% set img_icon %}
+                                        <img src="{{ favicon_url }}" class="w-3.5 h-3.5 rounded-sm opacity-80">
+                                        {% endset %}
                                         
-                                        {{ list_card(step.icon_svg, title_html, subtitle_html=subtitle_html, right_content_html=right_html, is_compact=True, icon_box_class=icon_box_class) }}
-                                     {% endfor %}
+                                        {% set img_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
+                                        
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate">' + img.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-500 truncate">' + img.domain + '</div>' %}
+                                        
+                                        {{ list_card(img_icon, title_html, subtitle_html=subtitle_html, link_url=img.url, is_compact=True, icon_box_class=img_icon_box) }}
+                                    {% endfor %}
                                 {% endif %}
 
                                 {# Crawled Pages #}
@@ -272,23 +311,46 @@
                     const fragment = document.createDocumentFragment();
                     let lastIndex = 0;
                     const text = textNode.nodeValue;
-                    const regex = /`?(search|page):(\d+)`?/gi;
+                    // Regex to capture:
+                    // 1. Optional brackets/parens: [(
+                    // 2. Type: search/page
+                    // 3. IDs: 1 or 1,2,3
+                    // 4. Closing: )]
+                    const regex = /[\[\(]?(search|page):\s*([\d,\s]+)[\]\)]?/gi;
                     let match;
 
                     while ((match = regex.exec(text)) !== null) {
+                        // Validate match: simple check to ensure it contains digits
+                        if (!/\d/.test(match[2])) continue;
+
                         fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
 
+                        const fullMatch = match[0];
                         const type = match[1].toLowerCase();
-                        const id = match[2];
+                        const idString = match[2];
                         
-                        const span = document.createElement("span");
-                        const isPage = type === "page";
-                        const colorClass = isPage 
-                            ? "text-orange-600 bg-orange-50 border-orange-200" 
-                            : "text-blue-600 bg-blue-50 border-blue-200";
+                        // Parse IDs (split by comma or space)
+                        const ids = idString.split(/[,\s]+/).filter(s => s.trim().length > 0);
                         
-                        span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
-                        fragment.appendChild(span.firstElementChild);
+                        // Check for standard format (allow plain or [brackets])
+                        // Standard: search:1, [search:1], page:1, [page:1]
+                        // Non-standard: (page:1), page:1,2, (page:1,2)
+                        const isStandard = /^[\[]?(search|page):\d+[\]]?$/i.test(fullMatch);
+                        
+                        if (!isStandard) {
+                            console.warn(`[Template] Detected non-standard citation format: "${fullMatch}". Rendered as: ${type}:${ids.join(',')}`);
+                        }
+
+                        ids.forEach(id => {
+                            const span = document.createElement("span");
+                            const isPage = type === "page";
+                            const colorClass = isPage 
+                                ? "text-orange-600 bg-orange-50 border-orange-200" 
+                                : "text-blue-600 bg-blue-50 border-blue-200";
+                            
+                            span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
+                            fragment.appendChild(span.firstElementChild);
+                        });
 
                         lastIndex = regex.lastIndex;
                     }
@@ -301,6 +363,37 @@
             }
 
             processCitations(contentDiv);
+
+            // Handle broken images in markdown content
+            const contentImages = contentDiv.querySelectorAll('img');
+            contentImages.forEach(img => {
+                // Apply sizing class based on aspect ratio
+                const applySizeClass = function() {
+                    if (this.naturalWidth >= this.naturalHeight) {
+                        this.classList.add('img-horizontal');
+                    } else {
+                        this.classList.add('img-vertical');
+                    }
+                };
+                
+                img.onerror = function() {
+                    const fallback = document.createElement('span');
+                    fallback.className = 'img-error-fallback';
+                    fallback.innerHTML = `<span style="font-size: 18px;">(｡•́︿•̀｡)</span><span>渲染失败</span>`;
+                    this.parentNode.replaceChild(fallback, this);
+                };
+                
+                // Check if image already loaded
+                if (img.complete) {
+                    if (img.naturalHeight === 0) {
+                        img.onerror();
+                    } else {
+                        applySizeClass.call(img);
+                    }
+                } else {
+                    img.onload = applySizeClass;
+                }
+            });
         });
     </script>
 </body>

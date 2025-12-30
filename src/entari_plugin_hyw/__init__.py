@@ -14,7 +14,7 @@ from .core.hyw import HYW
 from .core.history import HistoryManager
 from .core.render import ContentRenderer
 from .utils.misc import process_onebot_json, process_images, resolve_model_name
-from arclet.entari.event.lifespan import Startup, Ready, Cleanup
+from arclet.entari.event.lifespan import Cleanup
 
 import os
 import secrets
@@ -85,120 +85,21 @@ class HywConfig(BasicConfModel):
     # Instruct model pricing overrides (defaults to main model pricing if not set)
     intruct_input_price: Optional[float] = None
     intruct_output_price: Optional[float] = None
-    
     # Provider Names
     search_name: str = "DuckDuckGo"
-    search_provider: str = "Crawl4AI"
+    search_provider: str = "crawl4ai"  # crawl4ai | httpx | ddgs
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
     intruct_model_provider: Optional[str] = None
-    
-    start_test: Optional[Union[str, bool]] = None
+
+
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
 renderer = ContentRenderer()
 hyw = HYW(config=conf)
 
-@listen(Ready, once=True)
-async def _run_ui_test():
-    """Run UI rendering test on startup if configured."""
-    # Debug log to confirm listener is active
-    logger.info(f"UI TEST Listener Active. start_test config: {conf.start_test} (type: {type(conf.start_test)})")
-    
-    if not conf.start_test:
-        return
-        
-    test_file = ""
-    if isinstance(conf.start_test, str):
-        test_file = conf.start_test
-    elif conf.start_test is True:
-        # User enabled boolean toggle, assume default path
-        # Try a few locations
-        candidates = ["data/conversations/ui-test.md", "ui-test.md", "README.md"]
-        for c in candidates:
-            if os.path.exists(c):
-                test_file = c
-                break
-        if not test_file:
-            logger.warning("UI TEST: start_test=True but no default test file found (tried: data/conversations/ui-test.md, ui-test.md, README.md)")
-            return
-            
-    logger.info(f"UI TEST: Starting render test with file {test_file}")
-    
-    if not os.path.exists(test_file):
-        logger.error(f"UI TEST: File not found: {test_file}")
-        return
-        
-    try:
-        with open(test_file, "r", encoding="utf-8") as f:
-            content = f.read()
-            
-        # Mock Data for Full UI Test
-        stats = {
-            "total_time": 12.5,
-            "vision_duration": 3.2,
-            "cost": 0.0015
-        }
-        
-        stages = [
-            {"name": "Vision", "model": "google/gemini-pro-vision", "time": 3.2, "cost": 0.0005, "provider": "Google", "icon_config": "google"},
-            {"name": "Search", "model": "duckduckgo", "time": 1.5, "cost": 0.0, "provider": "DDG", "icon_config": "search",
-             "children": {"references": [
-                 {"title": "Crawl4AI, Open-source LLM-Friendly Web Crawler & Scraper", "url": "https://docs.crawl4ai.com/core/llmtxt", "domain": "docs.crawl4ai.com"}
-             ]}},
-            {"name": "Crawler", "model": "Crawl4AI", "time": 2.5, "cost": 0.0, "provider": "Page Fetcher", "icon_config": "browser",
-             "children": {"crawled_pages": [
-                 {"title": "Quick Start - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/quickstart/", "domain": "docs.crawl4ai.com"},
-                 {"title": "Crawl4AI Explained: The AI-Friendly Web Crawling Framework", "url": "https://scrapfly.io/blog/posts/crawl4AI-explained/", "domain": "scrapfly.io"},
-                 {"title": "Llmtxt - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/llmtxt/", "domain": "docs.crawl4ai.com"},
-                 {"title": "Multi-URL Crawling - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/advanced/multi-url-crawling/", "domain": "docs.crawl4ai.com"}
-             ]}},
-            {"name": "Agent", "model": "anthropic/claude-3-5-sonnet", "time": 7.8, "cost": 0.0010, "provider": "Anthropic", "icon_config": "anthropic"}
-        ]
-        
-        # References come from search results
-        references = [
-            {"title": "Crawl4AI, Open-source LLM-Friendly Web Crawler & Scraper", "url": "https://docs.crawl4ai.com/core/llmtxt", "domain": "docs.crawl4ai.com"}
-        ]
-        
-        # Page references come from crawled pages
-        page_references = [
-            {"title": "Quick Start - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/quickstart/", "domain": "docs.crawl4ai.com"},
-            {"title": "Crawl4AI Explained: The AI-Friendly Web Crawling Framework", "url": "https://scrapfly.io/blog/posts/crawl4AI-explained/", "domain": "scrapfly.io"},
-            {"title": "Llmtxt - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/core/llmtxt/", "domain": "docs.crawl4ai.com"},
-            {"title": "Multi-URL Crawling - Crawl4AI Documentation (v0.7.x)", "url": "https://docs.crawl4ai.com/advanced/multi-url-crawling/", "domain": "docs.crawl4ai.com"}
-        ]
-        
-        output_dir = "data/cache"
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = f"{output_dir}/ui_test_result.jpg"
-        
-        logger.info(f"UI TEST: Rendering to {output_path}...")
-        
-        start = time.time()
-        success = await renderer.render(
-            markdown_content=content,
-            output_path=output_path,
-            stats=stats,
-            stages_used=stages,
-            references=references,
-            page_references=page_references,
-            flow_steps=[],
-            model_name="CLAUDE-3-5-SONNET",
-            provider_name="Anthropic",
-            behavior_summary="Automated Test",
-            icon_config="anthropic",
-            render_timeout_ms=10000
-        )
-        
-        if success:
-            logger.success(f"UI TEST: Render completed in {time.time() - start:.2f}s. Saved to {output_path}")
-        else:
-            logger.error("UI TEST: Render FAILED.")
-            
-    except Exception as e:
-        logger.error(f"UI TEST: Exception during test: {e}")
+
 
 
 @listen(Cleanup, once=True)
@@ -261,8 +162,7 @@ async def react(session: Session, emoji: str):
 
 async def process_request(session: Session[MessageCreatedEvent], all_param: Optional[MessageChain] = None, 
                          selected_model: Optional[str] = None, selected_vision_model: Optional[str] = None, 
-                         conversation_key_override: Optional[str] = None, local_mode: bool = False,
-                         next_prompt: Optional[str] = None, next_text_model: Optional[str] = None, next_vision_model: Optional[str] = None):
+                         conversation_key_override: Optional[str] = None, local_mode: bool = False):
     logger.info(f"Processing request: {all_param}")
     mc = MessageChain(all_param)
     logger.info(f"reply: {session.reply}")
@@ -358,73 +258,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         final_resp = resp
         
         # Step 2 (Optional)
-        if next_prompt:
-            logger.info(f"Executing Step 2 with prompt: {next_prompt}")
-            
-            # Use Step 1 history as base for Step 2
-            # hyw.agent already returns the updated history including the new turn
-            # So we just pass step1_history
-            
-            # Determine Step 2 models
-            # If not specified, inherit from Step 1 or config? 
-            # Usually inherit from config or meta if not specified in -n
-            step2_model = next_text_model or model
-            if step2_model and step2_model != "off":
-                resolved_s2, err_s2 = resolve_model_name(step2_model, conf.models)
-                if resolved_s2:
-                    step2_model = resolved_s2
-            
-            step2_vision_model = next_vision_model or vision_model # Probably not used if no new images, but consistent
-            if step2_vision_model and step2_vision_model != "off":
-                resolved_s2v, err_s2v = resolve_model_name(step2_vision_model, conf.models)
-                if resolved_s2v:
-                    step2_vision_model = resolved_s2v
-            
-            # No new images for Step 2 usually, unless we want to carry over images?
-            # The user said "First round image model, second round text model".
-            # Usually Step 2 is text-only follow-up.
-            # But hyw.agent stateless? No, we pass history.
-            # We don't pass 'images' again to Step 2 unless we want them re-analyzed.
-            # If Step 1 analyzed images, the analysis is in history (as assistant message or system message?).
-            # In hyw.agent, image analysis result is added to history.
-            # So we don't need to pass images again.
-            
-            resp2 = await hyw.agent(str(next_prompt), conversation_history=step1_history, images=None,
-                                   selected_model=step2_model, selected_vision_model=step2_vision_model, local_mode=local_mode)
-            
-            final_resp = resp2
-            
-            # Merge Stats
-            # Instead of merging into a single dict, we prepare a list of stats for the renderer
-            # But we also need a combined stats for history recording?
-            # History manager likely expects a single dict or doesn't care much (it stores what we give)
-            
-            # Let's keep step1_stats and resp2["stats"] separate for rendering
-            # But for history, maybe we still want a merged one?
-            # The code below uses final_resp["stats"] for rendering AND history.
-            
-            # Let's create a list for rendering
-            stats_for_render = [step1_stats, resp2.get("stats", {})]
-            
-            # And a merged one for history/final_resp
-            merged_stats = step1_stats.copy()
-            if "stats" in resp2:
-                for k, v in resp2["stats"].items():
-                    if isinstance(v, (int, float)) and k in merged_stats:
-                        merged_stats[k] += v
-                    elif k == "visited_domains":
-                        merged_stats[k] = list(set(merged_stats.get(k, []) + v))
-                    else:
-                        merged_stats[k] = v
-            
-            final_resp["stats"] = merged_stats
-            final_resp["stats_list"] = stats_for_render # Pass this to renderer if available
-            
-            # Merge Model Info for Display
-            # We want to show Step 1 Vision Model AND Step 2 Text Model
-            if step1_vision_model:
-                final_resp["vision_model_used"] = step1_vision_model
-            # final_resp["model_used"] is already from Step 2
+
             
         
         # Extract Response Data
@@ -528,6 +362,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             stats=stats_to_render,
             references=structured.get("references", []),
             page_references=structured.get("page_references", []),
+            image_references=structured.get("image_references", []),
             flow_steps=structured.get("flow_steps", []),
             stages_used=final_resp.get("stages_used", []),
             model_name=render_model_name,
@@ -607,45 +442,19 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             except Exception as save_err:
                 logger.error(f"Failed to save error conversation: {save_err}")
 
-# Secondary Parser for -n content
-next_alc = Alconna(
-    "next",
-    Option("-v|--vision", Args["vision_model", str], help_text="设置视觉模型(设为off禁用)"),
-    Option("-t|--text", Args["text_model", str], help_text="设置文本模型"),
-    Args["prompt", AllParam],
-)
+
 
 # Main Command (Question)
 alc = Alconna(
     conf.question_command,
-    Option("-v|--vision", Args["vision_model", str]),
-    Option("-t|--text", Args["text_model", str]),
-    Option("-c|--code", Args["code", str]),
-    Option("-n|--next", Args["next_input", AllParam]),
-    Args["list_models;?", "-m|--models"],
-    Args["all_chat;?", "-a"],
-    Args["local_mode;?", "-l"],
-    Args["all_param?", MultiVar(str | Image | Custom)],
-    meta=CommandMeta(
-        compact=False, 
-        description=f"""使用方法:
-        {conf.question_command} -a : 列出所有会话
-        {conf.question_command} -m : 列出所有模型
-        {conf.question_command} -v <模型名> : 设置主要视觉模型, 设为 off 禁用
-        {conf.question_command} -t <模型名> : 设置主要文本模型
-        {conf.question_command} -l : 开启本地模式 (关闭Web索引)
-        {conf.question_command} -c <4位消息码> : 继续指定会话
-        {conf.question_command} -n <后续提示词> : 在第一步完成后执行后续操作 (支持 -t/-v)
-        {conf.question_command} <问题> : 发起问题
-特性:
-"""
-        )
+    Args["all_param;?", AllParam],
 )
 
 @command.on(alc)
 async def handle_question_command(session: Session[MessageCreatedEvent], result: Arparma):
     """Handle main Question command"""
     try:
+        # logger.info(f"Question Command Triggered. Message: {result}")
         mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
         dedupe_key = f"{getattr(session.account, 'id', 'account')}:{mid}"
         if _event_deduper.seen_recently(dedupe_key):
@@ -659,156 +468,10 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     args = result.all_matched_args
     logger.info(f"Matched Args: {args}")
     
-    text_model_val = args.get("text_model")
-    vision_model_val = args.get("vision_model")
-    code_val = args.get("code")
-    all_flag_val = args.get("all_chat")
-    list_models_val = args.get("list_models")
-    local_mode_val = True if args.get("local_mode") else False
-    logger.info(f"Local mode: {local_mode_val} (type: {type(local_mode_val)})")
+    # Only all_param is supported now
+    # Context ID for history lookup is automatically handled in process_request
     
-    # Handle -m (List Models)
-    if list_models_val:
-        # global_cache is already imported/defined in __init__.py
-        
-        if global_cache.models_image_path and os.path.exists(global_cache.models_image_path):
-            logger.info(f"Using cached models list: {global_cache.models_image_path}")
-            with open(global_cache.models_image_path, "rb") as f:
-                img_data = base64.b64encode(f.read()).decode()
-            msg = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
-            if conf.quote: msg = MessageChain(Quote(session.event.message.id)) + msg
-            await session.send(msg)
-            return
-
-        output_dir = "data/cache"
-        os.makedirs(output_dir, exist_ok=True)
-        output_path = f"{output_dir}/models_list_cache.png"
-        
-        await renderer.render_models_list(
-            conf.models,
-            output_path,
-            default_base_url=conf.base_url,
-            render_timeout_ms=conf.render_timeout_ms,
-        )
-        global_cache.models_image_path = os.path.abspath(output_path)
-        
-        with open(output_path, "rb") as f:
-            img_data = base64.b64encode(f.read()).decode()
-        msg = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
-        if conf.quote: msg = MessageChain(Quote(session.event.message.id)) + msg
-        await session.send(msg)
-        return
-    
-    # Handle -a (List History)
-    if all_flag_val:
-        context_id = f"guild_{session.guild.id}" if session.guild else f"user_{session.user.id}"
-        keys = history_manager.list_by_context(context_id, limit=10)
-        if not keys:
-            msg = "暂无历史会话"
-            if conf.quote: await session.send([Quote(session.event.message.id), msg])
-            else: await session.send(msg)
-            return
-            
-        msg = "历史会话 [最近10条]\n"
-        for i, key in enumerate(keys):
-            short_code = history_manager.get_code_by_key(key) or "????"
-            hist = history_manager.get_history(key)
-            preview = "..."
-            if hist and len(hist) > 0:
-                last_content = hist[-1].get("content", "")
-                preview = (last_content[:20] + "...") if len(last_content) > 20 else last_content
-            
-            msg += f"{short_code} {preview}\n"
-        if conf.quote: await session.send([Quote(session.event.message.id), msg])
-        else: await session.send(msg)
-        return
-    
-    selected_vision_model = None
-    selected_text_model = None
-    
-    if vision_model_val:
-        if vision_model_val.lower() == "off":
-            selected_vision_model = "off"
-        else:
-            selected_vision_model, err = resolve_model_name(vision_model_val, conf.models)
-            if err:
-                if conf.quote: await session.send([Quote(session.event.message.id), err])
-                else: await session.send(err)
-                return
-        logger.info(f"Selected vision model: {selected_vision_model}")
-        
-    if text_model_val:
-        selected_text_model, err = resolve_model_name(text_model_val, conf.models)
-        if err:
-            if conf.quote: await session.send([Quote(session.event.message.id), err])
-            else: await session.send(err)
-            return
-        logger.info(f"Selected text model: {selected_text_model}")
-        
-    # Determine History to Continue
-    target_key = None
-    context_id = f"guild_{session.guild.id}" if session.guild else f"user_{session.user.id}"
-    
-    # 1. Explicit Code
-    if code_val:
-        target_code = code_val
-        target_key = history_manager.get_key_by_code(target_code)
-        if not target_key:
-            msg = f"未找到代码为 {target_code} 的会话"
-            if conf.quote: await session.send([Quote(session.event.message.id), msg])
-            else: await session.send(msg)
-            return
-        logger.info(f"Question: Continuing session {target_code} -> {target_key}")
-                
-    next_input_val = args.get("next_input")
-    next_text_model = None
-    next_vision_model = None
-    next_prompt = None
-    
-    if next_input_val:
-        # Parse secondary command
-        # next_input_val is likely a MessageChain or string depending on AllParam behavior with Alconna
-        # We need to ensure it's a string or compatible input for parse
-        logger.info(f"Parsing next input: {next_input_val}")
-        try:
-            # Convert next_input_val to string
-            if isinstance(next_input_val, list):
-                # It's a list of segments (e.g. [Text(...)])
-                # We need to join them into a string
-                # Assuming they are Satori elements or similar
-                cmd_str = "".join(str(x) for x in next_input_val)
-            else:
-                cmd_str = str(next_input_val)
-            
-            # Prepend 'next' header for Alconna
-            parse_target = f"next {cmd_str}"
-            
-            next_res = next_alc.parse(parse_target)
-            if next_res.matched:
-                next_args = next_res.all_matched_args
-                next_text_model = next_args.get("text_model")
-                next_vision_model = next_args.get("vision_model")
-                next_prompt = next_args.get("prompt")
-                
-                # If prompt is AllParam, it might be captured as a list or string depending on Alconna version
-                # If it's a list, join it back to string
-                if isinstance(next_prompt, list):
-                     next_prompt = "".join(str(x) for x in next_prompt)
-                
-                logger.info(f"Next Command Parsed: text={next_text_model}, vision={next_vision_model}, prompt={next_prompt}")
-            else:
-                logger.warning(f"Next command parsing failed or no match for: {parse_target}")
-                # Fallback: treat the whole string as prompt if parsing failed (e.g. if it didn't match options but Alconna should have matched prompt)
-                # But next_alc has Args["prompt", AllParam], so it should match everything else.
-                # If it failed, maybe something else is wrong.
-                # Let's assume if it failed, we just use the raw string as prompt?
-                # But wait, if we prepend "next ", and next_alc starts with "next", it should match.
-                pass
-        except Exception as e:
-            logger.error(f"Failed to parse next command: {e}")
-
-    await process_request(session, args.get("all_param"), selected_model=selected_text_model, selected_vision_model=selected_vision_model, conversation_key_override=target_key, local_mode=local_mode_val, 
-                         next_prompt=next_prompt, next_text_model=next_text_model, next_vision_model=next_vision_model)
+    await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None, local_mode=False)
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.2.105", config=HywConfig)
 

@@ -173,7 +173,8 @@ class ContentRenderer:
                      stats: Dict[str, Any] = None,
                      references: List[Dict[str, Any]] = None,
                      page_references: List[Dict[str, Any]] = None,
-                    stages_used: List[Dict[str, Any]] = None,
+                     image_references: List[Dict[str, Any]] = None,  # Added
+                     stages_used: List[Dict[str, Any]] = None,
                     flow_steps: List[Dict[str, Any]] = None,
                     model_name: str = "",
                     provider_name: str = "Unknown",
@@ -196,6 +197,9 @@ class ContentRenderer:
         
         # Preprocess to fix common markdown issues
         markdown_content = re.sub(r'(?<=\S)\n(?=\s*(\d+\.|\-|\*|\+) )', r'\n\n', markdown_content)
+
+        # references, page_references, image_references are already parsed by pipeline
+        # No filtering needed here - use them directly
 
         # AGGRESSIVE CLEANING: Strip out "References" section and "[code]" blocks from the text
         # because we are rendering them as structured UI elements now.
@@ -262,41 +266,21 @@ class ContentRenderer:
 
                 content_html = restore_math(content_html)
                 
-                # Post-process to style citation markers
-                # We split by code blocks to avoid messing up real code, BUT our citations ARE code blocks now.
-                # So we need to look at the code blocks themselves.
-                parts = re.split(r'(<code.*?>.*?</code>)', content_html, flags=re.DOTALL)
-                for i, part in enumerate(parts):
-                    # Check if this part is a code block containing our specific citation format
-                    if part.startswith('<code'):
-                        # Match <code>ref:123</code>
-                        # Note: attributes like class might be present if we are unlucky, but `ref:` inside usually means inline code.
-                        
-                        # 1. Numeric: <code>ref:123</code>
-                        ref_match = re.match(r'^<code.*?>ref:(\d+)</code>$', part)
-                        if ref_match:
-                            citation_id = ref_match.group(1)
-                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{citation_id}</span>'
-                            continue
-                        # 2. Flow marker: <code>flow:a</code>
-                        flow_match = re.match(r'^<code.*?>flow:([a-zA-Z])</code>$', part)
-                        if flow_match:
-                            flow_id = flow_match.group(1).lower()
-                            parts[i] = f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{flow_id}</span>'
-                            continue
-                            
-                    # If it's NOT a code block, or a code block we didn't transform, we leave it alone.
-                    # (Previous logic was to regex replace inside non-code blocks. We don't need that anymore 
-                    # because the prompt now enforces code spans).
-                content_html = "".join(parts)
+                # Convert [search:N] to blue badge
+                content_html = re.sub(
+                    r'\[search:(\d+)\]',
+                    r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>',
+                    content_html
+                )
+                # Convert [page:N] to orange badge
+                content_html = re.sub(
+                    r'\[page:(\d+)\]',
+                    r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>',
+                    content_html
+                )
                 
-                # Strip out the structured JSON blocks if they leaked into the content
-                # Look for <pre>... containing "references" at the end
-                # Make regex robust to any language class or no class
-                content_html = re.sub(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
-                # Loop to remove multiple if present
-                while re.search(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', content_html, flags=re.DOTALL | re.IGNORECASE):
-                    content_html = re.sub(r'<pre><code[^>]*>[^<]*references[^<]*</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
+                # Strip out the references code block if it leaked into the content
+                content_html = re.sub(r'<pre><code[^>]*>.*?references.*?</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)
 
                 # --- PREPARE DATA FOR JINJA TEMPLATE ---
                 
@@ -361,6 +345,18 @@ class ContentRenderer:
                             "favicon_url": f"https://www.google.com/s2/favicons?domain={domain}&sz=32"
                         })
 
+                # 2c. Image Reference Processing
+                processed_image_refs = []
+                if image_references:
+                     for ref in image_references[:8]:
+                         url = ref.get("url", "#")
+                         processed_image_refs.append({
+                             "title": ref.get("title", "Image"),
+                             "url": url,
+                             "thumbnail": ref.get("thumbnail") or url, # Fallback to url if thumbnail not provided
+                             "domain": self._get_domain(url) or ref.get("domain") or "image"
+                         })
+
                 flow_steps = flow_steps or []
 
                 if stages_used:
@@ -404,8 +400,12 @@ class ContentRenderer:
                         stage_children = {}
                         
                         # References go to "Search"
-                        if name == "Search" and processed_refs:
-                            stage_children['references'] = processed_refs
+                        # Also Image References to "Search"
+                        if name == "Search":
+                            if processed_refs:
+                                stage_children['references'] = processed_refs
+                            if processed_image_refs:
+                                stage_children['image_references'] = processed_image_refs
 
                         # Flow steps go to "Agent"
                         if name == "Agent" and flow_steps:
@@ -425,7 +425,7 @@ class ContentRenderer:
                         # Pass through Search Queries
                         if "queries" in stage:
                             stage_children["queries"] = stage["queries"]
-                        
+                            
                         # Pass through Crawled Pages
                         if "crawled_pages" in stage:
                             stage_children["crawled_pages"] = stage["crawled_pages"]
@@ -441,12 +441,9 @@ class ContentRenderer:
                             **stage_children # Merge children
                         })
 
-
-
-
-
                 # 4. Stats Footer Logic
                 processed_stats = {}
+                stats_dict = {}
                 if stats:
                      # Assuming standard 'stats' dict structure, handle list if needed
                     if isinstance(stats, list):

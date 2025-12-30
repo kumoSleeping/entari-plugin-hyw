@@ -39,6 +39,10 @@ class ProcessingPipeline:
         self.client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         self.all_web_results = [] # Cache for search results
         self.current_mode = "standard"  # standard | agent
+        # Independent ID counters for each type
+        self.search_id_counter = 0
+        self.page_id_counter = 0
+        self.image_id_counter = 0
 
         self.web_search_tool = {
             "type": "function",
@@ -118,8 +122,11 @@ class ProcessingPipeline:
         final_response_content = ""
         structured: Dict[str, Any] = {}
         
-        # Reset search cache for this execution
+        # Reset search cache and ID counters for this execution
         self.all_web_results = []
+        self.search_id_counter = 0
+        self.page_id_counter = 0
+        self.image_id_counter = 0
 
         try:
             logger.info(f"Pipeline: Starting workflow for '{user_input}' using {active_model}")
@@ -244,8 +251,8 @@ class ProcessingPipeline:
                 search_msgs_text = self._format_search_msgs()
                 image_msgs_text = self._format_image_search_msgs()
                 
-                has_search_results = any(not r.get("is_image") for r in self.all_web_results)
-                has_image_results = any(r.get("is_image") for r in self.all_web_results)
+                has_search_results = any(r.get("_type") == "search" for r in self.all_web_results)
+                has_image_results = any(r.get("_type") == "image" for r in self.all_web_results)
 
                 # Build agent system prompt
                 agent_prompt_tpl = getattr(self.config, "agent_system_prompt", None) or AGENT_SP
@@ -462,7 +469,7 @@ class ProcessingPipeline:
                     for tc in crawl_calls:
                         url = tc.get("arguments", {}).get("url", "")
                         # Try to find cached result
-                        found = next((r for r in self.all_web_results if r.get("url") == url and r.get("is_crawled")), None)
+                        found = next((r for r in self.all_web_results if r.get("url") == url and r.get("_type") == "page"), None)
                         if found:
                             try:
                                 from urllib.parse import urlparse
@@ -588,6 +595,19 @@ class ProcessingPipeline:
                     last_agent["time"] = a.get("time", 0)
                     last_agent["cost"] = a.get("cost", 0.0)
 
+            # Clean up conversation history: Remove tool calls and results to save tokens and avoid ID conflicts
+            # Keep only 'user' messages and 'assistant' messages without tool_calls (final answers)
+            cleaned_history = []
+            for msg in current_history:
+                if msg.get("role") == "tool":
+                    continue
+                if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                    continue
+                cleaned_history.append(msg)
+            
+            # Update the reference (since it might be used by caller)
+            current_history[:] = cleaned_history
+
             return {
                 "llm_response": final_content,
                 "structured_response": structured,
@@ -609,8 +629,8 @@ class ProcessingPipeline:
             }
 
     def _parse_tagged_response(self, text: str) -> Dict[str, Any]:
-        """Parse response for references and page references."""
-        parsed = {"response": "", "references": [], "page_references": [], "flow_steps": []}
+        """Parse response for references and page references reordered by appearance."""
+        parsed = {"response": "", "references": [], "page_references": [], "image_references": [], "flow_steps": []}
         if not text:
             return parsed
 
@@ -620,7 +640,6 @@ class ProcessingPipeline:
         
         # 1. Try to unwrap JSON if the model acted like a ReAct agent
         try:
-            # Check if it looks like JSON first to avoid performance hit
             if remaining_text.strip().startswith("{") and "action" in remaining_text:
                 data = json.loads(remaining_text)
                 if isinstance(data, dict) and "action_input" in data:
@@ -628,86 +647,80 @@ class ProcessingPipeline:
         except Exception:
             pass
 
-        id_map = {}        # Map original search ID (str) -> new index (int)
-        page_id_map = {}   # Map original page ID (str) -> new index (int)
-
-        # Parse References Block (unified: contains both [search] and [page] entries)
+        # 2. Remove the original references block if present (we will rebuild it)
         ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
         if ref_block_match:
-            ref_content = ref_block_match.group(1).strip()
-            for line in ref_content.split("\n"):
-                line = line.strip()
-                if not line: continue
-                
-                # Match [id] [type] [title](url)
-                # e.g. [1] [search] [文本描述](url) or [5] [page] [页面标题](url)
-                id_match = re.match(r"^\[(\d+)\]", line)
-                type_match = re.search(r"\[(search|page)\]", line, re.IGNORECASE)
-                link_match = re.search(r"\[([^\[\]]+)\]\(([^)]+)\)", line)
-                
-                idx = None
-                if id_match:
-                    try:
-                        idx = int(id_match.group(1))
-                    except ValueError:
-                        pass
-                
-                ref_type = "search"  # default
-                if type_match:
-                    ref_type = type_match.group(1).lower()
-                
-                entry = None
-                if idx is not None and self.all_web_results:
-                    # For page type, only match crawled items
-                    if ref_type == "page":
-                        found = next((r for r in self.all_web_results if r.get("_id") == idx and r.get("is_crawled")), None)
-                    else:
-                        found = next((r for r in self.all_web_results if r.get("_id") == idx and not r.get("is_crawled")), None)
-                    
-                    if found:
-                        entry = {
-                            "title": found.get("title"),
-                            "url": found.get("url"),
-                            "domain": found.get("domain", "")
-                        }
-
-                if not entry and link_match:
-                    entry = {"title": link_match.group(1), "url": link_match.group(2)}
-
-                if entry:
-                    if ref_type == "page":
-                        parsed["page_references"].append(entry)
-                        if idx is not None:
-                            page_id_map[str(idx)] = len(parsed["page_references"])
-                    else:
-                        parsed["references"].append(entry)
-                        if idx is not None:
-                            id_map[str(idx)] = len(parsed["references"])
-                        
             remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
 
-        # Replace search:id citations
-        if id_map:
-            def replace_search_citation(match):
-                old_id = match.group(1) or match.group(2) 
-                if old_id in id_map:
-                    return f"`search:{id_map[old_id]}`"
-                return match.group(0)
+        # 3. Scan text for [type:id] tags and rebuild references in order of appearance
+        # Pattern matches [search:123], [page:123], [image:123]
+        pattern = re.compile(r'\[(search|page|image):(\d+)\]', re.IGNORECASE)
+        
+        matches = list(pattern.finditer(remaining_text))
+        
+        search_map = {}  # old_id_str -> new_id (int)
+        page_map = {}
+        image_map = {}
+        
+        for m in matches:
+            tag_type = m.group(1).lower()
+            old_id_str = m.group(2)
+            try:
+                old_id = int(old_id_str)
+            except ValueError:
+                continue
+            
+            # Check if we already processed this ID for this type
+            if tag_type == "search" and old_id_str in search_map: continue
+            if tag_type == "page" and old_id_str in page_map: continue
+            if tag_type == "image" and old_id_str in image_map: continue
+            
+            # Find in all_web_results
+            result_item = next((r for r in self.all_web_results if r.get("_id") == old_id and r.get("_type") == tag_type), None)
+            
+            if not result_item:
+                continue
+                
+            entry = {
+                "title": result_item.get("title", ""),
+                "url": result_item.get("url", ""),
+                "domain": result_item.get("domain", "")
+            }
+            if tag_type == "image":
+                 entry["thumbnail"] = result_item.get("thumbnail", "")
 
-            remaining_text = re.sub(r'\[(\d+)\]', replace_search_citation, remaining_text)
-            remaining_text = re.sub(r'(?<!`)search:(\d+)(?!`)', replace_search_citation, remaining_text)
-            remaining_text = re.sub(r'`search:(\d+)`', replace_search_citation, remaining_text)
+            # Add to respective list and map
+            if tag_type == "search":
+                parsed["references"].append(entry)
+                search_map[old_id_str] = len(parsed["references"])
+            elif tag_type == "page":
+                parsed["page_references"].append(entry)
+                page_map[old_id_str] = len(parsed["page_references"])
+            elif tag_type == "image":
+                parsed["image_references"].append(entry)
+                image_map[old_id_str] = len(parsed["image_references"])
 
-        # Replace page:id citations
-        if page_id_map:
-            def replace_page_citation(match):
-                old_id = match.group(1)
-                if old_id in page_id_map:
-                    return f"`page:{page_id_map[old_id]}`"
-                return match.group(0)
+        # 4. Replace tags in text with new sequential IDs
+        def replace_tag(match):
+            tag_type = match.group(1).lower()
+            old_id = match.group(2)
+            
+            new_id = None
+            if tag_type == "search":
+                new_id = search_map.get(old_id)
+            elif tag_type == "page":
+                new_id = page_map.get(old_id)
+            elif tag_type == "image":
+                new_id = image_map.get(old_id)
+            
+            if new_id is not None:
+                if tag_type == "image":
+                    return ""
+                return f"[{tag_type}:{new_id}]"
+            
+            return match.group(0)
 
-            remaining_text = re.sub(r'(?<!`)page:(\d+)(?!`)', replace_page_citation, remaining_text)
-            remaining_text = re.sub(r'`page:(\d+)`', replace_page_citation, remaining_text)
+        remaining_text = pattern.sub(replace_tag, remaining_text)
 
         parsed["response"] = remaining_text.strip()
         return parsed
@@ -730,12 +743,11 @@ class ProcessingPipeline:
             query = args.get("query")
             web = await self.search_service.search(query)
             
-            # Cache results and assign IDs
-            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
-            
+            # Cache results and assign search-specific IDs
             for item in web:
-                current_max_id += 1
-                item["_id"] = current_max_id
+                self.search_id_counter += 1
+                item["_id"] = self.search_id_counter
+                item["_type"] = "search"
                 item["query"] = query
                 self.all_web_results.append(item)
             
@@ -745,10 +757,11 @@ class ProcessingPipeline:
             query = args.get("query")
             images = await self.search_service.image_search(query)
 
-            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
+            # Cache results and assign image-specific IDs
             for item in images:
-                current_max_id += 1
-                item["_id"] = current_max_id
+                self.image_id_counter += 1
+                item["_id"] = self.image_id_counter
+                item["_type"] = "image"
                 item["query"] = query
                 item["is_image"] = True
                 self.all_web_results.append(item)
@@ -761,15 +774,15 @@ class ProcessingPipeline:
             # Returns Dict: {content, title, url}
             result_dict = await self.search_service.fetch_page(url)
             
-            # Cache the crawled content so Agent can access it
-            current_max_id = max([item.get("_id", 0) for item in self.all_web_results], default=0)
-            current_max_id += 1
+            # Cache the crawled content with page-specific ID
+            self.page_id_counter += 1
             
             cached_item = {
-                "_id": current_max_id,
+                "_id": self.page_id_counter,
+                "_type": "page",
                 "title": result_dict.get("title", "Page"),
                 "url": result_dict.get("url", url),
-                "content": result_dict.get("content", "")[:2000],  # Clip content for prompt
+                "content": result_dict.get("content", ""),
                 "domain": "",
                 "is_crawled": True,
             }
@@ -940,18 +953,13 @@ class ProcessingPipeline:
         if not self.all_web_results:
             return ""
 
-        def clip(s: str, n: int) -> str:
-            s = (s or "").strip()
-            return s if len(s) <= n else s[: n - 1] + "…"
-
         lines = []
         for res in self.all_web_results:
-            if res.get("is_image"): continue  # Skip images
-            if res.get("is_crawled"): continue  # Skip crawled pages (handled separately)
+            if res.get("_type") != "search": continue  # Only search results
             idx = res.get("_id")
-            title = clip(res.get("title", ""), 80)
+            title = (res.get("title", "") or "").strip()
             url = res.get("url", "")
-            content = clip(res.get("content", ""), 200) 
+            content = (res.get("content", "") or "").strip()
             lines.append(f"[{idx}] Title: {title}\nURL: {url}\nSnippet: {content}\n")
         
         return "\n".join(lines)
@@ -961,17 +969,13 @@ class ProcessingPipeline:
         if not self.all_web_results:
             return ""
 
-        def clip(s: str, n: int) -> str:
-            s = (s or "").strip()
-            return s if len(s) <= n else s[: n - 1] + "…"
-
         lines = []
         for res in self.all_web_results:
-            if not res.get("is_crawled"): continue  # Only crawled pages
+            if res.get("_type") != "page": continue  # Only page results
             idx = res.get("_id")
-            title = clip(res.get("title", ""), 80)
+            title = (res.get("title", "") or "").strip()
             url = res.get("url", "")
-            content = clip(res.get("content", ""), 1500)  # More content for pages
+            content = (res.get("content", "") or "").strip()
             lines.append(f"[{idx}] Title: {title}\nURL: {url}\nContent: {content}\n")
         
         return "\n".join(lines)
@@ -982,7 +986,7 @@ class ProcessingPipeline:
         
         lines = []
         for res in self.all_web_results:
-            if not res.get("is_image"): continue
+            if res.get("_type") != "image": continue  # Only image results
             idx = res.get("_id")
             title = res.get("title", "")
             url = res.get("image", "") or res.get("url", "")
