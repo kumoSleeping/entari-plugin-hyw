@@ -78,41 +78,24 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
     
     print(f"Processing {img_path}: {img_w}x{img_h}")
 
-    # 2. Configure Dimensions based on iPhone 16 Pro Max
-    # Physical Reference:
-    # Width: ~77.6mm -> We map this to `img_w` or a fixed width?
-    # To keep image quality 1:1, we map the SCREEN WIDTH to img_w.
-    
-    # iPhone 16 Pro Max Screen Ratio
-    # Real Resolution: ~2868 x 1320
-    # Aspect Ratio: 2.1727
-    
-    # However, sometimes screenshots are already resized or from different devices.
-    # We should enforce the 'Phone Frame' aspect ratio to look like a phone.
-    
     screen_w = img_w
     screen_h = int(screen_w * 2.1727) # Ideal screen height for this width
     
     # Check if image is a "Long Screenshot"
-    is_long_screenshot = img_h > (screen_h * 1.1) # Buffer
+    is_long_screenshot = img_h > (screen_h * 1.1)
     
-    # Bezel Calculation (1.15mm relative to 75.3mm screen width)
-    # Ratio: 1.15 / 75.3 ~= 0.01527
+    # Bezel Calculation
     bezel = int(screen_w * 0.0153)
-    if bezel < 4: bezel = 4 # Min bezel
+    if bezel < 4: bezel = 4
     
     # Body Corner Radius
-    # Pro Max is very rounded. Ratio ~18mm / 77.6mm ~= 0.23
     body_radius = int((screen_w + 2*bezel) * 0.23)
     screen_radius = body_radius - bezel
     
     # Dynamic Island
-    # Width ~31% of screen
     island_w = int(screen_w * 0.31)
-    island_h = int(island_w * 0.29) # Ratio check
-    island_top_margin = int(screen_w * 0.04) # ~4% from top edge of screen?
-    # Usually strictly positioned.
-    # Let's use a safe ratio.
+    island_h = int(island_w * 0.29)
+    island_top_margin = int(screen_w * 0.04)
     
     frames_count = 2 if is_long_screenshot else 1
     
@@ -120,10 +103,13 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
     frame_w = screen_w + (bezel * 2)
     frame_h = screen_h + (bezel * 2)
     
-    spacer = int(frame_w * 0.1) # 10% spacer
-    
+    spacer = int(frame_w * 0.1) # 10% spacer # Stagger Offset calculation
+    vertical_offset = 0
+    if frames_count == 2:
+        vertical_offset = int(frame_h * 0.12) # ~12% stagger
+
     total_w = (frame_w * frames_count) + (spacer * (frames_count - 1))
-    total_h = frame_h
+    total_h = frame_h + vertical_offset
     
     # Paths
     body_path = get_squircle_path(0, 0, frame_w, frame_h, body_radius, smoothing=5.0)
@@ -140,7 +126,7 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
     </defs>
     """
     
-    def generate_phone_group(offset_x, alignment):
+    def generate_phone_group(offset_x, offset_y, alignment):
         # alignment: 'top' or 'bottom' or 'center' (if single)
         
         img_y = bezel # Default top align
@@ -150,11 +136,12 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
              img_y = bezel + (screen_h - img_h)/2
              
         return f"""
-    <g transform="translate({offset_x}, 0)">
-        <!-- Body -->
-        <use href="#phone_body_s" fill="#222" />
-        <use href="#phone_body_s" fill="none" stroke="#555" stroke-width="{max(2, frame_w*0.005)}" stroke-linejoin="round" stroke-linecap="round" />
-        <use href="#phone_body_s" fill="none" stroke="#111" stroke-width="{max(1, frame_w*0.002)}" transform="translate({frame_w*0.002},{frame_w*0.002}) scale(0.998)" stroke-linejoin="round" />
+    <g transform="translate({offset_x}, {offset_y})">
+        <!-- Minimalist Black Body -->
+        <use href="#phone_body_s" fill="#000000" />
+        
+        <!-- Subtle dark gray border definition - Minimalist -->
+        <use href="#phone_body_s" fill="none" stroke="#333" stroke-width="{max(2, frame_w*0.003)}" stroke-linejoin="round" stroke-linecap="round" />
         
         <!-- Screen Content -->
         <g>
@@ -163,8 +150,8 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
                 <rect x="{bezel}" y="{bezel}" width="{screen_w}" height="{screen_h}" fill="white" />
                 <use href="#source_img" x="{bezel}" y="{img_y}" />
                 
-                <!-- Inner Shadow -->
-                <use href="#screen_s" fill="none" stroke="black" stroke-width="{max(4, frame_w*0.01)}" opacity="0.1" stroke-linejoin="round" />
+                <!-- Inner Shadow for depth -->
+                <use href="#screen_s" fill="none" stroke="black" stroke-width="{max(4, frame_w*0.01)}" opacity="0.2" stroke-linejoin="round" />
             </g>
         </g>
         
@@ -175,16 +162,12 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
     svg_body = ""
     
     if frames_count == 2:
-        # Left: Top
-        svg_body += generate_phone_group(0, 'top')
-        # Right: Bottom
-        svg_body += generate_phone_group(frame_w + spacer, 'bottom')
+        # Left: Top (Higher, y=0)
+        svg_body += generate_phone_group(0, 0, 'top')
+        # Right: Bottom (Lower, y=vertical_offset)
+        svg_body += generate_phone_group(frame_w + spacer, vertical_offset, 'bottom')
     else:
-        # Single: Top or Fit? 
-        # If image is smaller than screen, center it?
-        # Usually standard screenshot is Top aligned or Full fit.
-        # We'll assume Top or 'fit' if exactly same ratio.
-        svg_body += generate_phone_group(0, 'top')
+        svg_body += generate_phone_group(0, 0, 'top')
 
     svg_content = f"""<svg width="{total_w}" height="{total_h}" viewBox="0 0 {total_w} {total_h}" fill="none" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
     {svg_defs}
