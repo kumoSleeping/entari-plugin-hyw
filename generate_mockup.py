@@ -10,7 +10,7 @@ def get_squircle_path(x, y, w, h, r, smoothing=4.8):
     """
     path_cmds = []
     
-    def get_corner_points(cx, cy, start_angle_deg, end_angle_deg, steps=40):
+    def get_corner_points(cx, cy, start_angle_deg, end_angle_deg, steps=200):
         points = []
         for i in range(steps + 1):
             t = start_angle_deg + (end_angle_deg - start_angle_deg) * (i / steps)
@@ -153,8 +153,8 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
     <g transform="translate({offset_x}, 0)">
         <!-- Body -->
         <use href="#phone_body_s" fill="#222" />
-        <use href="#phone_body_s" fill="none" stroke="#555" stroke-width="{max(2, frame_w*0.005)}" />
-        <use href="#phone_body_s" fill="none" stroke="#111" stroke-width="{max(1, frame_w*0.002)}" transform="translate({frame_w*0.002},{frame_w*0.002}) scale(0.998)"/>
+        <use href="#phone_body_s" fill="none" stroke="#555" stroke-width="{max(2, frame_w*0.005)}" stroke-linejoin="round" stroke-linecap="round" />
+        <use href="#phone_body_s" fill="none" stroke="#111" stroke-width="{max(1, frame_w*0.002)}" transform="translate({frame_w*0.002},{frame_w*0.002}) scale(0.998)" stroke-linejoin="round" />
         
         <!-- Screen Content -->
         <g>
@@ -164,7 +164,7 @@ def create_mockup(img_path="demo.jpg", output_path="demo_mockup.svg"):
                 <use href="#source_img" x="{bezel}" y="{img_y}" />
                 
                 <!-- Inner Shadow -->
-                <use href="#screen_s" fill="none" stroke="black" stroke-width="{max(4, frame_w*0.01)}" opacity="0.1"/>
+                <use href="#screen_s" fill="none" stroke="black" stroke-width="{max(4, frame_w*0.01)}" opacity="0.1" stroke-linejoin="round" />
             </g>
         </g>
         
