@@ -14,7 +14,9 @@ The plugin implements a three-stage pipeline (**Vision**, **Instruct**, **Agent*
 
 插件实现了三阶段流水线（**视觉**、**指令**、**代理**），能够自主决定何时搜索网络、抓取网页或分析图片，从而高效地回答用户问题。
 
-<img src="demo.jpg" width="300" />
+<p align="center">
+  <img src="demo_mockup.svg" width="800" />
+</p>
 
 ## Features / 功能特性
 
