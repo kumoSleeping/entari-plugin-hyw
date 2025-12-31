@@ -58,13 +58,11 @@ class HywConfig(BasicConfModel):
     base_url: str = "https://openrouter.ai/api/v1"
     vision_model_name: Optional[str] = None
     vision_api_key: Optional[str] = None
+    language: str = "Simplified Chinese"
     vision_base_url: Optional[str] = None
-    vision_system_prompt: Optional[str] = None
-    intruct_model_name: Optional[str] = None
-    intruct_api_key: Optional[str] = None
-    intruct_base_url: Optional[str] = None
-    intruct_system_prompt: Optional[str] = None
-    agent_system_prompt: Optional[str] = None
+    instruct_model_name: Optional[str] = None
+    instruct_api_key: Optional[str] = None
+    instruct_base_url: Optional[str] = None
     search_base_url: str = "https://lite.duckduckgo.com/lite/?q={query}"
     image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images"
     headless: bool = False
@@ -72,8 +70,10 @@ class HywConfig(BasicConfModel):
     icon: str = "openai"
     render_timeout_ms: int = 6000
     extra_body: Optional[Dict[str, Any]] = None
+    vision_extra_body: Optional[Dict[str, Any]] = None
+    instruct_extra_body: Optional[Dict[str, Any]] = None
     enable_browser_fallback: bool = False
-    reaction: bool = True
+    reaction: bool = False
     quote: bool = True
     temperature: float = 0.4
     # Billing configuration (price per million tokens)
@@ -83,14 +83,14 @@ class HywConfig(BasicConfModel):
     vision_input_price: Optional[float] = None
     vision_output_price: Optional[float] = None
     # Instruct model pricing overrides (defaults to main model pricing if not set)
-    intruct_input_price: Optional[float] = None
-    intruct_output_price: Optional[float] = None
+    instruct_input_price: Optional[float] = None
+    instruct_output_price: Optional[float] = None
     # Provider Names
     search_name: str = "DuckDuckGo"
     search_provider: str = "crawl4ai"  # crawl4ai | httpx | ddgs
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
-    intruct_model_provider: Optional[str] = None
+    instruct_model_provider: Optional[str] = None
 
 
 

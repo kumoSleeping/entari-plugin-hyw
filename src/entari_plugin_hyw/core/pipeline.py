@@ -12,14 +12,14 @@ from .config import HYWConfig
 from ..utils.search import SearchService
 from ..utils.prompts import (
     AGENT_SP,
-    AGENT_SP_INTRUCT_VISION_ADD,
+    AGENT_SP_INSTRUCT_VISION_ADD,
     AGENT_SP_TOOLS_STANDARD_ADD,
     AGENT_SP_TOOLS_AGENT_ADD,
     AGENT_SP_SEARCH_ADD,
     AGENT_SP_PAGE_ADD,
     AGENT_SP_IMAGE_SEARCH_ADD,
-    INTRUCT_SP,
-    INTRUCT_SP_VISION_ADD,
+    INSTRUCT_SP,
+    INSTRUCT_SP_VISION_ADD,
     VISION_SP,
 )
 
@@ -109,7 +109,7 @@ class ProcessingPipeline:
     ) -> Dict[str, Any]:
         """
         1) Vision: summarize images once (no image persistence).
-        2) Intruct: run web_search and decide whether to grant Playwright MCP tools.
+        2) Instruct: run web_search and decide whether to grant Playwright MCP tools.
         3) Agent: normally no tools; if granted, allow Playwright MCP tools (max 6 rounds; step 5 nudge, step 6 forced).
         """
         start_time = time.time()
@@ -133,7 +133,7 @@ class ProcessingPipeline:
 
             trace: Dict[str, Any] = {
                 "vision": None,
-                "intruct": None,
+                "instruct": None,
                 "agent": None,
             }
 
@@ -150,8 +150,7 @@ class ProcessingPipeline:
                     or getattr(self.config, "vision_model_name", None)
                     or active_model
                 )
-                vision_prompt_tpl = getattr(self.config, "vision_system_prompt", None) or VISION_SP
-                vision_prompt = vision_prompt_tpl.format(user_msgs=user_input or "[图片]")
+                vision_prompt = VISION_SP.format(user_msgs=user_input or "[图片]")
                 vision_text, vision_usage = await self._run_vision_stage(
                     user_input=user_input,
                     images=images,
@@ -182,10 +181,10 @@ class ProcessingPipeline:
                     "cost": vision_cost
                 }
 
-            # Intruct + pre-search
+            # Instruct + pre-search
             instruct_start = time.time()
-            instruct_model = getattr(self.config, "intruct_model_name", None) or active_model
-            instruct_text, search_payloads, intruct_trace, intruct_usage, search_time = await self._run_instruct_stage(
+            instruct_model = getattr(self.config, "instruct_model_name", None) or active_model
+            instruct_text, search_payloads, instruct_trace, instruct_usage, search_time = await self._run_instruct_stage(
                 user_input=user_input,
                 vision_text=vision_text,
                 model=instruct_model,
@@ -194,24 +193,24 @@ class ProcessingPipeline:
             
             # Calculate Instruct Cost
             instruct_cost = 0.0
-            i_in_price = float(getattr(self.config, "intruct_input_price", None) or getattr(self.config, "input_price", 0.0) or 0.0)
-            i_out_price = float(getattr(self.config, "intruct_output_price", None) or getattr(self.config, "output_price", 0.0) or 0.0)
+            i_in_price = float(getattr(self.config, "instruct_input_price", None) or getattr(self.config, "input_price", 0.0) or 0.0)
+            i_out_price = float(getattr(self.config, "instruct_output_price", None) or getattr(self.config, "output_price", 0.0) or 0.0)
             if i_in_price > 0 or i_out_price > 0:
-                instruct_cost = (intruct_usage.get("input_tokens", 0) / 1_000_000 * i_in_price) + (intruct_usage.get("output_tokens", 0) / 1_000_000 * i_out_price)
+                instruct_cost = (instruct_usage.get("input_tokens", 0) / 1_000_000 * i_in_price) + (instruct_usage.get("output_tokens", 0) / 1_000_000 * i_out_price)
             
             # Add instruct usage
-            usage_totals["input_tokens"] += intruct_usage.get("input_tokens", 0)
-            usage_totals["output_tokens"] += intruct_usage.get("output_tokens", 0)
+            usage_totals["input_tokens"] += instruct_usage.get("input_tokens", 0)
+            usage_totals["output_tokens"] += instruct_usage.get("output_tokens", 0)
             
-            intruct_trace["time"] = instruct_time
-            intruct_trace["cost"] = instruct_cost
-            trace["intruct"] = intruct_trace
+            instruct_trace["time"] = instruct_time
+            instruct_trace["cost"] = instruct_cost
+            trace["instruct"] = instruct_trace
 
             # Start agent loop
             agent_start_time = time.time()
             current_history.append({"role": "user", "content": user_input or "..."})
 
-            mode = intruct_trace.get("mode", self.current_mode).lower()
+            mode = instruct_trace.get("mode", self.current_mode).lower()
             logger.success(f"Instruct Mode: {mode}")
             self.current_mode = mode
             
@@ -255,18 +254,17 @@ class ProcessingPipeline:
                 has_image_results = any(r.get("_type") == "image" for r in self.all_web_results)
 
                 # Build agent system prompt
-                agent_prompt_tpl = getattr(self.config, "agent_system_prompt", None) or AGENT_SP
-                
                 mode_desc_text = AGENT_SP_TOOLS_AGENT_ADD.format(tools_desc=tools_desc) if mode == "agent" else AGENT_SP_TOOLS_STANDARD_ADD
-                system_prompt = agent_prompt_tpl.format(
+                system_prompt = AGENT_SP.format(
                     user_msgs=user_msgs_text,
                     mode=mode,
-                    mode_desc=mode_desc_text
+                    mode_desc=mode_desc_text,
+                    language=getattr(self.config, "language", "Simplified Chinese")[:128]
                 )
                 
                 # Append vision text if available
                 if vision_text:
-                    system_prompt += AGENT_SP_INTRUCT_VISION_ADD.format(vision_msgs=vision_text)
+                    system_prompt += AGENT_SP_INSTRUCT_VISION_ADD.format(vision_msgs=vision_text)
                 
                 # Append search results
                 if has_search_results and search_msgs_text:
@@ -299,6 +297,7 @@ class ProcessingPipeline:
                     model=active_model,
                     tools=tools_for_step,
                     tool_choice="auto" if tools_for_step else None,
+                    extra_body=self.config.extra_body,
                 )
                 step_llm_time = time.time() - step_llm_start
                 
@@ -366,8 +365,8 @@ class ProcessingPipeline:
             a_in_price = float(getattr(self.config, "input_price", 0.0) or 0.0)
             a_out_price = float(getattr(self.config, "output_price", 0.0) or 0.0)
             
-            agent_input_tokens = usage_totals["input_tokens"] - vision_usage.get("input_tokens", 0) - intruct_usage.get("input_tokens", 0)
-            agent_output_tokens = usage_totals["output_tokens"] - vision_usage.get("output_tokens", 0) - intruct_usage.get("output_tokens", 0)
+            agent_input_tokens = usage_totals["input_tokens"] - vision_usage.get("input_tokens", 0) - instruct_usage.get("input_tokens", 0)
+            agent_output_tokens = usage_totals["output_tokens"] - vision_usage.get("output_tokens", 0) - instruct_usage.get("output_tokens", 0)
             
             if a_in_price > 0 or a_out_price > 0:
                 agent_cost = (max(0, agent_input_tokens) / 1_000_000 * a_in_price) + (max(0, agent_output_tokens) / 1_000_000 * a_out_price)
@@ -436,14 +435,14 @@ class ProcessingPipeline:
                     "cost": v.get("cost", 0.0)
                 })
             
-            if trace.get("intruct"):
-                i = trace["intruct"]
+            if trace.get("instruct"):
+                i = trace["instruct"]
                 i_model = i.get("model", "")
                 i_base_url = i.get("base_url", "") or self.config.base_url
                 stages_used.append({
                     "name": "Instruct",
                     "model": i_model,
-                    "icon_config": getattr(self.config, "instruct_icon", None) or getattr(self.config, "intruct_icon", None) or infer_icon(i_model, i_base_url),
+                    "icon_config": getattr(self.config, "instruct_icon", None) or infer_icon(i_model, i_base_url),
                     "provider": infer_provider(i_base_url),
                     "time": i.get("time", 0),
                     "cost": i.get("cost", 0.0)
@@ -460,9 +459,9 @@ class ProcessingPipeline:
                 })
             
             # Add Crawler stage if Instruct used crawl_page
-            if trace.get("intruct"):
-                intruct_tool_calls = trace["intruct"].get("tool_calls", [])
-                crawl_calls = [tc for tc in intruct_tool_calls if tc.get("name") == "crawl_page"]
+            if trace.get("instruct"):
+                instruct_tool_calls = trace["instruct"].get("tool_calls", [])
+                crawl_calls = [tc for tc in instruct_tool_calls if tc.get("name") == "crawl_page"]
                 if crawl_calls:
                     # Build crawled_pages list for UI
                     crawled_pages = []
@@ -828,10 +827,10 @@ class ProcessingPipeline:
         return f"Unknown tool {name}"
 
 
-    async def _safe_llm_call(self, messages, model, tools=None, tool_choice=None, client: Optional[AsyncOpenAI] = None):
+    async def _safe_llm_call(self, messages, model, tools=None, tool_choice=None, client: Optional[AsyncOpenAI] = None, extra_body: Optional[Dict[str, Any]] = None):
         try:
             return await asyncio.wait_for(
-                self._do_llm_request(messages, model, tools, tool_choice, client=client or self.client),
+                self._do_llm_request(messages, model, tools, tool_choice, client=client or self.client, extra_body=extra_body),
                 timeout=120.0,
             )
         except asyncio.TimeoutError:
@@ -841,7 +840,7 @@ class ProcessingPipeline:
             logger.error(f"LLM Call Failed: {e}")
             return type("obj", (object,), {"content": f"Error: Model failure ({e})", "tool_calls": None})(), {"input_tokens": 0, "output_tokens": 0}
 
-    async def _do_llm_request(self, messages, model, tools, tool_choice, client: AsyncOpenAI):
+    async def _do_llm_request(self, messages, model, tools, tool_choice, client: AsyncOpenAI, extra_body: Optional[Dict[str, Any]] = None):
         try:
             payload_debug = json.dumps(messages)
             logger.info(f"LLM Request Payload Size: {len(payload_debug)} chars")
@@ -856,6 +855,7 @@ class ProcessingPipeline:
             tools=tools,
             tool_choice=tool_choice,
             temperature=self.config.temperature,
+            extra_body=extra_body,
         )
         logger.info(f"LLM Request RECEIVED after {time.time() - t0:.2f}s")
         
@@ -880,6 +880,7 @@ class ProcessingPipeline:
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": content_payload}],
             model=model,
             client=client,
+            extra_body=getattr(self.config, "vision_extra_body", None),
         )
         return (response.content or "").strip(), usage
 
@@ -891,15 +892,14 @@ class ProcessingPipeline:
         tools = [self.web_search_tool, self.image_search_tool, self.set_mode_tool, self.crawl_page_tool]
         tools_desc = "- internal_web_search: 搜索文本\n- internal_image_search: 搜索图片\n- crawl_page: 获取网页内容\n- set_mode: 设定standard/agent模式"
 
-        prompt_tpl = getattr(self.config, "intruct_system_prompt", None) or INTRUCT_SP
-        prompt = prompt_tpl.format(user_msgs=user_input or "", tools_desc=tools_desc)
+        prompt = INSTRUCT_SP.format(user_msgs=user_input or "", tools_desc=tools_desc)
         
         if vision_text:
-            prompt = f"{prompt}\\n\\n{INTRUCT_SP_VISION_ADD.format(vision_msgs=vision_text)}"
+            prompt = f"{prompt}\\n\\n{INSTRUCT_SP_VISION_ADD.format(vision_msgs=vision_text)}"
 
         client = self._client_for(
-            api_key=getattr(self.config, "intruct_api_key", None),
-            base_url=getattr(self.config, "intruct_base_url", None),
+            api_key=getattr(self.config, "instruct_api_key", None),
+            base_url=getattr(self.config, "instruct_base_url", None),
         )
 
         history: List[Dict[str, Any]] = [
@@ -913,12 +913,13 @@ class ProcessingPipeline:
             tools=tools,
             tool_choice="auto",
             client=client,
+            extra_body=getattr(self.config, "instruct_extra_body", None),
         )
 
         search_payloads: List[str] = []
-        intruct_trace: Dict[str, Any] = {
+        instruct_trace: Dict[str, Any] = {
             "model": model,
-            "base_url": getattr(self.config, "intruct_base_url", None) or self.config.base_url,
+            "base_url": getattr(self.config, "instruct_base_url", None) or self.config.base_url,
             "prompt": prompt,
             "user_input": user_input or "",
             "vision_add": vision_text or "",
@@ -946,8 +947,8 @@ class ProcessingPipeline:
                 history.append(
                     {"tool_call_id": tc.id, "role": "tool", "name": tc.function.name, "content": str(result)}
                 )
-                intruct_trace["tool_calls"].append(self._tool_call_to_trace(tc))
-                intruct_trace["tool_results"].append({"name": tc.function.name, "content": str(result)})
+                instruct_trace["tool_calls"].append(self._tool_call_to_trace(tc))
+                instruct_trace["tool_results"].append({"name": tc.function.name, "content": str(result)})
                 
                 if tc.function.name in ["web_search", "internal_web_search"]:
                     search_payloads.append(str(result))
@@ -959,18 +960,18 @@ class ProcessingPipeline:
                     mode = args.get("mode", mode)
                     mode_reason = args.get("reason", "")
 
-            intruct_trace["mode"] = mode
+            instruct_trace["mode"] = mode
             if mode_reason:
-                intruct_trace["mode_reason"] = mode_reason
+                instruct_trace["mode_reason"] = mode_reason
             
-            intruct_trace["output"] = ""
-            intruct_trace["usage"] = usage
-            return "", search_payloads, intruct_trace, usage, search_time
+            instruct_trace["output"] = ""
+            instruct_trace["usage"] = usage
+            return "", search_payloads, instruct_trace, usage, search_time
 
-        intruct_trace["mode"] = mode
-        intruct_trace["output"] = (response.content or "").strip()
-        intruct_trace["usage"] = usage
-        return "", search_payloads, intruct_trace, usage, 0.0
+        instruct_trace["mode"] = mode
+        instruct_trace["output"] = (response.content or "").strip()
+        instruct_trace["usage"] = usage
+        return "", search_payloads, instruct_trace, usage, 0.0
 
     def _format_search_msgs(self) -> str:
         """Format search snippets only (not crawled pages)."""
@@ -1050,9 +1051,9 @@ class ProcessingPipeline:
             parts.append(fence("text", v.get("output", "")))
             parts.append("")
 
-        if trace.get("intruct"):
-            t = trace["intruct"]
-            parts.append("## Intruct\n")
+        if trace.get("instruct"):
+            t = trace["instruct"]
+            parts.append("## Instruct\n")
             parts.append(f"- model: `{t.get('model')}`")
             parts.append(f"- base_url: `{t.get('base_url')}`\n")
             parts.append("### Prompt\n")
