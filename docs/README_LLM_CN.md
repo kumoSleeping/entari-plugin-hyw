@@ -47,7 +47,7 @@
 | `base_url` | `string` | API 根地址。默认 `https://openrouter.ai/api/v1`。 | 否 |
 | `extra_body` | `object` | 传递给 LLM RPC 的额外参数字典（如 `{"reasoning_effort": "high"}`）。 | 否 |
 | `temperature` | `float` | 采样温度 (默认 0.4)。控制生成结果的确定性。 | 否 |
-| `icon` | `string` | 底部提供商图标。支持列表：`anthropic`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`。 | 否 |
+| `icon` | `string` | 底部提供商图标。支持列表：`anthropic`, `cerebras`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`。如果不设置，系统会根据 `model_name` 自动推断（例如模型名包含 `cerebras` 会自动使用 cerebras 图标）。 | 否 |
 
 **视觉分析 (Vision) 与 意图识别 (Instruct) 独立配置**
 当需要为视觉处理或意图识别指定特定模型时使用。
@@ -125,7 +125,7 @@ plugins:
     model_name: "qwen-3-235b-a22b-instruct-2507"
     api_key: "csk-..."
     base_url: "https://api.cerebras.ai/v1"
-    icon: "qwen"
+    icon: "cerebras"
 
     # --- 视觉 (Vision) ---
     # 由于主模型不支持视觉，单独配置 Gemini Flash 处理图片

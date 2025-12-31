@@ -316,6 +316,7 @@ class ContentRenderer:
                     if "perplexity" in m: return "perplexity"
                     if "minimax" in m: return "minimax"
                     if "nvidia" in m: return "nvidia"
+                    if "cerebras" in m: return "cerebras"
                     return None
 
                 # 2. Reference Processing (Moved up for nesting)

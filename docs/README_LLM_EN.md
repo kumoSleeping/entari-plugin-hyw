@@ -47,7 +47,7 @@ The plugin uses a 3-stage architecture: **Vision -> Instruct -> Agent**.
 | `base_url` | `string` | API base URL. Defaults to `https://openrouter.ai/api/v1`. | No |
 | `extra_body` | `object` | Extra parameters for the LLM call (e.g., `{"top_p": 0.8}`). | No |
 | `temperature` | `float` | Sampling temperature (Default 0.4). | No |
-| `icon` | `string` | Provider icon shown in the UI footer. Supported: `anthropic`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`. | No |
+| `icon` | `string` | Provider icon shown in the UI footer. Supported: `anthropic`, `cerebras`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`. If not set, the system will auto-infer from `model_name` (e.g., model names containing `cerebras` will use the cerebras icon). | No |
 
 **Vision & Instruct Independent Configurations**
 Use these if you want specific models for vision analysis or intent recognition.
@@ -125,7 +125,7 @@ plugins:
     model_name: "qwen-3-235b-a22b-instruct-2507"
     api_key: "csk-..."
     base_url: "https://api.cerebras.ai/v1"
-    icon: "qwen"
+    icon: "cerebras"
 
     # --- Vision ---
     # Main model lacks vision, so config Gemini Flash specifically for images
