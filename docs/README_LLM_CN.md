@@ -47,7 +47,7 @@
 | `base_url` | `string` | API 根地址。默认 `https://openrouter.ai/api/v1`。 | 否 |
 | `extra_body` | `object` | 传递给 LLM RPC 的额外参数字典（如 `{"reasoning_effort": "high"}`）。 | 否 |
 | `temperature` | `float` | 采样温度 (默认 0.4)。控制生成结果的确定性。 | 否 |
-| `icon` | `string` | 底部提供商图标。支持列表：`anthropic`, `cerebras`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`。如果不设置，系统会根据 `model_name` 自动推断（例如模型名包含 `cerebras` 会自动使用 cerebras 图标）。 | 否 |
+| `icon` | `string` | 底部提供商图标。支持列表：`anthropic`, `cerebras`, `deepseek`, `gemini`, `google`, `grok`, `huggingface`, `microsoft`, `minimax`, `mistral`, `nvida`, `openai`, `openrouter`, `perplexity`, `qwen`, `xai`, `xiaomi`, `zai`。如果不设置，系统会根据 `model_name` 自动推断（支持模糊匹配，例如：`claude-3-5-sonnet` 或 `anthropic/...` → `anthropic`；`gpt-4o` 或 `o1-mini` → `openai`；`gemini-2.0-flash` 或 `google/...` → `google`；`cerebras/llama-3.3-70b` → `cerebras`）。 | 否 |
 
 **视觉分析 (Vision) 与 意图识别 (Instruct) 独立配置**
 当需要为视觉处理或意图识别指定特定模型时使用。

@@ -305,6 +305,7 @@ class ContentRenderer:
                 def infer_icon_name(model_str):
                     if not model_str: return None
                     m = model_str.lower()
+                    if "cerebras" in m: return "cerebras"
                     if "claude" in m or "anthropic" in m: return "anthropic"
                     if "gpt" in m or "openai" in m or "o1" in m: return "openai"
                     if "gemini" in m or "google" in m: return "google"
@@ -316,7 +317,6 @@ class ContentRenderer:
                     if "perplexity" in m: return "perplexity"
                     if "minimax" in m: return "minimax"
                     if "nvidia" in m: return "nvidia"
-                    if "cerebras" in m: return "cerebras"
                     return None
 
                 # 2. Reference Processing (Moved up for nesting)
