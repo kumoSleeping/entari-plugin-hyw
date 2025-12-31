@@ -39,10 +39,8 @@ class ProcessingPipeline:
         self.client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
         self.all_web_results = [] # Cache for search results
         self.current_mode = "standard"  # standard | agent
-        # Independent ID counters for each type
-        self.search_id_counter = 0
-        self.page_id_counter = 0
-        self.image_id_counter = 0
+        # Global ID counter for all types (unified numbering)
+        self.global_id_counter = 0
 
         self.web_search_tool = {
             "type": "function",
@@ -628,7 +626,12 @@ class ProcessingPipeline:
             }
 
     def _parse_tagged_response(self, text: str) -> Dict[str, Any]:
-        """Parse response for references and page references reordered by appearance."""
+        """Parse response and auto-infer references from [N] citations in body text.
+        
+        New simplified format:
+        - Body text uses [1][2] format for citations
+        - No ref code block needed - we auto-infer from citations
+        """
         parsed = {"response": "", "references": [], "page_references": [], "image_references": [], "flow_steps": []}
         if not text:
             return parsed
@@ -646,104 +649,65 @@ class ProcessingPipeline:
         except Exception:
             pass
 
-        # 2. Extract references from text first (Order by appearance)
-        # Pattern matches [search:123], [page:123], [image:123]
-        pattern = re.compile(r'\[(search|page|image):(\d+)\]', re.IGNORECASE)
+        # 2. Extract all [N] citations from body text (scan left to right for order)
+        body_pattern = re.compile(r'\[(\d+)\]')
+        id_order = []  # Preserve citation order
         
-        matches = list(pattern.finditer(remaining_text))
-        
-        search_map = {}  # old_id_str -> new_id (int)
-        page_map = {}
-        image_map = {}
-        
-        def process_ref(tag_type, old_id):
-            # Find in all_web_results
-            result_item = next((r for r in self.all_web_results if r.get("_id") == old_id and r.get("_type") == tag_type), None)
-            
-            if not result_item:
-                return
-                
-            entry = {
-                "title": result_item.get("title", ""),
-                "url": result_item.get("url", ""),
-                "domain": result_item.get("domain", "")
-            }
-            if tag_type == "image":
-                 entry["thumbnail"] = result_item.get("thumbnail", "")
-
-            # Add to respective list and map
-            # Check maps to avoid duplicates
-            if tag_type == "search":
-                if str(old_id) not in search_map:
-                    parsed["references"].append(entry)
-                    search_map[str(old_id)] = len(parsed["references"])
-            elif tag_type == "page":
-                if str(old_id) not in page_map:
-                    parsed["page_references"].append(entry)
-                    page_map[str(old_id)] = len(parsed["page_references"])
-            elif tag_type == "image":
-                if str(old_id) not in image_map:
-                    parsed["image_references"].append(entry)
-                    image_map[str(old_id)] = len(parsed["image_references"])
-
-        # Pass 1: Text Body
-        for m in matches:
+        for match in body_pattern.finditer(remaining_text):
             try:
-                process_ref(m.group(1).lower(), int(m.group(2)))
+                id_val = int(match.group(1))
+                if id_val not in id_order:
+                    id_order.append(id_val)
             except ValueError:
-                continue
+                pass
 
-        # 3. Pass 2: References Block (Capture items missed in text)
-        ref_block_match = re.search(r'```references\s*(.*?)\s*```', remaining_text, re.DOTALL | re.IGNORECASE)
-        if ref_block_match:
-            ref_content = ref_block_match.group(1).strip()
-            remaining_text = remaining_text.replace(ref_block_match.group(0), "").strip()
+        # 3. Build references by looking up cited IDs in all_web_results
+        # Order by appearance in text
+        old_to_new_map = {}  # old_id -> new_id (for search & page only)
+        
+        for old_id in id_order:
+            # Find in all_web_results by _id
+            result_item = next((r for r in self.all_web_results if r.get("_id") == old_id), None)
             
-            for line in ref_content.split("\n"):
-                line = line.strip()
-                if not line: continue
-                # Match [id] [type]
-                # e.g. [1] [image] ... or [image:1] ...
+            if result_item:
+                entry = {
+                    "title": result_item.get("title", ""),
+                    "url": result_item.get("url", ""),
+                    "domain": result_item.get("domain", "")
+                }
                 
-                # Check for [id] [type] format
-                id_match = re.match(r"^\[(\d+)\]\s*\[(search|page|image)\]", line, re.IGNORECASE)
-                if id_match:
-                    try:
-                         process_ref(id_match.group(2).lower(), int(id_match.group(1)))
-                    except ValueError:
-                        pass
+                item_type = result_item.get("_type", "")
+                
+                # Auto-classify by type
+                if item_type == "search":
+                    parsed["references"].append(entry)
+                    old_to_new_map[old_id] = len(parsed["references"])
+                elif item_type == "page":
+                    parsed["page_references"].append(entry)
+                    old_to_new_map[old_id] = len(parsed["page_references"])
+                elif item_type == "image":
+                    # Collect image but don't add to map (will be stripped from text)
+                    entry["thumbnail"] = result_item.get("thumbnail", "")
+                    parsed["image_references"].append(entry)
+                    # Note: no old_to_new_map entry - image citations will be removed
+
+        # 4. Replace [old_id] with [new_id] in text, or remove if image
+        def replace_id(match):
+            try:
+                old_id = int(match.group(1))
+                new_id = old_to_new_map.get(old_id)
+                if new_id is not None:
+                    return f"[{new_id}]"
                 else:
-                    # Check for [type:id] format in list
-                    alt_match = re.match(r"^\[(search|page|image):(\d+)\]", line, re.IGNORECASE)
-                    if alt_match:
-                        try:
-                            process_ref(alt_match.group(1).lower(), int(alt_match.group(2)))
-                        except ValueError:
-                            pass
-
-        # 4. Replace tags in text with new sequential IDs
-
-        # 4. Replace tags in text with new sequential IDs
-        def replace_tag(match):
-            tag_type = match.group(1).lower()
-            old_id = match.group(2)
-            
-            new_id = None
-            if tag_type == "search":
-                new_id = search_map.get(old_id)
-            elif tag_type == "page":
-                new_id = page_map.get(old_id)
-            elif tag_type == "image":
-                new_id = image_map.get(old_id)
-            
-            if new_id is not None:
-                if tag_type == "image":
-                    return ""
-                return f"[{tag_type}:{new_id}]"
-            
+                    # Check if it's an image reference (not in map)
+                    item = next((r for r in self.all_web_results if r.get("_id") == old_id), None)
+                    if item and item.get("_type") == "image":
+                        return ""  # Remove image citations from text
+            except ValueError:
+                pass
             return match.group(0)
 
-        remaining_text = pattern.sub(replace_tag, remaining_text)
+        remaining_text = body_pattern.sub(replace_id, remaining_text)
 
         parsed["response"] = remaining_text.strip()
         return parsed
@@ -766,10 +730,10 @@ class ProcessingPipeline:
             query = args.get("query")
             web = await self.search_service.search(query)
             
-            # Cache results and assign search-specific IDs
+            # Cache results and assign global IDs
             for item in web:
-                self.search_id_counter += 1
-                item["_id"] = self.search_id_counter
+                self.global_id_counter += 1
+                item["_id"] = self.global_id_counter
                 item["_type"] = "search"
                 item["query"] = query
                 self.all_web_results.append(item)
@@ -780,10 +744,10 @@ class ProcessingPipeline:
             query = args.get("query")
             images = await self.search_service.image_search(query)
 
-            # Cache results and assign image-specific IDs
+            # Cache results and assign global IDs
             for item in images:
-                self.image_id_counter += 1
-                item["_id"] = self.image_id_counter
+                self.global_id_counter += 1
+                item["_id"] = self.global_id_counter
                 item["_type"] = "image"
                 item["query"] = query
                 item["is_image"] = True
@@ -797,11 +761,11 @@ class ProcessingPipeline:
             # Returns Dict: {content, title, url}
             result_dict = await self.search_service.fetch_page(url)
             
-            # Cache the crawled content with page-specific ID
-            self.page_id_counter += 1
+            # Cache the crawled content with global ID
+            self.global_id_counter += 1
             
             cached_item = {
-                "_id": self.page_id_counter,
+                "_id": self.global_id_counter,
                 "_type": "page",
                 "title": result_dict.get("title", "Page"),
                 "url": result_dict.get("url", url),

@@ -266,18 +266,27 @@ class ContentRenderer:
 
                 content_html = restore_math(content_html)
                 
-                # Convert [search:N] to blue badge
-                content_html = re.sub(
-                    r'\[search:(\d+)\]',
-                    r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>',
-                    content_html
-                )
-                # Convert [page:N] to orange badge
-                content_html = re.sub(
-                    r'\[page:(\d+)\]',
-                    r'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">\1</span>',
-                    content_html
-                )
+                # Convert [N] to colored badges based on index position
+                # - Numbers 1 to len(references) → blue (search results)
+                # - Numbers len(references)+1 to len(references)+len(page_references) → orange (page content)
+                
+                num_search_refs = len(references) if references else 0
+                num_page_refs = len(page_references) if page_references else 0
+                
+                def replace_badge(match):
+                    n = int(match.group(1))
+                    if 1 <= n <= num_search_refs:
+                        # Blue badge for search results
+                        return f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded mx-0.5 align-top relative -top-0.5">{n}</span>'
+                    elif num_search_refs < n <= num_search_refs + num_page_refs:
+                        # Orange badge for page content (renumber from 1)
+                        page_num = n - num_search_refs
+                        return f'<span class="inline-flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-700 bg-orange-50 border border-orange-200 rounded mx-0.5 align-top relative -top-0.5">{page_num}</span>'
+                    else:
+                        # Fallback: keep original if out of range
+                        return match.group(0)
+                
+                content_html = re.sub(r'\[(\d+)\]', replace_badge, content_html)
                 
                 # Strip out the references code block if it leaked into the content
                 content_html = re.sub(r'<pre><code[^>]*>.*?references.*?</code></pre>\s*$', '', content_html, flags=re.DOTALL | re.IGNORECASE)

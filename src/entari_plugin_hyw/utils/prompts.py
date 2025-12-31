@@ -40,7 +40,6 @@ Do not reply with extra text after calling tools to save tokens.
 ```
 """
 
-
 INSTRUCT_SP_VISION_ADD = """
 ## Vision Expert Message
 ```text
@@ -53,8 +52,6 @@ AGENT_SP = """# You are an Agent Control Expert. You need to understand user int
 
 Current Mode: {mode}, {mode_desc}
 
-
-
 ## Process Requirements
 When sending text without calling tools, it means this is the final reply. Please observe:
 - Provide a report directly, no need to explicitly answer the user message.
@@ -63,27 +60,11 @@ When sending text without calling tools, it means this is the final reply. Pleas
   - Use Markdown format, supporting highlight, katex.
   - Give a `# ` main title at the beginning, no extra nonsense, do not directly answer the user's question.
   - Rich content highlighting key points.
-- Tool Citation:
+- Citation:
   > Important: All body content must be based on actual information, ensuring 100% accuracy.
-  - Citation Rules:
-    - Cite information only if it is useful for solving the problem in this session; do not cite unnecessary messages.
-    - Badges must truly correspond to the information obtained in the context, and correspond to the content in references. Images correspond in order.
-  - Citation Rules in Body:
-    - Search Summary Citation: Use like `[search:3][search:4]`
-    - Page Content Citation: Use like `[page:5][page:6]`
-    - Image Citation: Use like `[image:7][image:8]`
-    - `search` means search summaries obtained using `internal_web_search`. Do not cite if no relevant info from this tool.
-    - `page` means page content obtained using `crawl_page`. Do not cite if no relevant info from this tool.
-    - `image` means images obtained using `internal_image_search`. Just place images in order, you do not need to explicitly cite.
-  - Add a `references` code block at the bottom of the body:
-    - Do not write unused entries. Do not write if experts gave no info.
-    ```references
-    [2] [search] [Text Description](url)
-    [8] [search] [Text Description](url)
-    [1] [page] [Page Title](url)
-    [2] [page] [Page Title](url)
-    [1] [image] [Source](url)
-    ```
+  - Information sources are numbered in order of acquisition as [1], [2], [3]...
+  - Use [1][2] format directly in body text to cite, only cite sources helpful to the answer
+  - No need to provide a reference list, the system will auto-generate it
 
 ## User Message
 ```text
@@ -95,7 +76,6 @@ AGENT_SP_TOOLS_STANDARD_ADD = """
 You need to integrate existing information, extract keywords from the user message, and make a final reply.
 """
 
-
 AGENT_SP_TOOLS_AGENT_ADD = """
 - You can now use tools: {tools_desc}
   - You need to judge whether to use tools sequentially or concurrently to obtain information:
@@ -104,8 +84,6 @@ AGENT_SP_TOOLS_AGENT_ADD = """
     - 1-2 times `crawl_page`
 - When using tools, you must call them via the `function_call` / `tool_call` mechanism.
 """
-
-
 
 AGENT_SP_INSTRUCT_VISION_ADD = """
 ## Vision Expert Message
@@ -119,8 +97,6 @@ AGENT_SP_SEARCH_ADD = """
 ```text
 {search_msgs}
 ```
-
-
 """
 
 AGENT_SP_PAGE_ADD = """
