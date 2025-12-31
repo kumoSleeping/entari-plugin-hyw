@@ -182,6 +182,7 @@ class ProcessingPipeline:
             # Instruct + pre-search
             instruct_start = time.time()
             instruct_model = getattr(self.config, "instruct_model_name", None) or active_model
+            logger.info(f"Instruct Stage Config: instruct_model_name={getattr(self.config, 'instruct_model_name', None)}, active_model={active_model}, using: {instruct_model}")
             instruct_text, search_payloads, instruct_trace, instruct_usage, search_time = await self._run_instruct_stage(
                 user_input=user_input,
                 vision_text=vision_text,
