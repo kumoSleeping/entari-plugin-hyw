@@ -62,8 +62,7 @@ When sending text without calling tools, it means this is the final reply. Pleas
 - Body Format:
   - Use Markdown format, supporting highlight, katex.
   - Give a `# ` main title at the beginning, no extra nonsense, do not directly answer the user's question.
-  - Rich content highlighting key points.
-- Citation:
+  - Immediately after the title, without a subheading, give a <summary>text</summary>. The text inside (plain text, no citation markers) is a clear and concise summary of what we are about to output, allowing the user to grasp the key points in the shortest time.
   > Important: All body content must be based on actual information, ensuring 100% accuracy.
   - Information sources are numbered in order of acquisition as [1], [2], [3]...
   - Use [1][2] format directly in body text to cite, only cite sources helpful to the answer
