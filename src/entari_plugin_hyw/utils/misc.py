@@ -25,9 +25,6 @@ def process_onebot_json(data: Dict[str, Any]) -> str:
     return ""
 
 
-
-
-
 async def download_image(url: str) -> bytes:
     """下载图片"""
     try:

@@ -122,6 +122,7 @@ class ProcessingPipeline:
         
         # Reset search cache and ID counters for this execution
         self.all_web_results = []
+        self.global_id_counter = 0
         self.search_id_counter = 0
         self.page_id_counter = 0
         self.image_id_counter = 0
@@ -448,13 +449,25 @@ class ProcessingPipeline:
                 })
 
             if has_search_results and search_payloads:
+                # Collect initial search results for the Search stage card
+                initial_refs = [
+                    {"title": r.get("title", ""), "url": r.get("url", ""), "domain": r.get("domain", "")}
+                    for r in self.all_web_results if r.get("_type") == "search"
+                ]
+                initial_images = [
+                    {"title": r.get("title", ""), "url": r.get("url", ""), "thumbnail": r.get("thumbnail", "")}
+                    for r in self.all_web_results if r.get("_type") == "image"
+                ]
+                
                 stages_used.append({
                     "name": "Search",
                     "model": getattr(self.config, "search_name", "DuckDuckGo"),
                     "icon_config": "search",
                     "provider": getattr(self.config, 'search_provider', 'Crawl4AI'),
                     "time": search_time,
-                    "cost": 0.0
+                    "cost": 0.0,
+                    "references": initial_refs,
+                    "image_references": initial_images
                 })
             
             # Add Crawler stage if Instruct used crawl_page
@@ -587,11 +600,24 @@ class ProcessingPipeline:
                             "time": 0, "cost": 0
                         })
 
-                # Assign total time/cost to last Agent stage
+            # Assign total time/cost to last Agent stage
                 last_agent = next((s for s in reversed(stages_used) if s["name"] == "Agent"), None)
                 if last_agent:
                     last_agent["time"] = a.get("time", 0)
                     last_agent["cost"] = a.get("cost", 0.0)
+
+            # --- Final Filter: Only show cited items in workflow cards ---
+            cited_urls = {ref['url'] for ref in (structured.get("references", []) + 
+                                               structured.get("page_references", []) + 
+                                               structured.get("image_references", []))}
+            
+            for s in stages_used:
+                if "references" in s and s["references"]:
+                    s["references"] = [r for r in s["references"] if r.get("url") in cited_urls]
+                if "image_references" in s and s["image_references"]:
+                    s["image_references"] = [r for r in s["image_references"] if r.get("url") in cited_urls]
+                if "crawled_pages" in s and s["crawled_pages"]:
+                    s["crawled_pages"] = [r for r in s["crawled_pages"] if r.get("url") in cited_urls]
 
             # Clean up conversation history: Remove tool calls and results to save tokens and avoid ID conflicts
             # Keep only 'user' messages and 'assistant' messages without tool_calls (final answers)
@@ -627,11 +653,7 @@ class ProcessingPipeline:
             }
 
     def _parse_tagged_response(self, text: str) -> Dict[str, Any]:
-        """Parse response and auto-infer references from [N] citations in body text.
-        
-        New simplified format:
-        - Body text uses [1][2] format for citations
-        - No ref code block needed - we auto-infer from citations
+        """Parse response and auto-infer references from citations and markdown images.
         """
         parsed = {"response": "", "references": [], "page_references": [], "image_references": [], "flow_steps": []}
         if not text:
@@ -639,9 +661,14 @@ class ProcessingPipeline:
 
         import re
         
-        remaining_text = text
+        # 1. Strip trailing reference/source list
+        body_text = text
+        ref_list_pattern = re.compile(r'(?:\n\s*|^)\s*(?:#{1,3}|\*\*)\s*(?:References|Citations|Sources|参考资料|引用)[\s\S]*$', re.IGNORECASE | re.MULTILINE)
+        body_text = ref_list_pattern.sub('', body_text)
         
-        # 1. Try to unwrap JSON if the model acted like a ReAct agent
+        remaining_text = body_text.strip()
+        
+        # 2. Unwrap JSON if necessary
         try:
             if remaining_text.strip().startswith("{") and "action" in remaining_text:
                 data = json.loads(remaining_text)
@@ -650,67 +677,114 @@ class ProcessingPipeline:
         except Exception:
             pass
 
-        # 2. Extract all [N] citations from body text (scan left to right for order)
+        # 3. Identify all citations [N] and direct markdown images ![]()
+        cited_ids = []
         body_pattern = re.compile(r'\[(\d+)\]')
-        id_order = []  # Preserve citation order
-        
         for match in body_pattern.finditer(remaining_text):
             try:
-                id_val = int(match.group(1))
-                if id_val not in id_order:
-                    id_order.append(id_val)
-            except ValueError:
-                pass
+                cited_ids.append(int(match.group(1)))
+            except ValueError: pass
 
-        # 3. Build references by looking up cited IDs in all_web_results
-        # Order by appearance in text
-        old_to_new_map = {}  # old_id -> new_id (for search & page only)
+        # Also find direct URLs in ![]() 
+        direct_image_urls = []
+        img_pattern = re.compile(r'!\[.*?\]\((.*?)\)')
+        for match in img_pattern.finditer(remaining_text):
+            url = match.group(1).strip()
+            if url and not url.startswith('['): # Not a [N] citation
+                direct_image_urls.append(url)
+
+        # 4. Build Citation Maps and Reference Lists
+        unified_id_map = {}
+        # Keep track of what we've already added to avoid duplicates
+        seen_urls = set()
         
+        # id_order needs to be unique and preserve appearance order
+        id_order = []
+        for id_val in cited_ids:
+            if id_val not in id_order:
+                id_order.append(id_val)
+
+        # Process [N] citations first to determine numbering
         for old_id in id_order:
-            # Find in all_web_results by _id
             result_item = next((r for r in self.all_web_results if r.get("_id") == old_id), None)
+            if not result_item: continue
             
+            url = result_item.get("url", "")
+            item_type = result_item.get("_type", "")
+            
+            entry = {
+                "title": result_item.get("title", ""),
+                "url": url,
+                "domain": result_item.get("domain", "")
+            }
+            
+            if item_type == "search":
+                parsed["references"].append(entry)
+                unified_id_map[old_id] = len(parsed["references"]) + len(parsed["page_references"])
+                seen_urls.add(url)
+            elif item_type == "page":
+                parsed["page_references"].append(entry)
+                unified_id_map[old_id] = len(parsed["references"]) + len(parsed["page_references"])
+                seen_urls.add(url)
+            elif item_type == "image":
+                 entry["thumbnail"] = result_item.get("thumbnail", "")
+                 if url not in seen_urls:
+                    parsed["image_references"].append(entry)
+                    seen_urls.add(url)
+                 # Note: Images cited as [N] might be used in text like ![...]([N])
+                 # We'll handle this in replacement
+
+        # Now handle direct image URLs from ![]() that weren't cited as [N]
+        for url in direct_image_urls:
+            if url in seen_urls: continue
+            # Find in all_web_results
+            result_item = next((r for r in self.all_web_results if (r.get("url") == url or r.get("image") == url) and r.get("_type") == "image"), None)
             if result_item:
                 entry = {
                     "title": result_item.get("title", ""),
-                    "url": result_item.get("url", ""),
-                    "domain": result_item.get("domain", "")
+                    "url": url,
+                    "domain": result_item.get("domain", ""),
+                    "thumbnail": result_item.get("thumbnail", "")
                 }
-                
-                item_type = result_item.get("_type", "")
-                
-                # Auto-classify by type
-                if item_type == "search":
-                    parsed["references"].append(entry)
-                    old_to_new_map[old_id] = len(parsed["references"])
-                elif item_type == "page":
-                    parsed["page_references"].append(entry)
-                    old_to_new_map[old_id] = len(parsed["page_references"])
-                elif item_type == "image":
-                    # Collect image but don't add to map (will be stripped from text)
-                    entry["thumbnail"] = result_item.get("thumbnail", "")
-                    parsed["image_references"].append(entry)
-                    # Note: no old_to_new_map entry - image citations will be removed
+                parsed["image_references"].append(entry)
+                seen_urls.add(url)
 
-        # 4. Replace [old_id] with [new_id] in text, or remove if image
-        def replace_id(match):
-            try:
-                old_id = int(match.group(1))
-                new_id = old_to_new_map.get(old_id)
-                if new_id is not None:
-                    return f"[{new_id}]"
-                else:
-                    # Check if it's an image reference (not in map)
-                    item = next((r for r in self.all_web_results if r.get("_id") == old_id), None)
-                    if item and item.get("_type") == "image":
-                        return ""  # Remove image citations from text
-            except ValueError:
-                pass
-            return match.group(0)
+        # 5. Replacement Logic
+        # Define image replacement map separately to handle ![...]([N])
+        image_url_map = {} # old_id -> raw_url
+        for old_id in id_order:
+            item = next((r for r in self.all_web_results if r.get("_id") == old_id), None)
+            if item and item.get("_type") == "image":
+                image_url_map[old_id] = item.get("url", "")
 
-        remaining_text = body_pattern.sub(replace_id, remaining_text)
+        def refined_replace(text):
+            # First, handle ![...]([N]) specifically
+            # We want to replace the [N] with the actual URL so the markdown renders
+            def sub_img_ref(match):
+                alt = match.group(1)
+                ref = match.group(2)
+                inner_match = body_pattern.match(ref)
+                if inner_match:
+                    oid = int(inner_match.group(1))
+                    if oid in image_url_map:
+                        return f"![{alt}]({image_url_map[oid]})"
+                return match.group(0)
+            
+            text = re.sub(r'!\[(.*?)\]\((.*?)\)', sub_img_ref, text)
+            
+            # Then handle normal [N] replacements
+            def sub_norm_ref(match):
+                oid = int(match.group(1))
+                if oid in unified_id_map:
+                    return f"[{unified_id_map[oid]}]"
+                if oid in image_url_map:
+                    return "" # Remove standalone image citations like [5] if they aren't in ![]()
+                return match.group(0)
+            
+            return body_pattern.sub(sub_norm_ref, text)
 
-        parsed["response"] = remaining_text.strip()
+        final_text = refined_replace(remaining_text)
+        parsed["response"] = final_text.strip()
         return parsed
 
     async def _safe_route_tool(self, tool_call):

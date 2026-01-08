@@ -12,7 +12,7 @@ from arclet.entari.event.command import CommandReceive
 
 from .core.hyw import HYW
 from .core.history import HistoryManager
-from .core.render import ContentRenderer
+from .core.render_vue import ContentRenderer
 from .utils.misc import process_onebot_json, process_images, resolve_model_name
 from arclet.entari.event.lifespan import Cleanup
 
@@ -270,111 +270,26 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
             output_path = tf.name
         model_used = final_resp.get("model_used")
-        vision_model_used = final_resp.get("vision_model_used")
-        
-        # Helper to infer icon from model name
-        def infer_icon_from_model(model_name: str) -> str:
-            """Infer icon name from model name (e.g. 'google/gemini-3-flash' -> 'google' or 'gemini')"""
-            if not model_name:
-                return conf.icon
-            name_lower = model_name.lower()
-            # Check for known providers/models in the name
-            known_icons = ["google", "gemini", "openai", "anthropic", "deepseek", "mistral", 
-                          "qwen", "grok", "xai", "perplexity", "microsoft", "minimax", "nvidia"]
-            for icon_name in known_icons:
-                if icon_name in name_lower:
-                    return icon_name
-            return conf.icon
-        
-        icon = conf.icon
-        m_conf = None
-        if model_used:
-            m_conf = next((m for m in conf.models if m.get("name") == model_used), None)
-            if m_conf:
-                icon = m_conf.get("icon", infer_icon_from_model(model_used))
-            else:
-                # Model not in config list, infer from name
-                icon = infer_icon_from_model(model_used)
 
         # Determine session short code
         if hist_key:
             display_session_id = history_manager.get_code_by_key(hist_key)
             if not display_session_id:
-                # Should not happen if key exists, but fallback
                 display_session_id = history_manager.generate_short_code()
         else:
-            # New conversation, pre-generate code
             display_session_id = history_manager.generate_short_code()
-
-        # Determine vision base url and icon
-        vision_base_url = None
-        vision_icon = None
-        
-        if vision_model_used:
-            v_conf = next((m for m in conf.models if m.get("name") == vision_model_used), None)
-            if v_conf:
-                vision_base_url = v_conf.get("base_url")
-                vision_icon = v_conf.get("icon", infer_icon_from_model(vision_model_used))
-            else:
-                vision_icon = infer_icon_from_model(vision_model_used)
-        
-        # Handle Vision Only Mode (suppress text model display)
-        render_model_name = model_used or conf.model_name or "unknown"
-        render_icon = icon
-        render_base_url = m_conf.get("base_url", conf.base_url) if m_conf else conf.base_url
-        
-        if not model_used and vision_model_used:
-            render_model_name = ""
-            render_icon = ""
 
         # Use stats_list if available, otherwise standard stats
         stats_to_render = final_resp.get("stats_list", final_resp.get("stats", {}))
-
-        # Determine Behavior Summary & Provider Name
-        
-        # 1. Behavior Summary
-        behavior_summary = "Text Generation"
-        if vision_model_used:
-             behavior_summary = "Visual Analysis"
-        elif any(s.get("name") == "Search" for s in final_resp.get("stages_used", []) or []):
-            behavior_summary = "Search-Augmented"
-        
-        # 2. Provider Name
-        # Try to get from m_conf (resolved above)
-        provider_name = "Unknown Provider"
-        if model_used and m_conf:
-            provider_name = m_conf.get("provider", "Unknown Provider")
-        elif not model_used and vision_model_used:
-             # If only vision model used (unlikely but possible in code logic)
-             if 'v_conf' in locals() and v_conf:
-                 provider_name = v_conf.get("provider", "Unknown Provider")
-        
-        # If still unknown and we have base_url, maybe use domain as last resort fallback?
-        # User said: "provider does not automatically get from url if not filled"
-        # So if it's "Unknown Provider", we leave it or maybe empty string?
-        # Let's stick to "Unknown Provider" or just empty if we want to be clean.
-        # But for UI validation it's better to show something if missing config.
              
         render_ok = await renderer.render(
             markdown_content=content,
             output_path=output_path,
-            suggestions=[],
             stats=stats_to_render,
             references=structured.get("references", []),
             page_references=structured.get("page_references", []),
             image_references=structured.get("image_references", []),
-            flow_steps=structured.get("flow_steps", []),
             stages_used=final_resp.get("stages_used", []),
-            model_name=render_model_name,
-            provider_name=provider_name,
-            behavior_summary=behavior_summary,
-            icon_config=render_icon,
-            vision_model_name=vision_model_used,
-            vision_base_url=vision_base_url,
-            vision_icon_config=vision_icon,
-            base_url=render_base_url,
-            billing_info=final_resp.get("billing_info"),
-            render_timeout_ms=conf.render_timeout_ms
         )
         
         # Send & Save
