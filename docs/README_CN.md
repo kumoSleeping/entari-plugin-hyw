@@ -46,8 +46,11 @@ pip install entari-plugin-hyw
 ```yaml
 plugins:
   entari_plugin_hyw:
-    model_name: google/gemini-3-flash-preview
+    model_name: google/gemini-2.0-flash-exp
     api_key: "your-or-api-key-here"
+    # 渲染配置
+    render_timeout_ms: 6000 # 浏览器等待超时
+    render_image_timeout_ms: 3000 # 图片加载等待超时
 ```
 
 ## 使用方法

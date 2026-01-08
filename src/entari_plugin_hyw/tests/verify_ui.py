@@ -12,55 +12,104 @@ from render_vue import ContentRenderer
 def verify_ui():
     renderer = ContentRenderer()
     
-    # Test with new format: # title + <summary> + normal h2 sections + trailing table section
-    markdown_content = """# 机动战士高达 00
+    # Test with real GTNH conversation data
+    markdown_content = """# 终极硬核整合包格雷科技新视野
 
-<summary>《机动战士高达 00》是日升动画制作的原创电视动画，以西元 2307 年为背景，讲述私立武装组织"天人"通过高达武力介入，试图根除战争并推动人类相互理解的故事。</summary>
+<summary>
+《格雷科技：新视野》（GregTech: New Horizons，简称 GTNH）是一款基于 Minecraft 1.7.10 版本的深度硬核科技向整合包。它以 GregTech 5 Unofficial 为核心，通过超过 8 年的持续开发，将 300 多个模组深度集成，构建了极其严苛且逻辑严密的科技树，是公认的生存挑战巅峰之作。
+</summary>
 
-## 作品概览
-《机动战士高达 00》（日语：機動戦士ガンダム 00）是"高达"系列的第 11 部原创电视动画作品 [1]。该作由 **SUNRISE** 制作，首次采用高清（16:9）格式播出，并分为两季进行放映 [2][3]：
-*   **第一季 (Season 1)：** 2007年10月6日 — 2008年3月29日（全25话）[2]。
-*   **第二季 (Season 2)：** 2008年10月5日 — 2009年3月29日（全25话）[2]。
-*   **剧场版：** 《机动战士高达00 -先驱者的觉醒-》于 2010 年 9 月 18 日上映，标志着故事的完结 [2][4]。
+## 核心机制与游戏体验
+GTNH 的核心在于"格雷化"改造，几乎所有模组的合成表都经过重新设计，以匹配其严苛的阶级制度 [4][8]。玩家需要从原始的石器时代开始，历经蒸汽时代、电力时代，最终向星际航行迈进。其游戏过程极其漫长，旨在让玩家在每一毫秒的进度中感受工业发展的成就感 [3][7]。
 
-## 世界观与背景
-故事设定在 **西元 (Anno Domini, A.D.) 2307 年** 的地球 [5]。当时化石燃料枯竭，人类依赖由三条巨大的**轨道电梯**组成的太阳能发电系统 [5]。世界被三大超级大国群割据：
-1.  **Union**（太阳能与自由领地联合）：以美国为首 [5]。
-2.  **人革联**（人类革新联盟）：以中国、俄罗斯、印度为首 [5]。
-3.  **AEU**（新欧盟）：以欧洲国家为首 [5]。
+![GTNH 游戏场景](https://i.ytimg.com/vi/5T-oSWAgaMM/maxresdefault.jpg)
 
-![机动战士高达00 视觉图](https://tse1.mm.bing.net/th/id/OIP.od2s9dPt50Nzap6sLexinQHaKY?pid=Api)
+## 科技阶层与任务系统
+整合包拥有 15 个清晰的科技等级（Tiers），最终目标是建造"星门"（Stargate）[2]。为了引导玩家不迷失在复杂的工业流程中，GTNH 内置了超过 3900 条任务的巨型任务书，涵盖了从基础生存到高阶多方块结构的详细指导 [4][7]。
 
-## 核心主题
-《高达 00》不仅展示了宏大的机甲战斗，更深入探讨了**"对话"**与**"相互理解"**的重要性 [4]。
-*   **GN 粒子：** 这种半永久性能源不仅是动力源，在后期更成为人类意识沟通的媒介 [4]。
-*   **变革者 (Innovator)：** 随着故事发展，人类开始向进化的新阶段迈进 [4]。
+- 15 个科技等级
+    - 任务数量：3900+
+    - 最终目标：建造"星门"
 
-## 播放时间表
-| 季度 | 开始日期 | 结束日期 | 集数 | 备注 |
-| :--- | :--- | :--- | :---: | :--- |
-| **第一季** | 2007-10-06 | 2008-03-29 | 25 | 高清首播 |
-| **第二季** | 2008-10-05 | 2009-03-29 | 25 | 完结篇 |
-| **剧场版** | 2010-09-18 | - | 1 | 先驱者的觉醒 |
+> 机动战士高达系列是日本动画史上最具影响力的动画作品之一，深受全球观众的喜爱。
 
-## 代码示例
-```python
-def gundam_exia():
-    print("Gundam Exia, Setsuna F. Seiei, eliminating targets.")
-    return "Mission Complete"
-```"""
+| 特性 | 详细描述 |
+| :--- | :--- |
+| **基础版本** | Minecraft 1.7.10 (高度优化) |
+| **任务数量** | 3900+ 任务引导 [7] |
+| **科技阶层** | 15 个技术等级 [2] |
+| **核心模组** | GregTech 5 Unofficial, Thaumcraft 等 [8] |
+
+## 安装与运行建议
+由于其高度集成的特性，官方强烈建议使用 **Prism Launcher** 进行安装和管理 [5]。在运行环境方面，虽然基于旧版 MC，但通过社区努力，目前推荐使用 **Java 17-25** 版本以获得最佳的内存管理和性能优化，确保大型自动化工厂运行流畅 [5]。
+
+```bash
+curl -s https://raw.githubusercontent.com/GTNewHorizons/GT-New-Horizons-Modpack/master/README.md
+java -version
+java -Xmx1024M -Xms1024M -jar prism-launcher.jar
+```
+"""
     
     stages = [
-        {"name": "search", "model": "duckduckgo", "time": 1.2, "references": [
-            {"title": "Gundam 00 Wiki", "url": "https://gundam.fandom.com/wiki/Mobile_Suit_Gundam_00"},
-            {"title": "豆瓣电影", "url": "https://movie.douban.com/subject/2286663/"},
-            {"title": "Bangumi", "url": "https://bgm.tv/subject/2585"}
-        ]},
-        {"name": "crawler", "model": "crawl4ai", "time": 2.5, "crawled_pages": [
-            {"title": "机动战士高达00 官方网站", "url": "http://www.gundam00.net/"},
-             {"title": "Wikipedia Entry", "url": "https://en.wikipedia.org/wiki/Mobile_Suit_Gundam_00"}
-        ]},
-        {"name": "agent", "model": "gpt-4o", "time": 3.8, "cost": 0.002, "references": [{"title": "Agent Source", "url": "internal"}]}
+        {
+            "name": "instruct",
+            "status": "completed",
+            "cost": 0.0002,
+            "time": 1.83,
+            "model": "qwen/qwen3-235b-a22b-2507",
+            "description": "Planning search strategy"
+        },
+        {
+            "name": "search",
+            "status": "completed",
+            "cost": 0.0,
+            "time": 0.5,
+            "references": [
+                {"title": "GTNH 2025 Server Information", "url": "https://stonelegion.com/mc-gtnh-2026/gtnh-2025-server-information-including-client-download/"},
+                {"title": "GT New Horizons Wiki", "url": "https://gtnh.miraheze.org/wiki/Main_Page"},
+                {"title": "GT New Horizons - GitHub", "url": "https://github.com/GTNewHorizons/GT-New-Horizons-Modpack"},
+                {"title": "GT New Horizons - CurseForge", "url": "https://www.curseforge.com/minecraft/modpacks/gt-new-horizons"},
+                {"title": "Installing and Migrating - GTNH", "url": "https://gtnh.miraheze.org/wiki/Installing_and_Migrating"},
+                {"title": "Modlist - GT New Horizons", "url": "https://wiki.gtnewhorizons.com/wiki/Modlist"},
+                {"title": "GregTech: New Horizons - Home", "url": "https://www.gtnewhorizons.com/"},
+                {"title": "GT New Horizons - FTB Wiki", "url": "https://ftb.fandom.com/wiki/GT_New_Horizons"}
+            ],
+            "image_references": [
+                {
+                    "title": "GTNH Live Lets Play",
+                    "url": "https://i.ytimg.com/vi/5T-oSWAgaMM/maxresdefault.jpg", 
+                    "thumbnail": "https://tse4.mm.bing.net/th/id/OIP.b_56VnY4nyrzeqp1JetmFQHaEK?pid=Api"
+                },
+                {
+                    "title": "GTNH Modpack Cover",
+                    "url": "https://i.mcmod.cn/modpack/cover/20240113/1705139595_29797_dSkE.jpg",
+                    "thumbnail": "https://tse1.mm.bing.net/th/id/OIP.KNKaZX1d_4Ueq6vpl1qJNAHaEo?pid=Api"
+                },
+                {
+                    "title": "GTNH Steam Age",
+                    "url": "https://i.ytimg.com/vi/8IPwXxqB71w/maxresdefault.jpg",
+                    "thumbnail": "https://tse4.mm.bing.net/th/id/OIP.P-KrnI4GBH21yPgwpNPSzAHaEK?pid=Api"
+                },
+                {
+                    "title": "GTNH MCMod Cover",
+                    "url": "https://i.mcmod.cn/post/cover/20230201/1675241030_2_VqDc.jpg",
+                    "thumbnail": "https://tse2.mm.bing.net/th/id/OIP.GvYz7YWrg-fnpAHjOiW3OAHaEo?pid=Api"
+                },
+                {
+                    "title": "GTNH Tectech Tutorial",
+                    "url": "http://i0.hdslb.com/bfs/archive/1ed1e53341fd44018138f2823b2fe6c499fb9c9c.jpg",
+                    "thumbnail": "https://tse4.mm.bing.net/th/id/OIP.0Wg7xFHTjhxIV9hKuUo4xwHaEo?pid=Api"
+                }
+            ]
+        },
+        {
+            "name": "agent",
+            "status": "completed",
+            "cost": 0.0018,
+            "time": 13.0,
+            "model": "google/gemini-3-flash-preview",
+            "description": "Synthesizing information..."
+        }
     ]
     
     output_path = Path(__file__).parent / "ui_test_output.jpg"
@@ -74,7 +123,7 @@ def gundam_exia():
                 output_path=str(output_path),
                 stats={"total_time": 8.5},
                 stages_used=stages,
-                references=[{"title": f"Ref {i}", "url": "http://example.com"} for i in range(5)],
+                references=[{"title": f"Ref {i}", "url": "http://example.com"} for i in range(10)],
                 page_references=[{"title": f"Page {i}", "url": "http://example.com"} for i in range(2)],
                 image_references=[]
             )

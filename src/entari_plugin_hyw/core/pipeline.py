@@ -429,7 +429,7 @@ class ProcessingPipeline:
                 stages_used.append({
                     "name": "Vision",
                     "model": v_model,
-                    "icon_config": getattr(self.config, "vision_icon", None) or infer_icon(v_model, v_base_url),
+                    "icon_config": infer_icon(v_model, v_base_url),
                     "provider": infer_provider(v_base_url),
                     "time": v.get("time", 0),
                     "cost": v.get("cost", 0.0)
@@ -442,13 +442,14 @@ class ProcessingPipeline:
                 stages_used.append({
                     "name": "Instruct",
                     "model": i_model,
-                    "icon_config": getattr(self.config, "instruct_icon", None) or infer_icon(i_model, i_base_url),
+                    "icon_config": infer_icon(i_model, i_base_url),
                     "provider": infer_provider(i_base_url),
                     "time": i.get("time", 0),
                     "cost": i.get("cost", 0.0)
                 })
 
-            if has_search_results and search_payloads:
+            # Show Search stage if we have ANY search results (text OR image)
+            if (has_search_results or has_image_results) and search_payloads:
                 # Collect initial search results for the Search stage card
                 initial_refs = [
                     {"title": r.get("title", ""), "url": r.get("url", ""), "domain": r.get("domain", "")}
@@ -509,7 +510,7 @@ class ProcessingPipeline:
                 a_model = a.get("model", "") or active_model
                 a_base_url = a.get("base_url", "") or self.config.base_url
                 steps = a.get("steps", [])
-                agent_icon = getattr(self.config, "icon", None) or infer_icon(a_model, a_base_url)
+                agent_icon = infer_icon(a_model, a_base_url)
                 agent_provider = infer_provider(a_base_url)
 
                 for s in steps:
@@ -614,8 +615,8 @@ class ProcessingPipeline:
             for s in stages_used:
                 if "references" in s and s["references"]:
                     s["references"] = [r for r in s["references"] if r.get("url") in cited_urls]
-                if "image_references" in s and s["image_references"]:
-                    s["image_references"] = [r for r in s["image_references"] if r.get("url") in cited_urls]
+                # if "image_references" in s and s["image_references"]:
+                #     s["image_references"] = [r for r in s["image_references"] if r.get("url") in cited_urls]
                 if "crawled_pages" in s and s["crawled_pages"]:
                     s["crawled_pages"] = [r for r in s["crawled_pages"] if r.get("url") in cited_urls]
 

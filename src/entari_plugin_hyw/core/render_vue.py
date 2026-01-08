@@ -7,15 +7,19 @@ math rendering, citations) is handled by the Vue frontend.
 
 import json
 import gc
+import uuid
+import os
 from pathlib import Path
 from typing import List, Dict, Any
 
+import asyncio
 from loguru import logger
 from playwright.async_api import async_playwright
 
 
 class ContentRenderer:
     """Minimal renderer - only passes raw data to Vue template."""
+    
     
     def __init__(self, template_path: str = None):
         if template_path is None:
@@ -29,6 +33,67 @@ class ContentRenderer:
             
         self.template_content = self.template_path.read_text(encoding="utf-8")
         logger.info(f"ContentRenderer: loaded Vue template ({len(self.template_content)} bytes)")
+        
+        # Persistent state
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self._lock = asyncio.Lock()
+        self._render_count = 0
+        self._max_renders_before_restart = 50  # Prevent memory leaks
+
+    async def start(self):
+        """Initialize the browser and page."""
+        if self.page:
+            return
+
+        logger.info("ContentRenderer: Starting persistent browser...")
+        try:
+            self.playwright = await async_playwright().start()
+            self.browser = await self.playwright.chromium.launch(headless=True, args=['--no-sandbox', '--disable-setuid-sandbox'])
+            self.context = await self.browser.new_context(
+                viewport={"width": 520, "height": 1400},
+                device_scale_factor=2.4,
+            )
+            self.page = await self.context.new_page()
+            
+            # Load the template once
+            await self.page.goto(self.template_path.as_uri(), wait_until="networkidle")
+            logger.info("ContentRenderer: Browser started and template loaded.")
+            
+        except Exception as e:
+            logger.error(f"ContentRenderer: Failed to start browser: {e}")
+            await self.close()
+            raise
+
+    async def close(self):
+        """Clean up browser resources."""
+        if self.page:
+            await self.page.close()
+            self.page = None
+        if self.context:
+            await self.context.close()
+            self.context = None
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+        if self.playwright:
+            await self.playwright.stop()
+            self.playwright = None
+        logger.info("ContentRenderer: Browser closed.")
+
+    async def _get_page(self):
+        """Get or recreate the persistent page."""
+        if self._render_count >= self._max_renders_before_restart:
+            logger.info(f"ContentRenderer: Restarting browser after {self._render_count} renders...")
+            await self.close()
+            self._render_count = 0
+
+        if not self.page:
+            await self.start()
+        
+        return self.page
 
     async def render(
         self,
@@ -39,14 +104,15 @@ class ContentRenderer:
         page_references: List[Dict[str, Any]] = None,
         image_references: List[Dict[str, Any]] = None,
         stages_used: List[Dict[str, Any]] = None,
+        image_timeout: int = 3000,
         **kwargs
     ) -> bool:
-        """Render content to image. Python only passes raw data."""
+        """Render content to image using persistent browser."""
         
         resolved_output_path = Path(output_path).resolve()
         resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # Prepare minimal raw data - frontend handles all processing
+        # Prepare data
         stats_dict = stats[0] if isinstance(stats, list) and stats else (stats or {})
         
         render_data = {
@@ -70,62 +136,57 @@ class ContentRenderer:
             "image_references": image_references or [],
             "stats": stats_dict,
         }
+        import time
+        start_time = time.time()
         
-        try:
-            # Inject data into template
-            # Inject data into template using regex for robustness against minification
-            import re
-            
-            # Properly escape JSON for embedding in HTML script tag
-            # Use ensure_ascii=True to convert all non-ASCII to \uXXXX escapes
-            json_data = json.dumps(render_data, ensure_ascii=True)
-            # Escape </script> and </Script> etc to prevent breaking out of script tag
-            # Use a pattern that doesn't interfere with JSON structure
-            json_data = json_data.replace("</" , r"<\/")
-            
-            # Check if placeholder exists
-            placeholder_match = re.search(r"window\.RENDER_DATA\s*=\s*\{\}", self.template_content)
-            if not placeholder_match:
-                logger.error("window.RENDER_DATA = {} placeholder not found in template!")
-            
-            # Match window.RENDER_DATA = {} with optional whitespace
-            # Use lambda to avoid re.sub interpreting backslashes in json_data
-            replacement_text = f"window.RENDER_DATA = {json_data}"
-            html = re.sub(
-                r"window\.RENDER_DATA\s*=\s*\{\}",
-                lambda m: replacement_text,
-                self.template_content,
-                count=1  # Only replace the first occurrence
-            )
-            
-            logger.info(f"Data injected ({len(json_data)} bytes)")
-            
-            # Render with Playwright
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True)
+        # Reorder images
+        self._reorder_images_in_stages(render_data["markdown"], render_data["stages"])
+
+        async with self._lock:
+            try:
+                page = await self._get_page()
+                
+                # Update data via JS
+                # Using evaluate to call window.updateRenderData
+                await page.evaluate("(data) => window.updateRenderData(data)", render_data)
+                
+                
+                # Wait for Vue to update DOM
+                # Give Vue a moment to patch the DOM (insert img tags)
+                await asyncio.sleep(0.1) 
+                
+                # Wait for all images to load
                 try:
-                    page = await browser.new_page(
-                        viewport={"width": 520, "height": 1400},
-                        device_scale_factor=3,
+                    await page.wait_for_function(
+                        "() => Array.from(document.images).every(img => img.complete)",
+                        timeout=image_timeout
                     )
-                    await page.set_content(html, wait_until="networkidle")
-                    await page.wait_for_timeout(200)
-                    
-                    element = await page.query_selector("#main-container")
-                    if element:
-                        await element.screenshot(path=str(resolved_output_path), type="jpeg", quality=98)
-                    else:
-                        await page.screenshot(path=str(resolved_output_path), full_page=True, type="jpeg", quality=98)
-                    
-                    return True
-                finally:
-                    await browser.close()
-                    
-        except Exception as exc:
-            logger.error(f"ContentRenderer: render failed ({exc})")
-            return False
-        finally:
-            gc.collect()
+                except Exception:
+                    logger.warning(f"ContentRenderer: Timeout waiting for images to load ({image_timeout}ms), taking screenshot anyway.")
+                
+                # Resize height if needed? 
+                # The page height might change. We capture full page or specific element.
+                # If capturing element:
+                element = await page.query_selector("#main-container")
+                if element:
+                    # Clean previous screenshots? No, overwrite.
+                    await element.screenshot(path=str(resolved_output_path), type="jpeg", quality=98)
+                else:
+                    await page.screenshot(path=str(resolved_output_path), full_page=True, type="jpeg", quality=98)
+                
+                self._render_count += 1
+                
+                duration = time.time() - start_time
+                logger.success(f"ContentRenderer: Rendered in {duration:.3f}s (No.{self._render_count})")
+                return True
+                
+            except Exception as exc:
+                logger.error(f"ContentRenderer: render failed ({exc})")
+                # If render failed, maybe browser is dead. Close it to force restart next time.
+                await self.close()
+                return False
+            finally:
+                gc.collect()
 
     async def render_models_list(
         self,
@@ -151,3 +212,44 @@ class ContentRenderer:
             references=[],
             stages_used=[],
         )
+
+    def _reorder_images_in_stages(self, markdown: str, stages: List[Dict[str, Any]]) -> None:
+        """Reorder image references in stages based on appearance in markdown."""
+        import re
+        
+        # 1. Extract clean URLs from markdown
+        # Matches: ![...](https://...)
+        img_urls = []
+        for match in re.finditer(r'!\[.*?\]\((.*?)\)', markdown):
+            # Url might be followed by title: "url" "title"
+            url_part = match.group(1).split()[0].strip()
+            if url_part and url_part not in img_urls:
+                img_urls.append(url_part)
+                
+        if not img_urls:
+            return
+
+        # 2. Reorder each stage's image_references
+        for stage in stages:
+            refs = stage.get("image_references")
+            if not refs:
+                continue
+                
+            # Map url -> ref object
+            ref_map = {r["url"]: r for r in refs}
+            
+            new_refs = []
+            seen_urls = set()
+            
+            # First, add images found in markdown in order
+            for url in img_urls:
+                if url in ref_map:
+                    new_refs.append(ref_map[url])
+                    seen_urls.add(url)
+            
+            # Then add remaining images not found in markdown
+            for r in refs:
+                if r["url"] not in seen_urls:
+                    new_refs.append(r)
+            
+            stage["image_references"] = new_refs

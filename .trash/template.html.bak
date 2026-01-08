@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Entari Render</title>
+    <!-- @formatter:off -->
+    <!-- prettier-ignore -->
+    <!-- IMPORTANT: Asset placeholders MUST be {{ name }} on single line! -->
+    <style>
+        {
+                {
+                tailwind_css
+            }
+        }
+    </style>
+    <style>
+        {
+                {
+                highlight_css
+            }
+        }
+    </style>
+    <script>{ { highlight_js } }</script>
+    <style>
+        {
+                {
+                katex_css
+            }
+        }
+    </style>
+    <script>{ { katex_js } }</script>
+    <script>{ { katex_auto_render_js } }</script>
+    <!-- @formatter:on -->
+    <style>
+        #markdown-content h1,
+        #markdown-content h2,
+        #markdown-content h3,
+        #markdown-content h4,
+        #markdown-content h5,
+        #markdown-content h6 {
+            color: #db2777;
+            /* text-pink-600 */
+        }
+    </style>
+</head>
+
+<body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-4 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit">
+        <!-- Response Card (Content First) -->
+        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
+            <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800">
+                {{ content_html }}
+            </div>
+        </div>
+
+
+
+        <!-- Speculation Card (Optional) -->
+        {{ suggestions }}
+
+        <!-- Model Header (Moved to Bottom) -->
+        <div class="bg-[#f2f2f2] rounded-2xl p-5 overflow-hidden">
+            {{ response_header }}
+            <!-- Pipeline Stages -->
+            {{ stages }}
+        </div>
+
+        <!-- Stats Footer -->
+        {{ stats }}
+    </div>
+
+    <script>window.REFERENCES = {{ references_json }};</script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            // Render Math (KaTeX)
+            const contentDiv = document.getElementById("markdown-content");
+            renderMathInElement(contentDiv, {
+                delimiters: [
+                    { left: "$$", right: "$$", display: true },
+                    { left: "$", right: "$", display: false },
+                    { left: "\\(", right: "\\)", display: false },
+                    { left: "\\[", right: "\\]", display: true }
+                ],
+                throwOnError: false
+            });
+
+            // Process Citations
+            function processCitations(rootNode) {
+                const walker = document.createTreeWalker(
+                    rootNode,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+
+                const nodesToReplace = [];
+                let node;
+                while (node = walker.nextNode()) {
+                    if (node.parentElement.tagName === "SCRIPT" || node.parentElement.tagName === "STYLE" || node.parentElement.tagName === "A") continue;
+                    if (/\[\d+\]/.test(node.nodeValue)) {
+                        nodesToReplace.push(node);
+                    }
+                }
+
+                nodesToReplace.forEach(textNode => {
+                    const fragment = document.createDocumentFragment();
+                    let lastIndex = 0;
+                    const text = textNode.nodeValue;
+                    const regex = /\[(\d+)\]/g;
+                    let match;
+
+                    while ((match = regex.exec(text)) !== null) {
+                        fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
+
+                        const id = match[1];
+                        const ref = window.REFERENCES ? window.REFERENCES.find(r => r.id == id) : null;
+
+                        if (ref) {
+                            const span = document.createElement("span");
+                            const title = ref.title.replace(/"/g, "&quot;");
+                            const url = ref.url;
+                            let domain = "unknown";
+                            try { domain = new URL(url).hostname; } catch (e) { }
+                            const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+
+                            span.innerHTML = `<a href="${url}" target="_blank" class="citation-ref" data-id="${id}">
+                                ${id}
+                                <span class="citation-tooltip">
+                                    <span class="citation-tooltip-title">${title}</span>
+                                    <span class="citation-tooltip-url">
+                                        <img src="${favicon}" style="width:12px;height:12px;vertical-align:middle;margin-right:4px;">
+                                        ${domain}
+                                    </span>
+                                </span>
+                            </a>`;
+                            fragment.appendChild(span.firstElementChild);
+                        } else {
+                            fragment.appendChild(document.createTextNode(match[0]));
+                        }
+
+                        lastIndex = regex.lastIndex;
+                    }
+
+                    fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+                    textNode.parentNode.replaceChild(fragment, textNode);
+                });
+            }
+
+            processCitations(contentDiv);
+        });
+    </script>
+</body>
+
+</html>

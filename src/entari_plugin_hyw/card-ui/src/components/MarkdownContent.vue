@@ -16,6 +16,9 @@ import go from 'highlight.js/lib/languages/go'
 import rust from 'highlight.js/lib/languages/rust'
 import sql from 'highlight.js/lib/languages/sql'
 import markdown from 'highlight.js/lib/languages/markdown'
+import shell from 'highlight.js/lib/languages/shell'
+import yaml from 'highlight.js/lib/languages/yaml'
+import properties from 'highlight.js/lib/languages/properties'
 
 hljs.registerLanguage('python', python)
 hljs.registerLanguage('javascript', javascript)
@@ -25,7 +28,8 @@ hljs.registerLanguage('ts', typescript)
 hljs.registerLanguage('json', json)
 hljs.registerLanguage('bash', bash)
 hljs.registerLanguage('sh', bash)
-hljs.registerLanguage('shell', bash)
+hljs.registerLanguage('shell', shell)
+hljs.registerLanguage('zsh', bash)
 hljs.registerLanguage('css', css)
 hljs.registerLanguage('html', xml)
 hljs.registerLanguage('xml', xml)
@@ -37,6 +41,11 @@ hljs.registerLanguage('rust', rust)
 hljs.registerLanguage('sql', sql)
 hljs.registerLanguage('markdown', markdown)
 hljs.registerLanguage('md', markdown)
+hljs.registerLanguage('yaml', yaml)
+hljs.registerLanguage('yml', yaml)
+hljs.registerLanguage('properties', properties)
+hljs.registerLanguage('ini', properties)
+hljs.registerLanguage('conf', properties)
 
 import 'highlight.js/styles/github.css'
 
@@ -53,7 +62,7 @@ marked.setOptions({
   gfm: true,
 })
 
-// Custom renderer for code blocks with Mac-style window header
+// Custom renderer for code blocks with technical layout
 const renderer = new marked.Renderer()
 renderer.code = ({ text, lang }: Tokens.Code): string => {
   const language = lang || 'text'
@@ -70,24 +79,44 @@ renderer.code = ({ text, lang }: Tokens.Code): string => {
 
   // Bare mode: just the code, no window decoration
   if (props.bare) {
-    return `<pre class="!mt-0 !mb-0 !rounded-xl !bg-gray-50/80 backdrop-blur-md !p-4 overflow-x-auto"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>`
+    return `<pre class="!mt-0 !mb-0 !rounded-none !bg-gray-50 !p-4 overflow-x-auto border-b border-gray-100"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>`
   }
 
-  return `
-    <div class="my-4 rounded-2xl overflow-hidden border border-gray-200/60 shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)] bg-white/60 backdrop-blur-xl group">
-      <div class="flex items-center justify-between px-3 py-2 bg-gray-100/80 backdrop-blur-lg border-b border-gray-200/40">
-        <div class="flex items-center gap-1.5">
-          <!-- macOS Traffic Lights -->
-          <div class="flex gap-1.5 mr-2">
-            <div class="w-2.5 h-2.5 rounded-full bg-[#ff5f56] shadow-md"></div>
-            <div class="w-2.5 h-2.5 rounded-full bg-[#ffbd2e] shadow-md"></div>
-            <div class="w-2.5 h-2.5 rounded-full bg-[#27c93f] shadow-md"></div>
-          </div>
+  // Dynamic Icon mapping
+  const getLangIcon = (l: string) => {
+    const map: Record<string, { icon: string, color: string }> = {
+      'python': { icon: 'mdi:language-python', color: 'text-blue-500' },
+      'javascript': { icon: 'mdi:language-javascript', color: 'text-yellow-500' },
+      'js': { icon: 'mdi:language-javascript', color: 'text-yellow-500' },
+      'typescript': { icon: 'mdi:language-typescript', color: 'text-blue-600' },
+      'ts': { icon: 'mdi:language-typescript', color: 'text-blue-600' },
+      'bash': { icon: 'mdi:terminal', color: 'text-green-500' },
+      'sh': { icon: 'mdi:terminal', color: 'text-green-500' },
+      'shell': { icon: 'mdi:terminal', color: 'text-green-500' },
+      'json': { icon: 'mdi:code-json', color: 'text-yellow-600' },
+      'html': { icon: 'mdi:language-html5', color: 'text-orange-500' },
+      'css': { icon: 'mdi:language-css3', color: 'text-blue-500' },
+      'yaml': { icon: 'mdi:file-cog', color: 'text-purple-500' },
+      'sql': { icon: 'mdi:database', color: 'text-red-500' }
+    }
+    return map[l] || { icon: 'mdi:code-braces', color: 'text-red-500' }
+  }
+  const langInfo = getLangIcon(language)
 
+  return `
+    <div class="my-6 space-y-1 group">
+      <div class="flex items-center justify-between px-3 py-1.5 bg-gray-50 ">
+        <div class="flex items-center gap-2">
+          <Icon icon="${langInfo.icon}" class="${langInfo.color} text-sm" />
+          <span class="text-[10px] font-black text-gray-700 uppercase tracking-widest">${language}</span>
         </div>
-        <span class="text-[11px] font-mono text-gray-700/70 uppercase font-medium tracking-wider">${language}</span>
+        <div class="text-gray-500 text-[9px] font-mono tracking-tighter tabular-nums">
+          Source Code
+        </div>
       </div>
-      <pre class="!mt-0 !mb-0 !rounded-none !bg-white/60 backdrop-blur-md !p-4 overflow-x-auto"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>
+      <div class="">
+        <pre class="!mt-0 !mb-0 !rounded-none !bg-white !p-4 overflow-x-auto"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>
+      </div>
     </div>
   `
 }
@@ -104,30 +133,27 @@ const processedHtml = computed(() => {
   // Convert markdown to HTML
   let html = marked.parse(md) as string
   
-  // Render <summary> tags as Mac-style Window blocks
+  // Render <summary> tags as technical highlight blocks
   html = html.replace(/<summary>([\s\S]*?)<\/summary>/g, (_, content) => {
     return `
-      <div class="my-6 rounded-2xl overflow-hidden border border-gray-200/60 shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)] bg-white/60 backdrop-blur-xl group">
-        <div class="flex items-center justify-between px-3 py-2 bg-gray-100/80 backdrop-blur-lg border-b border-gray-200/40">
-          <div class="flex items-center gap-1.5">
-            <!-- macOS Traffic Lights -->
-            <div class="flex gap-1.5 mr-2">
-              <div class="w-2.5 h-2.5 rounded-full bg-[#ff5f56] shadow-md"></div>
-              <div class="w-2.5 h-2.5 rounded-full bg-[#ffbd2e] shadow-md"></div>
-              <div class="w-2.5 h-2.5 rounded-full bg-[#27c93f] shadow-md"></div>
-            </div>
-
+      <div class="my-8 group">
+        <div class="flex items-center justify-between px-3 py-1.5 bg-gray-50 ">
+          <div class="flex items-center gap-2">
+            <Icon icon="mdi:lightning-bolt" class="text-red-500 text-sm" />
+            <span class="text-[10px] font-black text-gray-700 uppercase tracking-widest">Summary</span>
           </div>
-          <span class="text-[11px] font-mono text-gray-700/70 uppercase font-bold tracking-wider">SUMMARY</span>
+          <div class="text-gray-500 text-[9px] font-mono tracking-tighter tabular-nums">
+            Insight
+          </div>
         </div>
-        <div class="p-5 text-[15px] leading-relaxed text-base-content font-medium bg-white/60 backdrop-blur-md">
+        <div class="p-5 text-[15px] leading-relaxed text-gray-800 font-medium bg-white ">
           ${content}
         </div>
       </div>
     `
   })
   
-  // Wrap tables in Mac-style window container with modern grid layout
+  // Wrap tables in crisp technical borders
   html = html.replace(/<table[^>]*>([\s\S]*?)<\/table>/g, (_, content) => {
     // Parse table content to simple structure
     const rows = content.match(/<tr[^>]*>[\s\S]*?<\/tr>/g) || []
@@ -140,36 +166,29 @@ const processedHtml = computed(() => {
       const text = h.replace(/<[^>]+>/g, '')
       return { text, align }
     })
-    
+
     // Extract body rows
     const bodyRows = rows.slice(1).map((row: string) => {
       return (row.match(/<td[^>]*>([\s\S]*?)<\/td>/g) || []).map((c: string, i: number) => {
         const alignMatch = c.match(/align="([^"]*)"/)
-        // Inherit alignment from header if not specified on cell
         const align = alignMatch ? alignMatch[1] : (headers[i]?.align || 'left') 
-        // Keep inner HTML of the cell
         const innerHtml = c.replace(/^<td[^>]*>|<\/td>$/g, '')
         return { html: innerHtml, align }
       })
     })
 
-    // Compact Table Style
-    // If bare, remove border and radius to fit seamless into parent
-    const containerClass = props.bare 
-      ? "w-full bg-white text-[12px] select-text"
-      : "w-full overflow-hidden rounded-lg border border-gray-200 bg-white text-[12px] select-text";
+    const containerClass = "w-full bg-white text-[12px] select-text";
       
     let gridHtml = `<div class="${containerClass}">`
     
-    // Combine headers and body rows for unified iteration
     const allRows: any[] = [headers.map((h: any) => ({ html: h.text, align: h.align })), ...bodyRows];
 
     allRows.forEach((row: any[], rowIndex: number) => {
       const isHeader = rowIndex === 0;
       const rowBg = isHeader 
-        ? 'bg-gray-50 text-gray-800 font-semibold' 
-        : (rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50/50');
-      const borderB = rowIndex < allRows.length - 1 ? 'border-b border-gray-100' : '';
+        ? 'bg-white text-gray-900 font-black uppercase tracking-tight' 
+        : (rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50/30');
+      const borderB = rowIndex < allRows.length - 1 ? 'border-b border-gray-200' : '';
         
       gridHtml += `<div class="flex w-full ${rowBg} ${borderB}">`;
       
@@ -177,7 +196,7 @@ const processedHtml = computed(() => {
         const justify = cell.align === 'center' ? 'justify-center text-center' : (cell.align === 'right' ? 'justify-end text-right' : 'justify-start');
         const borderClass = colIndex === row.length - 1 ? '' : 'border-r border-gray-100';
         
-        gridHtml += `<div class="flex-1 py-1.5 px-2 min-w-0 break-words flex items-center leading-tight ${justify} ${borderClass}">
+        gridHtml += `<div class="flex-1 py-2.5 px-3 min-w-0 break-words flex items-center leading-tight ${justify} ${borderClass}">
           <span>${cell.html}</span>
         </div>`;
       });
@@ -185,52 +204,23 @@ const processedHtml = computed(() => {
     });
     gridHtml += `</div>`;
 
-    // Bare mode: just the grid, no window decoration
     if (props.bare) {
-      return `<div class="overflow-x-auto">${gridHtml}</div>`
+      return `<div class="overflow-x-auto border-b border-gray-200">${gridHtml}</div>`
     }
 
     return `
-      <div class="my-4 rounded-2xl overflow-hidden border border-gray-200/60 shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)] bg-white/60 backdrop-blur-xl group">
-        <div class="flex items-center justify-between px-3 py-2 bg-gray-100/80 backdrop-blur-lg border-b border-gray-200/40">
-          <div class="flex items-center gap-1.5">
-            <!-- macOS Traffic Lights -->
-            <div class="flex gap-1.5 mr-2">
-              <div class="w-2.5 h-2.5 rounded-full bg-[#ff5f56] shadow-md"></div>
-              <div class="w-2.5 h-2.5 rounded-full bg-[#ffbd2e] shadow-md"></div>
-              <div class="w-2.5 h-2.5 rounded-full bg-[#27c93f] shadow-md"></div>
-            </div>
-
-          </div>
-          <span class="text-[11px] font-mono text-gray-700/70 uppercase font-bold tracking-wider">DATA GRID</span>
-        </div>
-        <div class="overflow-x-auto bg-white/60 backdrop-blur-md p-0">
+      <div class="my-6 group">
+        <div class="overflow-x-auto bg-white p-0 border-t border-gray-100">
           ${gridHtml}
         </div>
       </div>
     `
   })
   
-  // Convert [N] citations to colored badges
-  const numSearch = props.numSearchRefs || 0
-  const numPage = props.numPageRefs || 0
-  
+  // Convert [N] citations to rectangular sharp badges
   html = html.replace(/\[(\d+)\]/g, (_, n) => {
     const num = parseInt(n)
-    let colorClass = ''
-    if (num >= 1 && num <= numSearch) {
-      // Search: Flat Blue
-      colorClass = 'bg-blue-500/10 text-blue-600'
-    } else if (num > numSearch && num <= numSearch + numPage) {
-      // Page: Flat Orange
-      colorClass = 'bg-orange-500/10 text-orange-600'
-    } else {
-      // Default: Flat Gray
-      colorClass = 'bg-base-content/10 text-base-content/60'
-    }
-    
-    // Updated style: Superscript, flat color, no gradient, smaller
-    return `<sup class="inline-flex items-center justify-center min-w-[14px] h-[14px] text-[9px] font-bold ${colorClass} rounded-[4px] mx-0.5 cursor-default select-none hover:bg-opacity-20 transition-all" style="vertical-align: super;">${num}</sup>`
+    return `<span class="relative -top-1.5 text-[10px] font-bold text-blue-600 mx-0.5 cursor-default select-none transition-all">${num}</span>`
   })
   
   return html
@@ -240,15 +230,13 @@ const processedHtml = computed(() => {
 <template>
   <div ref="contentRef"
        class="prose prose-slate max-w-none 
-              prose-headings:text-base-content prose-headings:font-bold prose-headings:mb-2 prose-headings:mt-4
-              prose-p:text-base-content prose-p:leading-relaxed prose-p:my-2
+              prose-headings:text-gray-900 prose-headings:font-black prose-headings:mb-2 prose-headings:mt-6 prose-headings:tracking-tight
+              prose-p:text-gray-800 prose-p:leading-relaxed prose-p:my-3
               prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline
-              prose-code:bg-base-200 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-[0.85em] prose-code:font-mono
-              prose-pre:bg-base-200 prose-pre:border prose-pre:border-base-300 prose-pre:rounded-lg prose-pre:p-0
-              prose-img:rounded-xl prose-img:shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)] prose-img:my-4 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200/60
-              prose-ul:list-disc prose-ul:pl-4 prose-ul:list-outside
+              prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.9em] prose-code:font-mono prose-code:text-gray-900
+              prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200 prose-pre:rounded-none prose-pre:p-0
+              prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200 prose-img:
               prose-ol:list-decimal prose-ol:pl-4 prose-ol:list-outside
-              prose-li:my-0.5 prose-li:pl-1
               [&>*:first-child]:!mt-0"
        v-html="processedHtml">
   </div>
@@ -259,5 +247,84 @@ const processedHtml = computed(() => {
 .hljs {
   background: transparent !important;
   padding: 0 !important;
+}
+
+/* Custom List Styling - Premium technical bullet */
+.prose ul {
+  list-style: none !important;
+  padding-left: 0.25rem !important;
+  margin-top: 0.75rem !important;
+  margin-bottom: 0.75rem !important;
+}
+
+.prose ul > li {
+  position: relative !important;
+  padding-left: 1.5rem !important;
+  margin-top: 0.5rem !important;
+  margin-bottom: 0.5rem !important;
+  line-height: 1.6 !important;
+}
+
+.prose ul > li::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0.6em !important;
+  width: 6px !important;
+  height: 6px !important;
+  background-color: #ef4444 !important; /* Red-500 */
+  border-radius: 0 !important;
+}
+
+/* Nested list styling */
+.prose ul ul {
+  margin-top: 0.25rem !important;
+  margin-bottom: 0.25rem !important;
+  padding-left: 1rem !important;
+}
+
+.prose ul ul > li {
+  padding-left: 1.25rem !important;
+  margin-top: 0.25rem !important;
+  margin-bottom: 0.25rem !important;
+}
+
+.prose ul ul > li::before {
+  width: 5px !important;
+  height: 5px !important;
+  background-color: #ef4444 !important; /* Red-500 - same as parent, slightly smaller */
+  top: 0.65em !important;
+}
+
+/* Custom Blockquote Styling - Dual Red Lines */
+.prose blockquote {
+  border-left: none !important;
+  padding-left: 1rem !important;
+  margin-left: 0 !important;
+  position: relative !important;
+  font-style: italic !important;
+  color: #1f2937 !important; /* gray-800 */
+}
+
+.prose blockquote::before {
+  content: "" !important;
+  position: absolute !important;
+  left: 0 !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  width: 3px !important;
+  background-color: #ef4444 !important; /* Red-500 - thick line */
+}
+
+
+
+/* Ensure images don't have artifacts */
+.prose img {
+  display: block;
+  margin-left: auto;
+  margin-right: auto;
+}
+.prose pre {
+  border: none !important;
 }
 </style>

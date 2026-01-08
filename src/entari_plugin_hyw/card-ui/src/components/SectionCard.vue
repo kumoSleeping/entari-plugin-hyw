@@ -14,7 +14,7 @@ const props = defineProps<{
 <template>
   <div class="mb-5">
     <!-- Normal Text Section: macOS Window Style -->
-    <div class="rounded-2xl overflow-hidden border border-gray-200/60 shadow-[0_8px_24px_-4px_rgba(0,0,0,0.12)] bg-white/70 backdrop-blur-xl">
+    <div class="rounded-none overflow-hidden border border-gray-300 bg-white/70 backdrop-blur-xl">
       <!-- Section Window Header with traffic lights + title on right -->
       <div class="flex items-center justify-between px-3 py-2 bg-gray-100/80 backdrop-blur-lg border-b border-gray-200/40">
         <div class="flex items-center gap-1.5">

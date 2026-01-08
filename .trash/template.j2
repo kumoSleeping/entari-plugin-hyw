@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="https://cdn.jsdelivr.net/npm/remixicon@4.1.0/fonts/remixicon.css" rel="stylesheet"/>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <title>Entari Render</title>
+    <!-- @formatter:off -->
+    <!-- prettier-ignore -->
+    <style>{{ tailwind_css | safe }}</style>
+    <style>{{ highlight_css | safe }}</style>
+    <script>{{ highlight_js | safe }}</script>
+    <style>{{ katex_css | safe }}</style>
+    <script>{{ katex_js | safe }}</script>
+    <script>{{ katex_auto_render_js | safe }}</script>
+    <!-- @formatter:on -->
+
+    <style>
+    /* Fallback style for broken images in markdown content */
+    .img-error-fallback {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        width: 100%;
+        aspect-ratio: 16 / 9;
+        margin-bottom: 8px;
+        background: linear-gradient(135deg, #d3e4fd 0%, #b7d3fe 50%, #8bb9fc 100%);
+        border-radius: 12px;
+        color: white;
+        font-size: 14px;
+        font-weight: 500;
+        box-shadow: 0 4px 12px rgba(59, 130, 246, 0.25);
+    }
+    .img-error-fallback i {
+        font-size: 20px;
+    }
+    /* Dynamic image sizing based on aspect ratio */
+    #markdown-content img {
+        border-radius: 8px;
+        margin-bottom: 8px;
+    }
+    #markdown-content img.img-horizontal {
+        width: 100%;
+        height: auto;
+    }
+    #markdown-content img.img-vertical {
+        width: 60%;
+        height: auto;
+    }
+    </style>
+</head>
+
+<body class="bg-[#f2f2f2] p-0 box-border m-0 font-sans text-gray-800">
+    <div id="main-container" class="w-full max-w-[450px] flex flex-col gap-0 mx-auto bg-[#f2f2f2] p-0 font-sans h-fit pb-8">
+
+        {# --- MACROS --- #}
+
+        {% macro icon_container(icon_html, box_class="bg-gray-50 rounded-lg border border-gray-100", size_class="w-10 h-10") %}
+        <div class="flex items-center justify-center {{ size_class }} {{ box_class }} shrink-0">
+            {{ icon_html | safe }}
+        </div>
+        {% endmacro %}
+
+        {% macro card_header(title, icon_html=None, subtitle_html=None, is_plain=False, icon_box_class=None) %}
+            {% set container_class = "flex items-center gap-3" if is_plain else "flex items-center gap-3 pb-3 mb-3 border-gray-100 border-b" %}
+            {% set default_box_class = icon_box_class if icon_box_class else "bg-gray-50 rounded-lg border border-gray-100" %}
+            <div class="{{ container_class }}">
+                {{ icon_container(icon_html, box_class=default_box_class) }}
+                <div class="flex flex-col min-w-0">
+                    <div class="text-sm font-bold text-gray-900 uppercase tracking-wide whitespace-nowrap overflow-hidden text-ellipsis">{{ title }}</div>
+                    {% if subtitle_html and not is_plain %}
+                        {{ subtitle_html | safe }}
+                    {% endif %}
+                </div>
+            </div>
+        {% endmacro %}
+
+        {% macro list_card(icon_html, title_html, subtitle_html=None, link_url=None, right_content_html=None, is_compact=False, icon_box_class="bg-gray-50 rounded-md shrink-0 ring-1 ring-inset ring-black/5") %}
+            {% set tag = "a" if link_url else "div" %}
+            {% set href_attr = 'href="' ~ link_url ~ '" target="_blank"' if link_url else "" %}
+            {% set hover_class = "transition-colors hover:bg-gray-50" if link_url else "" %}
+            
+            {% set padding_class = "p-2.5" if is_compact else "px-4 py-3.5" %}
+            {% set align_class = "items-center" if is_compact else "items-start" %}
+            {% set icon_size = "w-6 h-6" if is_compact else "w-8 h-8" %}
+
+            <{{ tag }} {{ href_attr | safe }} class="flex {{ align_class }} gap-3 {{ padding_class }} rounded-lg border border-gray-100 bg-white shadow-sm no-underline text-inherit {{ hover_class }}">
+                <div class="flex items-center justify-center {{ icon_size }} {{ icon_box_class }}">
+                    {{ icon_html | safe }}
+                </div>
+                <div class="flex flex-col flex-1 min-w-0 gap-0.5">
+                    <div class="flex items-center gap-2 leading-tight min-w-0">
+                        {{ title_html | safe }}
+                    </div>
+                    {% if subtitle_html %}
+                    <div>{{ subtitle_html | safe }}</div>
+                    {% endif %}
+                </div>
+                {% if right_content_html %}
+                <div class="shrink-0 ml-2">{{ right_content_html | safe }}</div>
+                {% endif %}
+            </{{ tag }}>
+        {% endmacro %}
+
+
+        {# --- MAIN CONTENT --- #}
+
+        <!-- Header: Feature Icons / Badges (Centered) -->
+    <!-- Increased top padding from pt-5 to pt-7 for more whitespace -->
+    <div class="pt-7 pb-5 px-6 flex justify-between items-center relative z-20">
+        <!-- Total Time Badge -->
+            <div class="flex items-center gap-1.5 px-3 py-1.5 bg-white/60 backdrop-blur rounded-lg shadow-sm border border-white/50">
+                <i class="ri-time-line text-gray-700 font-bold text-[13px]"></i>
+                <span class="text-[13px] font-bold text-gray-900 tracking-wide">{{ "%.1f"|format(total_time) }}s</span>
+            </div>
+        </div>
+
+        <!-- Response Card (Content First) -->
+        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-0 pb-2 overflow-hidden">
+            <div id="markdown-content" class="markdown-body text-[15px] leading-relaxed text-gray-800 [&>*:first-child]:!mt-0">
+                {{ content_html | safe }}
+            </div>
+        </div>
+
+        <!-- Speculation Card (Optional) -->
+        {% if suggestions %}
+        <div class="flex flex-col gap-2 bg-[#f2f2f2] rounded-2xl px-5 py-2 overflow-hidden">
+            {% set sug_icon %}
+            <i class="ri-magic-line text-lg text-pink-600"></i>
+            {% endset %}
+            {{ card_header("SUGGESTIONS", icon_html=sug_icon, is_plain=True) }}
+            
+            <div class="grid grid-cols-2 gap-2.5">
+                {% for sug in suggestions %}
+                <div class="flex items-baseline gap-2 text-sm text-gray-600 px-3.5 py-2.5 bg-white/80 backdrop-blur-sm rounded-full shadow-sm hover:shadow transition-shadow cursor-default">
+                    <span class="text-gray-500 font-mono font-bold text-[13px] whitespace-nowrap">{{ loop.index }}</span>
+                    <span class="flex-1 text-[13px] text-gray-600 font-medium whitespace-nowrap overflow-hidden text-ellipsis">{{ sug }}</span>
+                </div>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        <!-- Pipeline & Children (Nested) -->
+        <div class="bg-[#f2f2f2] rounded-2xl px-5 pt-2 pb-5 overflow-hidden flex flex-col gap-4">
+            
+            {% if stages %}
+                {% for stage in stages %}
+                    <div>
+                        {# Stage Card #}
+                        {% set color_class = "bg-white text-gray-700 border-gray-200 shadow-sm" %}
+                        
+                        {% set icon_box_class = color_class + " rounded-md border shrink-0" %}
+                        
+                        {% set title_html %}
+                            <span class="text-[13px] font-bold uppercase text-gray-700 shrink-0">{{ stage.name }}</span>
+                            <span class="text-[13px] font-medium text-gray-700 truncate min-w-0" title="{{ stage.model }}">{{ stage.model_short }}</span>
+                            <span class="ml-auto text-[12px] text-gray-400 shrink-0 truncate max-w-[80px]">{{ stage.provider }}</span>
+                        {% endset %}
+                        
+                        {% set stats_html %}
+                        <div class="flex items-center gap-3 text-[12px] text-gray-500 font-mono mt-0.5">
+                            <span>{{ stage.time_str }}</span><span>{{ stage.cost_str }}</span>
+                        </div>
+                        {% endset %}
+
+                        {{ list_card(stage.icon_html, title_html, subtitle_html=stats_html, is_compact=True, icon_box_class=icon_box_class) }}
+
+                        {# Nested Children (Indent & Connect) #}
+                        {% if stage.references or stage.image_references or stage.flow_steps or stage.crawled_pages %}
+                            <div class="ml-4 pl-4 border-l-2 border-gray-200 mt-2 flex flex-col gap-2">
+                                
+                                {# References #}
+                                {% if stage.references %}
+                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">Search Results</div>
+                                    {% for ref in stage.references %}
+                                        {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + ref.domain + "&sz=32" %}
+                                        
+                                        {% set ref_icon %}
+                                        <img src="{{ favicon_url }}" class="w-3.5 h-3.5 rounded-sm opacity-80 decoration-0">
+                                        {% endset %}
+                                        
+                                        {% set ref_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
+                                        
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + ref.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-700 truncate">' + ref.domain + '</div>' %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-blue-600 bg-blue-50 border border-blue-200 rounded">' + (loop.index|string) + '</div>' %}
+                                        
+                                        {{ list_card(ref_icon, title_html, subtitle_html=subtitle_html, link_url=ref.url, right_content_html=right_html, is_compact=True, icon_box_class=ref_icon_box) }}
+                                    {% endfor %}
+                                {% endif %}
+
+                                {# Image References #}
+                                {% if stage.image_references %}
+                                    <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-2">Images</div>
+                                    {% for img in stage.image_references %}
+                                        {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + img.domain + "&sz=32" %}
+                                        
+                                        {% set img_icon %}
+                                        <img src="{{ favicon_url }}" class="w-3.5 h-3.5 rounded-sm opacity-80">
+                                        {% endset %}
+                                        
+                                        {% set img_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
+                                        
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate">' + img.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-500 truncate">' + img.domain + '</div>' %}
+                                        
+                                        {{ list_card(img_icon, title_html, subtitle_html=subtitle_html, link_url=img.url, is_compact=True, icon_box_class=img_icon_box) }}
+                                    {% endfor %}
+                                {% endif %}
+
+                                {# Crawled Pages #}
+                                {% if stage.crawled_pages %}
+                                     <div class="text-[12px] uppercase font-bold text-blue-600 tracking-wider mb-1 mt-1">Fetched Pages</div>
+                                     {% for page in stage.crawled_pages %}
+                                        {% set domain = page.url.split('/')[2] if page.url.split('/')|length > 2 else '' %}
+                                        {% set favicon_url = "https://www.google.com/s2/favicons?domain=" + domain + "&sz=32" %}
+                                        
+                                        {% set page_icon %}
+                                        <img src="{{ favicon_url }}" class="w-3.5 h-3.5 rounded-sm opacity-80">
+                                        {% endset %}
+                                        
+                                        {% set page_icon_box = "bg-white rounded border border-gray-100 w-6 h-6 shrink-0" %}
+                                        
+                                        {% set title_html = '<div class="text-[13px] font-medium text-gray-900 truncate underline decoration-gray-300 decoration-1 underline-offset-2 hover:text-black hover:decoration-gray-500 transition-colors">' + page.title + '</div>' %}
+                                        {% set subtitle_html = '<div class="text-[12px] text-gray-500 truncate">' + domain + '</div>' %}
+                                        {% set right_html = '<div class="flex items-center justify-center min-w-[16px] h-4 px-0.5 text-[10px] font-bold text-orange-600 bg-orange-50 border border-orange-200 rounded">' + (loop.index|string) + '</div>' %}
+                                        
+                                        {{ list_card(page_icon, title_html, subtitle_html=subtitle_html, link_url=page.url, right_content_html=right_html, is_compact=True, icon_box_class=page_icon_box) }}
+                                     {% endfor %}
+                                {% endif %}
+
+                            </div>
+                        {% endif %}
+                    </div>
+                {% endfor %}
+            {% endif %}
+        
+        </div>
+
+    <script>window.REFERENCES = {{ references_json | safe }};</script>
+
+    <script>
+        document.addEventListener("DOMContentLoaded", () => {
+            // Initialize Syntax Highlighting
+            if (typeof hljs !== 'undefined') {
+                hljs.highlightAll();
+            }
+
+             // Render Math (KaTeX)
+            const contentDiv = document.getElementById("markdown-content");
+            if(typeof renderMathInElement !== 'undefined') {
+                renderMathInElement(contentDiv, {
+                    delimiters: [
+                        { left: "$$", right: "$$", display: true },
+                        { left: "$", right: "$", display: false },
+                        { left: "\\(", right: "\\)", display: false },
+                        { left: "\\[", right: "\\]", display: true }
+                    ],
+                    throwOnError: false
+                });
+            }
+
+            // Process Citations - handles `search:id` (blue) and `page:id` (orange) formats
+            function processCitations(rootNode) {
+                // 1. Handle citations inside <code> tags (generated by markdown backticks)
+                const codeElements = rootNode.querySelectorAll('code');
+                codeElements.forEach(code => {
+                    const text = code.textContent.trim();
+                    const match = /^(search|page):(\d+)$/i.exec(text);
+                    if (match) {
+                        const type = match[1].toLowerCase();
+                        const id = match[2];
+                        const isPage = type === "page";
+                        const colorClass = isPage 
+                            ? "text-orange-600 bg-orange-50 border-orange-200" 
+                            : "text-blue-600 bg-blue-50 border-blue-200";
+                        
+                        const span = document.createElement("span");
+                        // Using same badge style
+                        span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
+                        
+                        // Replace the <code> element with our badge
+                        if (code.parentNode) {
+                            code.parentNode.replaceChild(span.firstElementChild, code);
+                        }
+                    }
+                });
+
+                // 2. Handle citations in plain text (fallback for non-backticked ones)
+                const walker = document.createTreeWalker(
+                    rootNode,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+
+                const nodesToReplace = [];
+                let node;
+                while (node = walker.nextNode()) {
+                    if (node.parentElement.tagName === "SCRIPT" || node.parentElement.tagName === "STYLE" || node.parentElement.tagName === "A" || node.parentElement.tagName === "CODE") continue;
+                    // Match search:id or page:id
+                    if (/(search|page):(\d+)/i.test(node.nodeValue)) {
+                        nodesToReplace.push(node);
+                    }
+                }
+
+                nodesToReplace.forEach(textNode => {
+                    const fragment = document.createDocumentFragment();
+                    let lastIndex = 0;
+                    const text = textNode.nodeValue;
+                    // Regex to capture:
+                    // 1. Optional brackets/parens: [(
+                    // 2. Type: search/page
+                    // 3. IDs: 1 or 1,2,3
+                    // 4. Closing: )]
+                    const regex = /[\[\(]?(search|page):\s*([\d,\s]+)[\]\)]?/gi;
+                    let match;
+
+                    while ((match = regex.exec(text)) !== null) {
+                        // Validate match: simple check to ensure it contains digits
+                        if (!/\d/.test(match[2])) continue;
+
+                        fragment.appendChild(document.createTextNode(text.substring(lastIndex, match.index)));
+
+                        const fullMatch = match[0];
+                        const type = match[1].toLowerCase();
+                        const idString = match[2];
+                        
+                        // Parse IDs (split by comma or space)
+                        const ids = idString.split(/[,\s]+/).filter(s => s.trim().length > 0);
+                        
+                        // Check for standard format (allow plain or [brackets])
+                        // Standard: search:1, [search:1], page:1, [page:1]
+                        // Non-standard: (page:1), page:1,2, (page:1,2)
+                        const isStandard = /^[\[]?(search|page):\d+[\]]?$/i.test(fullMatch);
+                        
+                        if (!isStandard) {
+                            console.warn(`[Template] Detected non-standard citation format: "${fullMatch}". Rendered as: ${type}:${ids.join(',')}`);
+                        }
+
+                        ids.forEach(id => {
+                            const span = document.createElement("span");
+                            const isPage = type === "page";
+                            const colorClass = isPage 
+                                ? "text-orange-600 bg-orange-50 border-orange-200" 
+                                : "text-blue-600 bg-blue-50 border-blue-200";
+                            
+                            span.innerHTML = `<span class="inline-flex items-center justify-center min-w-[14px] h-4 px-0.5 text-[9px] font-bold ${colorClass} border rounded align-top -top-0.5 relative mx-0.5 cursor-default" title="${type}:${id}">${id}</span>`;
+                            fragment.appendChild(span.firstElementChild);
+                        });
+
+                        lastIndex = regex.lastIndex;
+                    }
+
+                    fragment.appendChild(document.createTextNode(text.substring(lastIndex)));
+                    if (textNode.parentNode) {
+                        textNode.parentNode.replaceChild(fragment, textNode);
+                    }
+                });
+            }
+
+            processCitations(contentDiv);
+
+            // Handle broken images in markdown content
+            const contentImages = contentDiv.querySelectorAll('img');
+            contentImages.forEach(img => {
+                // Apply sizing class based on aspect ratio
+                const applySizeClass = function() {
+                    if (this.naturalWidth >= this.naturalHeight) {
+                        this.classList.add('img-horizontal');
+                    } else {
+                        this.classList.add('img-vertical');
+                    }
+                };
+                
+                img.onerror = function() {
+                    const fallback = document.createElement('span');
+                    fallback.className = 'img-error-fallback';
+                    fallback.innerHTML = `<span style="font-size: 18px;">(｡•́︿•̀｡)</span><span>渲染失败</span>`;
+                    this.parentNode.replaceChild(fallback, this);
+                };
+                
+                // Check if image already loaded
+                if (img.complete) {
+                    if (img.naturalHeight === 0) {
+                        img.onerror();
+                    } else {
+                        applySizeClass.call(img);
+                    }
+                } else {
+                    img.onload = applySizeClass;
+                }
+            });
+        });
+    </script>
+</body>
+</html>

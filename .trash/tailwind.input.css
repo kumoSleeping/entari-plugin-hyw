@@ -1,0 +1,235 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Custom scrollbar for code blocks */
+pre::-webkit-scrollbar {
+    height: 8px;
+    background-color: transparent;
+}
+
+pre::-webkit-scrollbar-thumb {
+    background-color: rgba(255, 255, 255, 0.2);
+    border-radius: 4px;
+}
+
+/* Markdown Styles Override/Enhancement */
+.markdown-body h1 {
+    @apply text-2xl font-bold mt-6 mb-4 text-gray-800 border-b border-gray-200 pb-2;
+}
+
+.markdown-body h2 {
+    @apply text-xl font-bold mt-5 mb-3 text-gray-800;
+}
+
+.markdown-body h3 {
+    @apply text-lg font-bold mt-4 mb-2 text-gray-800;
+}
+
+.markdown-body h4 {
+    @apply text-base font-bold mt-3 mb-2 text-gray-800;
+}
+
+.markdown-body p {
+    @apply mb-4 leading-7 text-gray-700;
+}
+
+.markdown-body ul {
+    @apply list-disc pl-5 mb-4 space-y-1 text-gray-700;
+}
+
+.markdown-body ol {
+    @apply list-decimal pl-5 mb-4 space-y-1 text-gray-700;
+}
+
+.markdown-body li {
+    @apply pl-1;
+}
+
+.markdown-body li>p {
+    @apply mb-1;
+}
+
+.markdown-body a {
+    @apply text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-700 hover:decoration-blue-700 transition-colors;
+}
+
+.markdown-body blockquote {
+    @apply border-l-4 border-gray-300 pl-4 italic text-gray-600 my-4 bg-gray-50 py-2 pr-2 rounded-r;
+}
+
+/* Code Highlight Customization (Pink & Warm Theme) */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-built_in,
+.hljs-name,
+.hljs-tag {
+    color: #db2777 !important;
+}
+
+/* pink-600 */
+.hljs-string,
+.hljs-title,
+.hljs-section,
+.hljs-attribute,
+.hljs-literal,
+.hljs-template-tag,
+.hljs-template-variable,
+.hljs-type,
+.hljs-addition {
+    color: #d97706 !important;
+}
+
+/* amber-600 */
+.hljs-comment,
+.hljs-quote,
+.hljs-deletion,
+.hljs-meta {
+    color: #9ca3af !important;
+}
+
+/* gray-400 */
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+    color: #ea580c !important;
+}
+
+/* orange-600 */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-title,
+.hljs-section,
+.hljs-doctag,
+.hljs-type,
+.hljs-name,
+.hljs-strong {
+    font-weight: bold;
+}
+
+.markdown-body code {
+    @apply bg-gray-100 px-1.5 py-0.5 rounded text-sm font-mono text-gray-700;
+}
+
+.markdown-body pre {
+    @apply bg-gray-50 p-4 rounded-lg overflow-x-auto mb-4 text-sm leading-normal border border-gray-100 shadow-sm;
+}
+
+.markdown-body pre code {
+    @apply bg-transparent p-0 text-gray-800 border-none;
+}
+
+.markdown-body img {
+    @apply h-auto rounded-lg my-4 shadow-sm border border-gray-100;
+}
+
+.markdown-body table {
+    @apply w-full border-collapse mb-4 text-sm;
+}
+
+.markdown-body th {
+    @apply border border-gray-300 px-4 py-2 bg-gray-50 font-semibold text-left text-gray-700;
+}
+
+.markdown-body td {
+    @apply border border-gray-300 px-4 py-2 text-gray-700;
+}
+
+.markdown-body hr {
+    @apply my-6 border-gray-200;
+}
+
+.markdown-body>*:last-child {
+    @apply mb-0;
+}
+
+/* KaTeX adjustments */
+.katex-display {
+    @apply overflow-x-auto overflow-y-hidden py-2;
+}
+
+/* Mermaid adjustments */
+.mermaid {
+    @apply flex justify-center my-4 bg-gray-50 p-4 rounded-lg border border-gray-100;
+}
+
+/* Citation Styles */
+.citation-ref {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    vertical-align: super;
+    font-size: 0.75em;
+    font-weight: bold;
+    color: #4b5563;
+    background-color: #f3f4f6;
+    border: 1px solid #e5e7eb;
+    border-radius: 9999px;
+    width: 1.4em;
+    height: 1.4em;
+    margin-left: 2px;
+    cursor: pointer;
+    text-decoration: none !important;
+    transition: all 0.2s;
+    position: relative;
+    line-height: 1;
+    box-shadow: none !important;
+}
+
+.citation-ref:hover {
+    background-color: #4b5563;
+    color: white;
+    text-decoration: none !important;
+}
+
+.citation-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    margin-bottom: 8px;
+    background: white;
+    border: 1px solid #e5e7eb;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    border-radius: 8px;
+    padding: 8px 12px;
+    width: max-content;
+    max-width: 300px;
+    z-index: 50;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.2s;
+    pointer-events: none;
+    font-size: 12px;
+    line-height: 1.4;
+    color: #374151;
+    text-align: left;
+    font-weight: normal;
+}
+
+.citation-ref:hover .citation-tooltip {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-4px);
+
+}
+
+.citation-tooltip-title {
+    font-weight: 600;
+    color: #111827;
+    margin-bottom: 2px;
+    display: block;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 280px;
+}
+
+.citation-tooltip-url {
+    color: #6b7280;
+    font-size: 10px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}

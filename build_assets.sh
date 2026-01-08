@@ -1,27 +1,17 @@
 #!/bin/bash
-echo "Building Tailwind CSS..."
-cd src/entari_plugin_hyw/assets
+set -e
 
-# Initialize npm if package.json doesn't exist
-if [ ! -f "package.json" ]; then
-    echo "Initializing npm..."
-    npm init -y
-fi
+echo "Building Card UI Assets..."
 
-# Install tailwindcss if not present
-if [ ! -d "node_modules/tailwindcss" ]; then
-    echo "Installing tailwindcss..."
-    npm install tailwindcss
-fi
+# Go to card-ui directory
+cd src/entari_plugin_hyw/card-ui
 
-# Run build using direct path
-if [ -f "./node_modules/.bin/tailwindcss" ]; then
-    ./node_modules/.bin/tailwindcss -i tailwind.input.css -o libs/tailwind.css --minify
-else
-    echo "Error: tailwindcss binary not found in node_modules/.bin"
-    echo "Contents of node_modules/.bin:"
-    ls -la node_modules/.bin
-    exit 1
-fi
+# Install dependencies if node_modules missing or package.json changed (naive check, just run install usually fast enough)
+echo "Installing dependencies..."
+npm install
 
-echo "Done."
+# Build
+echo "Running Vite build..."
+npm run build
+
+echo "Done. Assets built to src/entari_plugin_hyw/assets/card-dist"

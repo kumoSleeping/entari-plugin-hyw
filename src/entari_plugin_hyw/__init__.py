@@ -14,7 +14,7 @@ from .core.hyw import HYW
 from .core.history import HistoryManager
 from .core.render_vue import ContentRenderer
 from .utils.misc import process_onebot_json, process_images, resolve_model_name
-from arclet.entari.event.lifespan import Cleanup
+from arclet.entari.event.lifespan import Cleanup, Startup
 
 import os
 import secrets
@@ -69,6 +69,7 @@ class HywConfig(BasicConfModel):
     save_conversation: bool = False
     icon: str = "openai"
     render_timeout_ms: int = 6000
+    render_image_timeout_ms: int = 3000
     extra_body: Optional[Dict[str, Any]] = None
     vision_extra_body: Optional[Dict[str, Any]] = None
     instruct_extra_body: Optional[Dict[str, Any]] = None
@@ -100,12 +101,20 @@ renderer = ContentRenderer()
 hyw = HYW(config=conf)
 
 
-
+@listen(Startup)
+async def _hyw_startup():
+    try:
+        # Pre-launch browser
+        logger.info("HYW: Pre-launching renderer browser...")
+        await renderer.start()
+    except Exception as e:
+        logger.warning(f"HYW: Renderer warm-up failed: {e}")
 
 @listen(Cleanup, once=True)
 async def _hyw_cleanup():
     try:
         await hyw.close()
+        await renderer.close()
     except Exception as e:
         logger.warning(f"HYW cleanup error: {e}")
 
@@ -290,6 +299,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             page_references=structured.get("page_references", []),
             image_references=structured.get("image_references", []),
             stages_used=final_resp.get("stages_used", []),
+            image_timeout=conf.render_image_timeout_ms,
         )
         
         # Send & Save
@@ -388,7 +398,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     
     await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None, local_mode=False)
 
-metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.2.105", config=HywConfig)
+metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.5.0-rc1", config=HywConfig)
 
 @leto.on(CommandReceive)
 async def remove_at(content: MessageChain):
