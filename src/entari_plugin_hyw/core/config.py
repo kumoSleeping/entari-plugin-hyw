@@ -32,4 +32,7 @@ class HYWConfig:
     vision_output_price: Optional[float] = None
     instruct_input_price: Optional[float] = None
     instruct_output_price: Optional[float] = None
+    # Page fetching provider: 'crawl4ai' (default), 'jinaai'
+    fetch_provider: str = "crawl4ai"
+    jina_api_key: Optional[str] = None  # Optional API key for Jina AI
   

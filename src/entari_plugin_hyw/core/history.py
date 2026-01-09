@@ -79,13 +79,37 @@ class HistoryManager:
         """Save conversation history to disk"""
         import os
         import time
+        import re
         
         if key not in self._history:
             return
 
         try:
             os.makedirs(save_dir, exist_ok=True)
-            filename = f"{save_dir}/{key}_{int(time.time())}.md"
+            
+            # Extract user's first message (question) for filename
+            user_question = ""
+            for msg in self._history[key]:
+                if msg.get("role") == "user":
+                    content = msg.get("content", "")
+                    # Handle content that might be a list (multimodal)
+                    if isinstance(content, list):
+                        for item in content:
+                            if isinstance(item, dict) and item.get("type") == "text":
+                                user_question = item.get("text", "")
+                                break
+                    else:
+                        user_question = str(content)
+                    break
+            
+            # Clean and truncate question for filename (10 chars)
+            question_part = re.sub(r'[\\/:*?"<>|\n\r\t]', '', user_question)[:10].strip()
+            if not question_part:
+                question_part = "conversation"
+            
+            # Format: YYYYMMDD_HHMMSS_question.md
+            time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+            filename = f"{save_dir}/{time_str}_{question_part}.md"
             
             # Formatter
             timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())

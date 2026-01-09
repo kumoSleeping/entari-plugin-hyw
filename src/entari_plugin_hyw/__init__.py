@@ -1,9 +1,11 @@
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Union
 import time
+import asyncio
 
 from arclet.alconna import Alconna, Args, AllParam, CommandMeta, Option, Arparma, MultiVar, store_true
 from arclet.entari import metadata, listen, Session, plugin_config, BasicConfModel, plugin, command
+from arclet.letoderea import on
 from arclet.entari import MessageChain, Text, Image, MessageCreatedEvent, Quote, At
 from satori.element import Custom
 from loguru import logger
@@ -14,13 +16,81 @@ from .core.hyw import HYW
 from .core.history import HistoryManager
 from .core.render_vue import ContentRenderer
 from .utils.misc import process_onebot_json, process_images, resolve_model_name
-from arclet.entari.event.lifespan import Cleanup, Startup
+from arclet.entari.event.lifespan import Cleanup
 
 import os
 import secrets
 import base64
 
 import re
+
+
+# Color name to hex mapping
+COLOR_NAME_MAP = {
+    'red': '#ff0000',
+    'green': '#00ff00',
+    'blue': '#0000ff',
+    'yellow': '#ffff00',
+    'cyan': '#00ffff',
+    'magenta': '#ff00ff',
+    'black': '#000000',
+    'white': '#ffffff',
+    'gray': '#808080',
+    'grey': '#808080',
+    'orange': '#ffa500',
+    'purple': '#800080',
+    'pink': '#ffc0cb',
+    'brown': '#a52a2a',
+    'lime': '#00ff00',
+    'navy': '#000080',
+    'teal': '#008080',
+    'olive': '#808000',
+    'maroon': '#800000',
+    'aqua': '#00ffff',
+    'silver': '#c0c0c0',
+    'gold': '#ffd700',
+    'indigo': '#4b0082',
+    'violet': '#ee82ee',
+}
+
+
+def parse_color(color: str) -> str:
+    """
+    Parse color from various formats to hex.
+    Supports:
+    - Hex: #ff0000 or ff0000
+    - RGB tuple: (255, 0, 0)
+    - Color names: red, blue, etc.
+    
+    Returns hex color string with #.
+    """
+    if not color:
+        return "#ef4444"  # default
+    
+    color = str(color).strip()
+    
+    # Already hex format
+    if color.startswith('#') and len(color) in [4, 7]:
+        return color
+    if re.match(r'^[0-9a-fA-F]{6}$', color):
+        return f'#{color}'
+    
+    # RGB tuple format: (r, g, b) or r, g, b
+    rgb_match = re.match(r'^\(?(\d+)[,\s]+(\d+)[,\s]+(\d+)\)?$', color)
+    if rgb_match:
+        r, g, b = map(int, rgb_match.groups())
+        # Clamp values to 0-255
+        r, g, b = max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))
+        return f'#{r:02x}{g:02x}{b:02x}'
+    
+    # Color name
+    color_lower = color.lower()
+    if color_lower in COLOR_NAME_MAP:
+        return COLOR_NAME_MAP[color_lower]
+    
+    # Fallback to default
+    logger.warning(f"Invalid color format '{color}', using default #ef4444")
+    return "#ef4444"
 
 class _RecentEventDeduper:
     def __init__(self, ttl_seconds: float = 30.0, max_size: int = 2048):
@@ -89,9 +159,17 @@ class HywConfig(BasicConfModel):
     # Provider Names
     search_name: str = "DuckDuckGo"
     search_provider: str = "crawl4ai"  # crawl4ai | httpx | ddgs
+    fetch_provider: str = "crawl4ai"  # crawl4ai | jinaai
+    jina_api_key: Optional[str] = None  # Optional API key for Jina AI
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
     instruct_model_provider: Optional[str] = None
+    # UI Theme
+    theme_color: str = "#ef4444"  # Tailwind red-500, supports hex/RGB/color names
+    
+    def __post_init__(self):
+        """Parse and normalize theme color after initialization."""
+        self.theme_color = parse_color(self.theme_color)
 
 
 
@@ -101,71 +179,15 @@ renderer = ContentRenderer()
 hyw = HYW(config=conf)
 
 
-@listen(Startup)
-async def _hyw_startup():
-    try:
-        # Pre-launch browser
-        logger.info("HYW: Pre-launching renderer browser...")
-        await renderer.start()
-    except Exception as e:
-        logger.warning(f"HYW: Renderer warm-up failed: {e}")
-
-@listen(Cleanup, once=True)
-async def _hyw_cleanup():
-    try:
-        await hyw.close()
-        await renderer.close()
-    except Exception as e:
-        logger.warning(f"HYW cleanup error: {e}")
-
 class GlobalCache:
     models_image_path: Optional[str] = None
 
 global_cache = GlobalCache()
 
-from satori.exception import ActionFailed
-from satori.adapters.onebot11.reverse import _Connection
-
-# Monkeypatch to suppress ActionFailed for get_msg
-original_call_api = _Connection.call_api
-
-async def patched_call_api(self, action: str, params: dict = None):
-    try:
-        return await original_call_api(self, action, params)
-    except ActionFailed as e:
-        if action == "get_msg":
-            logger.warning(f"Suppressed ActionFailed for get_msg: {e}")
-            return None
-        raise e
-
-_Connection.call_api = patched_call_api
-
-EMOJI_TO_CODE = {
-    "✨": "10024",
-    "✅": "10004",
-    "❌": "10060"
-}
-
 async def react(session: Session, emoji: str):
     if not conf.reaction: return
     try:
-        if session.event.login.platform == "onebot":
-            code = EMOJI_TO_CODE.get(emoji, "10024")
-            # OneBot specific reaction
-            await session.account.protocol.call_api(
-                "internal/set_group_reaction", 
-                {
-                    "group_id": str(session.guild.id), 
-                    "message_id": str(session.event.message.id), 
-                    "code": code, 
-                    "is_add": True
-                }
-            )
-        else:
-            # Standard Satori reaction
-            await session.reaction_create(emoji=emoji)
-    except ActionFailed:
-        pass
+        await session.reaction_create(emoji=emoji)
     except Exception as e:
         logger.warning(f"Reaction failed: {e}")
 
@@ -300,6 +322,7 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
             image_references=structured.get("image_references", []),
             stages_used=final_resp.get("stages_used", []),
             image_timeout=conf.render_image_timeout_ms,
+            theme_color=conf.theme_color,
         )
         
         # Send & Save
@@ -368,18 +391,16 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
                 logger.error(f"Failed to save error conversation: {save_err}")
 
 
-
-# Main Command (Question)
 alc = Alconna(
     conf.question_command,
     Args["all_param;?", AllParam],
 )
 
-@command.on(alc)
+@command.on(alc)    
 async def handle_question_command(session: Session[MessageCreatedEvent], result: Arparma):
     """Handle main Question command"""
     try:
-        # logger.info(f"Question Command Triggered. Message: {result}")
+        logger.info(f"Question Command Triggered. Message: {result}")
         mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
         dedupe_key = f"{getattr(session.account, 'id', 'account')}:{mid}"
         if _event_deduper.seen_recently(dedupe_key):
@@ -393,14 +414,12 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     args = result.all_matched_args
     logger.info(f"Matched Args: {args}")
     
-    # Only all_param is supported now
-    # Context ID for history lookup is automatically handled in process_request
-    
     await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None, local_mode=False)
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.5.0-rc1", config=HywConfig)
 
-@leto.on(CommandReceive)
+
+@listen(CommandReceive)
 async def remove_at(content: MessageChain):
-    content = content.lstrip(At)
-    return content
+    logger.info(f"remove_at: {content}")
+    return content.lstrip(At)

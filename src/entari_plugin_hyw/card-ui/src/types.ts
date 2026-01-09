@@ -48,4 +48,5 @@ export interface RenderData {
     image_references: ImageReference[]
     stats: Stats
     total_time: number
+    theme_color?: string      // Configurable theme color (hex)
 }

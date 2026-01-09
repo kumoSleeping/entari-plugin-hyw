@@ -1,6 +1,7 @@
 import asyncio
 import html
 import json
+import re
 import time
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -10,14 +11,13 @@ from openai import AsyncOpenAI
 
 from .config import HYWConfig
 from ..utils.search import SearchService
+from ..utils.image_cache import get_cached_images
 from ..utils.prompts import (
     AGENT_SP,
     AGENT_SP_INSTRUCT_VISION_ADD,
     AGENT_SP_TOOLS_STANDARD_ADD,
     AGENT_SP_TOOLS_AGENT_ADD,
     AGENT_SP_SEARCH_ADD,
-    AGENT_SP_PAGE_ADD,
-    AGENT_SP_IMAGE_SEARCH_ADD,
     INSTRUCT_SP,
     INSTRUCT_SP_VISION_ADD,
     VISION_SP,
@@ -266,17 +266,18 @@ class ProcessingPipeline:
                 if vision_text:
                     system_prompt += AGENT_SP_INSTRUCT_VISION_ADD.format(vision_msgs=vision_text)
                 
-                # Append search results
-                if has_search_results and search_msgs_text:
-                    system_prompt += AGENT_SP_SEARCH_ADD.format(search_msgs=search_msgs_text)
-                
-                # Append crawled page content
+                # Append all search results (text, page, image) in one block
                 page_msgs_text = self._format_page_msgs()
+                all_search_parts = []
+                if has_search_results and search_msgs_text:
+                    all_search_parts.append(search_msgs_text)
                 if page_msgs_text:
-                    system_prompt += AGENT_SP_PAGE_ADD.format(page_msgs=page_msgs_text)
-                    
+                    all_search_parts.append(page_msgs_text)
                 if has_image_results and image_msgs_text:
-                     system_prompt += AGENT_SP_IMAGE_SEARCH_ADD.format(image_search_msgs=image_msgs_text)
+                    all_search_parts.append(image_msgs_text)
+                
+                if all_search_parts:
+                    system_prompt += AGENT_SP_SEARCH_ADD.format(search_msgs="\n".join(all_search_parts))
 
                 last_system_prompt = system_prompt
 
@@ -332,6 +333,7 @@ class ProcessingPipeline:
                         "tool_results": [],
                         "tool_time": tool_exec_time,
                         "llm_time": step_llm_time,
+                        "usage": step_usage,
                     }
                     for i, result in enumerate(results):
                         tc = tool_calls[i]
@@ -516,12 +518,18 @@ class ProcessingPipeline:
                 for s in steps:
                     if "tool_calls" in s:
                         # 1. Agent Thought Stage (with LLM time)
+                        # Calculate step cost
+                        step_usage = s.get("usage", {})
+                        step_cost = 0.0
+                        if a_in_price > 0 or a_out_price > 0:
+                             step_cost = (step_usage.get("input_tokens", 0) / 1_000_000 * a_in_price) + (step_usage.get("output_tokens", 0) / 1_000_000 * a_out_price)
+
                         stages_used.append({
                             "name": "Agent",
                             "model": a_model,
                             "icon_config": agent_icon,
                             "provider": agent_provider,
-                            "time": s.get("llm_time", 0), "cost": 0
+                            "time": s.get("llm_time", 0), "cost": step_cost
                         })
                         
                         # 2. Grouped Tool Stages
@@ -602,21 +610,30 @@ class ProcessingPipeline:
                         })
 
             # Assign total time/cost to last Agent stage
-                last_agent = next((s for s in reversed(stages_used) if s["name"] == "Agent"), None)
-                if last_agent:
-                    last_agent["time"] = a.get("time", 0)
-                    last_agent["cost"] = a.get("cost", 0.0)
+            # Sum up total time/cost for UI/stats (implicit via loop above)
+            # No need to assign everything to last agent anymore as we distribute it.
 
             # --- Final Filter: Only show cited items in workflow cards ---
             cited_urls = {ref['url'] for ref in (structured.get("references", []) + 
                                                structured.get("page_references", []) + 
                                                structured.get("image_references", []))}
             
+            # Find images already rendered in markdown content (to avoid duplicate display)
+            markdown_image_urls = set()
+            md_img_pattern = re.compile(r'!\[.*?\]\((https?://[^)]+)\)')
+            for match in md_img_pattern.finditer(final_content):
+                markdown_image_urls.add(match.group(1))
+            
             for s in stages_used:
                 if "references" in s and s["references"]:
                     s["references"] = [r for r in s["references"] if r.get("url") in cited_urls]
-                # if "image_references" in s and s["image_references"]:
-                #     s["image_references"] = [r for r in s["image_references"] if r.get("url") in cited_urls]
+                # Filter out images already shown in markdown content
+                # Check both url AND thumbnail since either might be used in markdown
+                if "image_references" in s and s["image_references"]:
+                    s["image_references"] = [
+                        r for r in s["image_references"] 
+                        if r.get("url") not in markdown_image_urls and (r.get("thumbnail") or "") not in markdown_image_urls
+                    ]
                 if "crawled_pages" in s and s["crawled_pages"]:
                     s["crawled_pages"] = [r for r in s["crawled_pages"] if r.get("url") in cited_urls]
 
@@ -632,6 +649,67 @@ class ProcessingPipeline:
             
             # Update the reference (since it might be used by caller)
             current_history[:] = cleaned_history
+
+            # --- Apply cached images to reduce render time ---
+            # Collect all image URLs that need caching (avoid duplicates when thumbnail == url)
+            all_image_urls = set()
+            for img_ref in structured.get("image_references", []):
+                if img_ref.get("thumbnail"):
+                    all_image_urls.add(img_ref["thumbnail"])
+                if img_ref.get("url"):
+                    all_image_urls.add(img_ref["url"])
+            
+            for stage in stages_used:
+                for img_ref in stage.get("image_references", []):
+                    if img_ref.get("thumbnail"):
+                        all_image_urls.add(img_ref["thumbnail"])
+                    if img_ref.get("url"):
+                        all_image_urls.add(img_ref["url"])
+            
+            # Also collect image URLs from markdown content
+            markdown_img_pattern = re.compile(r'!\[.*?\]\((https?://[^)]+)\)')
+            markdown_urls = markdown_img_pattern.findall(final_content)
+            all_image_urls.update(markdown_urls)
+            
+            # Get cached versions (waits for pending downloads, with timeout)
+            if all_image_urls:
+                try:
+                    cached_map = await get_cached_images(list(all_image_urls), wait_timeout=3.0)
+                    
+                    # Apply cached URLs to structured response
+                    for img_ref in structured.get("image_references", []):
+                        if img_ref.get("thumbnail") and img_ref["thumbnail"] in cached_map:
+                            img_ref["thumbnail"] = cached_map[img_ref["thumbnail"]]
+                        if img_ref.get("url") and img_ref["url"] in cached_map:
+                            img_ref["url"] = cached_map[img_ref["url"]]
+                    
+                    # Apply cached URLs to stages
+                    for stage in stages_used:
+                        for img_ref in stage.get("image_references", []):
+                            if img_ref.get("thumbnail") and img_ref["thumbnail"] in cached_map:
+                                img_ref["thumbnail"] = cached_map[img_ref["thumbnail"]]
+                            if img_ref.get("url") and img_ref["url"] in cached_map:
+                                img_ref["url"] = cached_map[img_ref["url"]]
+                    
+                    # Replace image URLs in markdown content with cached versions
+                    def replace_markdown_img(match):
+                        full_match = match.group(0)
+                        url = match.group(1)
+                        cached_url = cached_map.get(url)
+                        if cached_url and cached_url != url:
+                            return full_match.replace(url, cached_url)
+                        return full_match
+                    
+                    final_content = markdown_img_pattern.sub(replace_markdown_img, final_content)
+                    structured["response"] = markdown_img_pattern.sub(replace_markdown_img, structured.get("response", ""))
+                    
+                    # Log cache stats
+                    from ..utils.image_cache import get_image_cache
+                    cache_stats = get_image_cache().get_stats()
+                    logger.info(f"ImageCache stats: {cache_stats}")
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to apply image cache: {e}")
 
             return {
                 "llm_response": final_content,

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
+
 import { marked, type Tokens } from 'marked'
 import hljs from 'highlight.js/lib/core'
 // Import only common languages to reduce bundle size
@@ -77,45 +78,29 @@ renderer.code = ({ text, lang }: Tokens.Code): string => {
     highlighted = hljs.highlightAuto(text).value
   }
 
+  // Add line numbers to code
+  const addLineNumbers = (code: string): string => {
+    const lines = code.split('\n')
+    return lines.map((line, i) => 
+      `<span class="code-line"><span class="line-number">${i + 1}</span><span class="line-content">${line}</span></span>`
+    ).join('')
+  }
+  
+  const highlightedWithLines = addLineNumbers(highlighted)
+
   // Bare mode: just the code, no window decoration
   if (props.bare) {
-    return `<pre class="!mt-0 !mb-0 !rounded-none !bg-gray-50 !p-4 overflow-x-auto border-b border-gray-100"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>`
+    return `<pre class="!mt-0 !mb-0 !rounded-none !bg-gray-50 !p-0 border-b border-gray-100 code-with-lines"><code class="hljs language-${language} text-[17.5px] leading-snug font-mono">${highlightedWithLines}</code></pre>`
   }
 
   // Dynamic Icon mapping
-  const getLangIcon = (l: string) => {
-    const map: Record<string, { icon: string, color: string }> = {
-      'python': { icon: 'mdi:language-python', color: 'text-blue-500' },
-      'javascript': { icon: 'mdi:language-javascript', color: 'text-yellow-500' },
-      'js': { icon: 'mdi:language-javascript', color: 'text-yellow-500' },
-      'typescript': { icon: 'mdi:language-typescript', color: 'text-blue-600' },
-      'ts': { icon: 'mdi:language-typescript', color: 'text-blue-600' },
-      'bash': { icon: 'mdi:terminal', color: 'text-green-500' },
-      'sh': { icon: 'mdi:terminal', color: 'text-green-500' },
-      'shell': { icon: 'mdi:terminal', color: 'text-green-500' },
-      'json': { icon: 'mdi:code-json', color: 'text-yellow-600' },
-      'html': { icon: 'mdi:language-html5', color: 'text-orange-500' },
-      'css': { icon: 'mdi:language-css3', color: 'text-blue-500' },
-      'yaml': { icon: 'mdi:file-cog', color: 'text-purple-500' },
-      'sql': { icon: 'mdi:database', color: 'text-red-500' }
-    }
-    return map[l] || { icon: 'mdi:code-braces', color: 'text-red-500' }
-  }
-  const langInfo = getLangIcon(language)
+
 
   return `
     <div class="my-6 space-y-1 group">
-      <div class="flex items-center justify-between px-3 py-1.5 bg-gray-50 ">
-        <div class="flex items-center gap-2">
-          <Icon icon="${langInfo.icon}" class="${langInfo.color} text-sm" />
-          <span class="text-[10px] font-black text-gray-700 uppercase tracking-widest">${language}</span>
-        </div>
-        <div class="text-gray-500 text-[9px] font-mono tracking-tighter tabular-nums">
-          Source Code
-        </div>
-      </div>
+      <div class="h-4 w-24 ml-auto" style="background-color: var(--theme-color);"></div>
       <div class="">
-        <pre class="!mt-0 !mb-0 !rounded-none !bg-white !p-4 overflow-x-auto"><code class="hljs language-${language} text-[13px] leading-relaxed font-mono">${highlighted}</code></pre>
+        <pre class="!mt-0 !mb-0 !rounded-none !bg-white !p-0 code-with-lines"><code class="hljs language-${language} text-[17.5px] leading-snug font-mono">${highlightedWithLines}</code></pre>
       </div>
     </div>
   `
@@ -136,17 +121,9 @@ const processedHtml = computed(() => {
   // Render <summary> tags as technical highlight blocks
   html = html.replace(/<summary>([\s\S]*?)<\/summary>/g, (_, content) => {
     return `
-      <div class="my-8 group">
-        <div class="flex items-center justify-between px-3 py-1.5 bg-gray-50 ">
-          <div class="flex items-center gap-2">
-            <Icon icon="mdi:lightning-bolt" class="text-red-500 text-sm" />
-            <span class="text-[10px] font-black text-gray-700 uppercase tracking-widest">Summary</span>
-          </div>
-          <div class="text-gray-500 text-[9px] font-mono tracking-tighter tabular-nums">
-            Insight
-          </div>
-        </div>
-        <div class="p-5 text-[15px] leading-relaxed text-gray-800 font-medium bg-white ">
+       <div class="my-8 group shadow-sm shadow-black/10">
+        <div class="h-4 w-full" style="background-color: var(--theme-color);"></div>
+        <div class="p-6 text-[19px] leading-relaxed text-gray-700 font-medium bg-white">
           ${content}
         </div>
       </div>
@@ -177,7 +154,7 @@ const processedHtml = computed(() => {
       })
     })
 
-    const containerClass = "w-full bg-white text-[12px] select-text";
+    const containerClass = "w-full bg-white text-[16.5px] select-text";
       
     let gridHtml = `<div class="${containerClass}">`
     
@@ -186,7 +163,7 @@ const processedHtml = computed(() => {
     allRows.forEach((row: any[], rowIndex: number) => {
       const isHeader = rowIndex === 0;
       const rowBg = isHeader 
-        ? 'bg-white text-gray-900 font-black uppercase tracking-tight' 
+        ? 'bg-white text-gray-800 font-black uppercase tracking-tight' 
         : (rowIndex % 2 === 0 ? 'bg-white' : 'bg-gray-50/30');
       const borderB = rowIndex < allRows.length - 1 ? 'border-b border-gray-200' : '';
         
@@ -196,7 +173,7 @@ const processedHtml = computed(() => {
         const justify = cell.align === 'center' ? 'justify-center text-center' : (cell.align === 'right' ? 'justify-end text-right' : 'justify-start');
         const borderClass = colIndex === row.length - 1 ? '' : 'border-r border-gray-100';
         
-        gridHtml += `<div class="flex-1 py-2.5 px-3 min-w-0 break-words flex items-center leading-tight ${justify} ${borderClass}">
+        gridHtml += `<div class="flex-1 py-3.5 px-4 min-w-0 break-words flex items-center leading-tight ${justify} ${borderClass}">
           <span>${cell.html}</span>
         </div>`;
       });
@@ -205,22 +182,27 @@ const processedHtml = computed(() => {
     gridHtml += `</div>`;
 
     if (props.bare) {
-      return `<div class="overflow-x-auto border-b border-gray-200">${gridHtml}</div>`
+      return `<div class="border-b border-gray-200">${gridHtml}</div>`
     }
 
     return `
       <div class="my-6 group">
-        <div class="overflow-x-auto bg-white p-0 border-t border-gray-100">
+        <div class="bg-white p-0 border-t border-gray-100">
           ${gridHtml}
         </div>
       </div>
     `
   })
   
-  // Convert [N] citations to rectangular sharp badges
+  // Convert [N] citations to small square badges with shadow
   html = html.replace(/\[(\d+)\]/g, (_, n) => {
     const num = parseInt(n)
-    return `<span class="relative -top-1.5 text-[10px] font-bold text-blue-600 mx-0.5 cursor-default select-none transition-all">${num}</span>`
+    return `<sup class="inline-flex items-center justify-center w-[15px] h-[15px] text-[10px] font-bold cursor-default select-none ml-1 align-middle" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 2px 0 rgba(0,0,0,0.15)">${num}</sup>`
+  })
+  
+  // Style <u> underline tags with theme-colored solid underline
+  html = html.replace(/<u>([^<]*)<\/u>/g, (_, content) => {
+    return `<span class="underline decoration-[3px] underline-offset-[6px]" style="text-decoration-color: var(--theme-color)">${content}</span>`
   })
   
   return html
@@ -229,14 +211,15 @@ const processedHtml = computed(() => {
 
 <template>
   <div ref="contentRef"
-       class="prose prose-slate max-w-none 
-              prose-headings:text-gray-900 prose-headings:font-black prose-headings:mb-2 prose-headings:mt-6 prose-headings:tracking-tight
-              prose-p:text-gray-800 prose-p:leading-relaxed prose-p:my-3
+       class="prose prose-slate max-w-none prose-lg
+              prose-headings:text-gray-800 prose-headings:font-bold prose-headings:mb-3 prose-headings:mt-8 prose-headings:tracking-tight
+              prose-p:text-gray-800 prose-p:leading-7 prose-p:my-4 prose-p:text-[20px] prose-li:text-[20px] prose-li:text-gray-800
               prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline
-              prose-code:bg-gray-100 prose-code:px-1 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.9em] prose-code:font-mono prose-code:text-gray-900
+              prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.85em] prose-code:font-mono prose-code:text-gray-800
               prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200 prose-pre:rounded-none prose-pre:p-0
-              prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200 prose-img:
-              prose-ol:list-decimal prose-ol:pl-4 prose-ol:list-outside
+              prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200
+              prose-ol:list-decimal prose-ol:pl-7 prose-ol:list-outside prose-ol:my-5
+              prose-li:my-2.5 prose-li:leading-7
               [&>*:first-child]:!mt-0"
        v-html="processedHtml">
   </div>
@@ -253,15 +236,15 @@ const processedHtml = computed(() => {
 .prose ul {
   list-style: none !important;
   padding-left: 0.25rem !important;
-  margin-top: 0.75rem !important;
-  margin-bottom: 0.75rem !important;
+  margin-top: 1rem !important;
+  margin-bottom: 1rem !important;
 }
 
 .prose ul > li {
   position: relative !important;
   padding-left: 1.5rem !important;
-  margin-top: 0.5rem !important;
-  margin-bottom: 0.5rem !important;
+  margin-top: 0.75rem !important;
+  margin-bottom: 0.75rem !important;
   line-height: 1.6 !important;
 }
 
@@ -270,9 +253,9 @@ const processedHtml = computed(() => {
   position: absolute !important;
   left: 0 !important;
   top: 0.6em !important;
-  width: 6px !important;
-  height: 6px !important;
-  background-color: #ef4444 !important; /* Red-500 */
+  width: 8px !important;
+  height: 8px !important;
+  background-color: var(--theme-color, #ef4444) !important; /* Theme color */
   border-radius: 0 !important;
 }
 
@@ -290,9 +273,9 @@ const processedHtml = computed(() => {
 }
 
 .prose ul ul > li::before {
-  width: 5px !important;
-  height: 5px !important;
-  background-color: #ef4444 !important; /* Red-500 - same as parent, slightly smaller */
+  width: 6px !important;
+  height: 6px !important;
+  background-color: var(--theme-color, #ef4444) !important; /* Theme color - same as parent, slightly smaller */
   top: 0.65em !important;
 }
 
@@ -312,8 +295,8 @@ const processedHtml = computed(() => {
   left: 0 !important;
   top: 0 !important;
   bottom: 0 !important;
-  width: 3px !important;
-  background-color: #ef4444 !important; /* Red-500 - thick line */
+  width: 5px !important;
+  background-color: var(--theme-color, #ef4444) !important; /* Theme color - thick line */
 }
 
 
@@ -321,10 +304,42 @@ const processedHtml = computed(() => {
 /* Ensure images don't have artifacts */
 .prose img {
   display: block;
-  margin-left: auto;
+  margin-left: 0;
   margin-right: auto;
 }
 .prose pre {
   border: none !important;
+}
+
+/* Code line numbers - Modern minimalist style */
+.code-with-lines code {
+  display: block;
+  padding: 1.25em 0;
+  background: white;
+}
+.code-with-lines .code-line {
+  display: flex;
+  align-items: stretch;
+}
+.code-with-lines .line-number {
+  flex-shrink: 0;
+  width: 36px;
+  padding: 0.1em 8px 0.1em 4px;
+  text-align: right;
+  color: var(--text-muted, #9ca3af);
+  background: white;
+  border-right: 1px solid #e5e7eb;
+  user-select: none;
+  font-size: 11px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+}
+.code-with-lines .line-content {
+  flex: 1;
+  padding: 0.1em 1.25em 0.1em 1em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  background: white;
 }
 </style>

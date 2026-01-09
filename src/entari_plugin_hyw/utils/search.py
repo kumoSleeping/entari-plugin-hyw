@@ -22,6 +22,9 @@ except ImportError:
     except ImportError:
         DDGS = None
 
+# Import image cache for prefetching
+from .image_cache import prefetch_images
+
 # Shared crawler instance to avoid repeated init
 _shared_crawler: Optional[AsyncWebCrawler] = None
 
@@ -46,7 +49,8 @@ async def close_shared_crawler():
 class SearchService:
     """
     Multi-strategy search & fetch service.
-    Supported providers: 'crawl4ai' (default), 'httpx', 'ddgs'.
+    Search providers: 'crawl4ai' (default), 'httpx', 'ddgs'.
+    Fetch providers: 'crawl4ai' (default), 'jinaai'.
     """
     def __init__(self, config: Any):
         self.config = config
@@ -56,8 +60,11 @@ class SearchService:
         # Configuration for retries/timeouts
         self._search_timeout = getattr(config, "search_timeout", 10.0)
         self._search_retries = getattr(config, "search_retries", 2)
-        self._provider = getattr(config, "search_provider", "crawl4ai")
-        logger.info(f"SearchService initialized: provider='{self._provider}', limit={self._default_limit}, timeout={self._search_timeout}s")
+        # Separate providers for search and page fetching
+        self._search_provider = getattr(config, "search_provider", "crawl4ai")
+        self._fetch_provider = getattr(config, "fetch_provider", "crawl4ai")
+        self._jina_api_key = getattr(config, "jina_api_key", None)
+        logger.info(f"SearchService initialized: search_provider='{self._search_provider}', fetch_provider='{self._fetch_provider}', limit={self._default_limit}, timeout={self._search_timeout}s")
 
     def _build_search_url(self, query: str) -> str:
         encoded_query = urllib.parse.quote(query)
@@ -82,7 +89,7 @@ class SearchService:
         if not query:
             return []
 
-        provider = self._provider.lower()
+        provider = self._search_provider.lower()
         logger.info(f"SearchService: searching for '{query}' using provider='{provider}'")
 
         if provider == "httpx":
@@ -355,11 +362,122 @@ class SearchService:
 
     async def fetch_page(self, url: str) -> Dict[str, str]:
         """
-        Fetch a single page via Crawl4AI and return cleaned markdown/text plus metadata.
+        Fetch a single page and return cleaned markdown/text plus metadata.
+        Dispatches to jinaai or Crawl4AI based on fetch_provider config.
         """
         if not url:
             return {"content": "Error: missing url", "title": "Error", "url": ""}
 
+        provider = self._fetch_provider.lower()
+        logger.info(f"SearchService: fetching page '{url}' using fetch_provider='{provider}'")
+
+        if provider == "jinaai":
+            return await self._fetch_page_jinaai(url)
+        else:
+            return await self._fetch_page_crawl4ai(url)
+
+    async def _fetch_page_jinaai(self, url: str) -> Dict[str, str]:
+        """
+        Fetch page via Jina AI Reader - returns clean markdown content.
+        https://r.jina.ai/{url}
+        """
+        if not httpx:
+            logger.warning("SearchService: httpx not installed, fallback to crawl4ai")
+            return await self._fetch_page_crawl4ai(url)
+
+        jina_url = f"https://r.jina.ai/{url}"
+        headers = {
+            "X-Return-Format": "markdown",
+        }
+        # Add authorization header if API key is configured
+        if self._jina_api_key:
+            headers["Authorization"] = f"Bearer {self._jina_api_key}"
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                resp = await client.get(jina_url, headers=headers)
+                resp.raise_for_status()
+                content = resp.text
+
+            # Jina AI returns markdown content directly
+            # Try to extract title from first heading or first line
+            title = "No Title"
+            lines = content.strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if line.startswith('# '):
+                    title = line[2:].strip()
+                    break
+                elif line and not line.startswith('!') and not line.startswith('['):
+                    # Use first non-empty, non-image, non-link line as title
+                    title = line[:100]
+                    break
+
+            logger.info(f"SearchService(jinaai): fetched page, title='{title}', content_len={len(content)}")
+            return {
+                "content": content[:8000],
+                "title": title,
+                "url": url
+            }
+
+        except Exception as e:
+            logger.error(f"SearchService(jinaai) fetch_page failed: {e}")
+            return {"content": f"Error: fetch failed ({e})", "title": "Error", "url": url}
+
+    async def _fetch_page_httpx(self, url: str) -> Dict[str, str]:
+        """
+        Fetch page via httpx - fast, no browser overhead.
+        """
+        if not httpx:
+            logger.warning("SearchService: httpx not installed, fallback to crawl4ai")
+            return await self._fetch_page_crawl4ai(url)
+
+        try:
+            async with httpx.AsyncClient(timeout=self._search_timeout, follow_redirects=True) as client:
+                resp = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                })
+                resp.raise_for_status()
+                html_content = resp.text
+
+            # Extract title from HTML
+            title = "No Title"
+            title_match = re.search(r'<title[^>]*>([^<]+)</title>', html_content, re.IGNORECASE)
+            if title_match:
+                title = html.unescape(title_match.group(1).strip())
+            
+            # Try og:title as fallback
+            if title == "No Title":
+                og_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html_content, re.IGNORECASE)
+                if og_match:
+                    title = html.unescape(og_match.group(1).strip())
+
+            # Simple HTML to text conversion
+            # Remove script/style tags
+            content = re.sub(r'<script[^>]*>[\s\S]*?</script>', '', html_content, flags=re.IGNORECASE)
+            content = re.sub(r'<style[^>]*>[\s\S]*?</style>', '', html_content, flags=re.IGNORECASE)
+            # Remove HTML tags
+            content = re.sub(r'<[^>]+>', ' ', content)
+            # Decode entities
+            content = html.unescape(content)
+            # Normalize whitespace
+            content = re.sub(r'\s+', ' ', content).strip()
+
+            logger.info(f"SearchService(httpx): fetched page, title='{title}', content_len={len(content)}")
+            return {
+                "content": content[:8000],
+                "title": title,
+                "url": url
+            }
+
+        except Exception as e:
+            logger.error(f"SearchService(httpx) fetch_page failed: {e}")
+            return {"content": f"Error: fetch failed ({e})", "title": "Error", "url": url}
+
+    async def _fetch_page_crawl4ai(self, url: str) -> Dict[str, str]:
+        """
+        Fetch page via Crawl4AI - full browser rendering.
+        """
         try:
             crawler = await self._get_crawler()
             result = await crawler.arun(
@@ -416,17 +534,116 @@ class SearchService:
                 pass
             self._crawler = None
 
-    async def image_search(self, query: str) -> List[Dict[str, str]]:
+    async def image_search(self, query: str, prefetch: bool = True) -> List[Dict[str, str]]:
         """
-        Image search via Crawl4AI media extraction or DDGS.
+        Image search - dispatches to httpx, ddgs, or Crawl4AI based on search_provider.
+        
+        Args:
+            query: Search query
+            prefetch: If True, automatically start prefetching images for caching
         """
         if not query:
             return []
 
-        # If ddgs is selected, use it
-        if self._provider == "ddgs":
-             return await self._search_ddgs_images(query)
+        provider = self._search_provider.lower()
+        logger.info(f"SearchService: image searching for '{query}' using provider='{provider}'")
 
+        if provider == "ddgs":
+            results = await self._search_ddgs_images(query)
+        elif provider == "httpx":
+            results = await self._image_search_httpx(query)
+        else:
+            results = await self._image_search_crawl4ai(query)
+        
+        # Start prefetching images in background for faster rendering
+        if prefetch and results:
+            urls_to_prefetch = []
+            for img in results:
+                # Prefer thumbnail for prefetch (smaller, used in UI)
+                thumb = img.get("thumbnail")
+                url = img.get("url")
+                if thumb:
+                    urls_to_prefetch.append(thumb)
+                if url and url != thumb:
+                    urls_to_prefetch.append(url)
+            
+            if urls_to_prefetch:
+                logger.info(f"SearchService: Starting prefetch for {len(urls_to_prefetch)} images")
+                await prefetch_images(urls_to_prefetch)
+        
+        return results
+
+    async def _image_search_httpx(self, query: str) -> List[Dict[str, str]]:
+        """
+        Image search via httpx - parse img tags from HTML response.
+        """
+        if not httpx:
+            logger.warning("SearchService: httpx not installed, fallback to crawl4ai")
+            return await self._image_search_crawl4ai(query)
+
+        url = self._build_image_url(query)
+        logger.info(f"SearchService(httpx Image): fetching {url}")
+
+        try:
+            async with httpx.AsyncClient(timeout=self._search_timeout, follow_redirects=True) as client:
+                resp = await client.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                })
+                resp.raise_for_status()
+                html_content = resp.text
+
+            # Parse img tags from HTML
+            # Match: <img ... src="..." ... > or <img ... data-src="..." ...>
+            img_regex = re.compile(r'<img[^>]+(?:src|data-src)=["\']([^"\']+)["\'][^>]*(?:alt=["\']([^"\']*)["\'])?[^>]*>', re.IGNORECASE)
+            
+            images = []
+            seen = set()
+            
+            for match in img_regex.finditer(html_content):
+                src = match.group(1) or ""
+                alt = match.group(2) or ""
+                
+                if not src:
+                    continue
+                if src.startswith("//"):
+                    src = "https:" + src
+                if not src.startswith("http"):
+                    continue
+                # Skip tiny icons/placeholders
+                if "favicon" in src.lower() or "logo" in src.lower() or "icon" in src.lower():
+                    continue
+                if src in seen:
+                    continue
+                seen.add(src)
+                
+                alt = html.unescape(alt.strip()) if alt else "Image"
+                domain = urllib.parse.urlparse(src).hostname or ""
+                
+                images.append({
+                    "title": alt,
+                    "url": src,
+                    "thumbnail": src,  # Use same URL as thumbnail
+                    "domain": domain,
+                    "content": alt,
+                })
+                
+                if len(images) >= self._default_limit:
+                    break
+
+            if not images:
+                logger.warning(f"SearchService(httpx): no images parsed from HTML")
+            else:
+                logger.info(f"SearchService(httpx): parsed {len(images)} images")
+            return images
+
+        except Exception as e:
+            logger.error(f"SearchService(httpx) image_search failed: {e}")
+            return []
+
+    async def _image_search_crawl4ai(self, query: str) -> List[Dict[str, str]]:
+        """
+        Image search via Crawl4AI media extraction.
+        """
         url = self._build_image_url(query)
         logger.info(f"SearchService(Crawl4AI Image): fetching {url}")
 

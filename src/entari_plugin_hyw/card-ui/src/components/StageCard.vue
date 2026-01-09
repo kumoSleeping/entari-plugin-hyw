@@ -14,11 +14,15 @@ const props = defineProps<{
   isFirst?: boolean
   isLast?: boolean
   prevStageName?: string
+  refOffset?: number
 }>()
 
 function getDomain(url: string): string {
   try {
-    return new URL(url).hostname.replace('www.', '')
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.replace('www.', '')
+    const pathname = urlObj.pathname === '/' ? '' : urlObj.pathname
+    return hostname + pathname
   } catch {
     return url
   }
@@ -56,12 +60,12 @@ function getStageTheme(name?: string) {
 }
 
 const themes: Record<string, any> = {
-  'search': { color: 'text-blue-600', bg: 'bg-blue-50', line: 'bg-red-300', iconBg: 'bg-blue-100/50', dotBg: 'bg-red-500', icon: 'mdi:magnify' },
-  'crawler': { color: 'text-orange-600', bg: 'bg-orange-50', line: 'bg-red-300', iconBg: 'bg-orange-100/50', dotBg: 'bg-red-500', icon: 'mdi:web' },
-  'agent': { color: 'text-purple-600', bg: 'bg-purple-50', line: 'bg-red-300', iconBg: 'bg-white/80', dotBg: 'bg-red-500', icon: 'mdi:robot' },
-  'instruct': { color: 'text-red-600', bg: 'bg-red-50', line: 'bg-red-300', iconBg: 'bg-white/80', dotBg: 'bg-red-500', icon: 'mdi:lightning-bolt' },
-  'vision': { color: 'text-green-600', bg: 'bg-green-50', line: 'bg-red-300', iconBg: 'bg-green-100/50', dotBg: 'bg-red-500', icon: 'mdi:eye' },
-  'default': { color: 'text-gray-600', bg: 'bg-gray-50', line: 'bg-red-300', iconBg: 'bg-gray-100/50', dotBg: 'bg-red-500', icon: 'mdi:circle' }
+  'search': { color: 'text-blue-600', bg: 'bg-blue-50', iconBg: 'bg-blue-100/50', icon: 'mdi:magnify' },
+  'crawler': { color: 'text-orange-600', bg: 'bg-orange-50', iconBg: 'bg-orange-100/50', icon: 'mdi:web' },
+  'agent': { color: 'text-purple-600', bg: 'bg-purple-50', iconBg: 'bg-white/80', icon: 'mdi:robot' },
+  'instruct': { color: 'text-red-600', bg: 'bg-red-50', iconBg: 'bg-white/80', icon: 'mdi:lightning-bolt' },
+  'vision': { color: 'text-purple-600', bg: 'bg-purple-50', iconBg: 'bg-white/80', icon: 'mdi:eye' },
+  'default': { color: 'text-gray-600', bg: 'bg-gray-50', iconBg: 'bg-gray-100/50', icon: 'mdi:circle' }
 }
 
 function getIcon(name: string): string {
@@ -104,18 +108,18 @@ function getModelLogo(model: string): string | undefined {
         <div class="rounded-none overflow-hidden bg-white">
         
           <!-- Header -->
-          <div :class="['bg-white px-3 py-1.5 flex items-center justify-between gap-2']">
-            <div class="flex items-center gap-2">
-              <div :class="['w-6 h-6 flex items-center justify-center shrink-0 overflow-hidden border border-gray-100', getStageTheme(stage.name).iconBg, getStageTheme(stage.name).color]">
-                <img v-if="getModelLogo(stage.model)" :src="getModelLogo(stage.model)" class="w-4 h-4 object-contain" />
-                <Icon v-else :icon="getIcon(stage.name)" class="text-xs" />
+          <div :class="['bg-white px-4 py-2.5 flex items-center justify-between gap-3']">
+            <div class="flex items-center gap-3">
+              <div :class="['w-8 h-8 flex items-center justify-center shrink-0 overflow-hidden border border-gray-100', getStageTheme(stage.name).iconBg, getStageTheme(stage.name).color]">
+                <img v-if="getModelLogo(stage.model)" :src="getModelLogo(stage.model)" class="w-5 h-5 object-contain" />
+                <Icon v-else :icon="getIcon(stage.name)" class="text-lg" />
               </div>
               <div class="flex flex-col">
-                <span class="font-black text-xs text-gray-900 uppercase tracking-tight">{{ stage.name }}</span>
-                <span class="text-[10px] font-mono text-gray-400 tabular-nums tracking-tighter">{{ getModelShort(stage.model) }}</span>
+                <span class="font-black text-[18px] text-gray-800 uppercase tracking-tight">{{ stage.name }}</span>
+                <span class="text-[15.5px] font-mono tabular-nums tracking-tighter" style="color: var(--text-muted)">{{ getModelShort(stage.model) }}</span>
               </div>
             </div>
-            <div v-if="stage.time > 0 || stage.cost > 0" class="text-[10px] text-gray-400 font-mono flex items-center justify-end gap-2 leading-tight min-w-[120px]">
+            <div v-if="stage.time > 0 || stage.cost > 0" class="text-[15.5px] font-mono flex items-center justify-end gap-2 leading-tight min-w-[120px]" style="color: var(--text-muted)">
               <span v-if="stage.cost > 0">{{ formatCost(stage.cost) }}</span>
               <span v-if="stage.time > 0 && stage.cost > 0" class="text-gray-300">·</span>
               <span v-if="stage.time > 0">{{ formatTime(stage.time) }}</span>
@@ -123,38 +127,54 @@ function getModelLogo(model: string): string | undefined {
           </div>
 
 
-          <div v-if="stage.references?.length || stage.image_references?.length" class="bg-white pl-8 relative">
+          <div v-if="stage.references?.length || stage.image_references?.length || stage.crawled_pages?.length" class="bg-white pl-11 relative">
             <div v-if="stage.references?.length" class="divide-y divide-gray-50 relative z-10">
                 <a v-for="(ref, idx) in stage.references" :key="idx" 
                    :href="ref.url" target="_blank" 
-                   class="flex items-start gap-2 pr-3 py-2 hover:bg-gray-50 transition-colors group">
+                   class="flex items-start gap-3 pr-3 py-3 hover:bg-gray-50 transition-colors group">
                   <!-- Favicon - Aligned with Title -->
-                  <img :src="getFavicon(ref.url)" class="w-3 h-3 rounded-none shrink-0 object-contain mt-[3px]">
+                  <img :src="getFavicon(ref.url)" class="w-4 h-4 rounded-none shrink-0 object-contain mt-[4px]">
                   
                   <!-- Content: Title and Domain -->
                   <div class="flex-1 min-w-0 flex flex-col">
                     <div class="flex items-center gap-2">
-                      <span class="flex-1 text-xs font-bold text-gray-800 truncate leading-tight tracking-tight">{{ ref.title }}</span>
-                      <!-- Neutralized Citation Design -->
-                      <span class="shrink-0 text-[10px] font-bold text-blue-600 flex items-center justify-center">{{ idx + 1 }}</span>
+                      <span class="flex-1 text-[18px] font-bold text-gray-700 truncate leading-tight tracking-tight">{{ ref.title }}</span>
+                      <!-- Square Badge with Shadow -->
+                      <span class="shrink-0 w-[18px] h-[18px] text-[11px] font-bold flex items-center justify-center" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 3px 0 rgba(0,0,0,0.15)">{{ (refOffset || 0) + idx + 1 }}</span>
                     </div>
-                    <div class="text-[10px] font-mono text-gray-400 truncate mt-0.5 tracking-tighter">{{ getDomain(ref.url) }}</div>
+                    <div class="text-[15.5px] font-mono truncate mt-0.5 tracking-tighter" style="color: var(--text-muted)">{{ getDomain(ref.url) }}</div>
                   </div>
                 </a>
             </div>
 
             <!-- Image Search Results -->
-            <div v-if="stage.image_references?.length" class="pr-2 py-2 relative z-10">
-              <div class="grid grid-cols-3 gap-1">
+            <div v-if="stage.image_references?.length" class="pr-3 py-3 relative z-10">
+              <div class="grid grid-cols-2 gap-2 items-start">
                 <a v-for="(img, idx) in stage.image_references" :key="idx" 
                    v-show="!failedImages[img.url]"
                    :href="img.url" target="_blank" 
-                   class="relative aspect-square overflow-hidden bg-white border border-gray-200 transition-colors">
+                   class="relative overflow-hidden transition-all hover:opacity-90 group">
                   <img :src="img.thumbnail || img.url" 
                        @error="handleImageError(img.url)"
-                       class="w-full h-full object-cover">
+                       class="w-full h-auto block group-hover:scale-[1.02] transition-transform">
                 </a>
               </div>
+            </div>
+
+            <div v-if="stage.crawled_pages?.length" class="divide-y divide-gray-50 relative z-10">
+                <a v-for="(page, idx) in stage.crawled_pages" :key="idx" 
+                   :href="page.url" target="_blank" 
+                   class="flex items-start gap-3 pr-3 py-3 hover:bg-gray-50 transition-colors group">
+                  <img :src="getFavicon(page.url)" class="w-4 h-4 rounded-none shrink-0 object-contain mt-[4px]">
+                  <div class="flex-1 min-w-0 flex flex-col">
+                    <div class="flex items-center gap-2">
+                      <span class="flex-1 text-[18px] font-bold text-gray-700 truncate leading-tight tracking-tight">{{ page.title }}</span>
+                      <!-- Square Badge with Shadow -->
+                      <span class="shrink-0 w-[18px] h-[18px] text-[11px] font-bold flex items-center justify-center" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 3px 0 rgba(0,0,0,0.15)">{{ (refOffset || 0) + (stage.references?.length || 0) + idx + 1 }}</span>
+                    </div>
+                    <div class="text-[15.5px] font-mono truncate mt-0.5 tracking-tighter" style="color: var(--text-muted)">{{ getDomain(page.url) }}</div>
+                  </div>
+                </a>
             </div>
           </div>
         </div>
