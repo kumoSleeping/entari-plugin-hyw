@@ -93,7 +93,7 @@ class ContentRenderer:
                 "theme_color": "#ef4444",
             }
             await self._page.evaluate("(data) => window.updateRenderData(data)", warmup_data)
-            await asyncio.sleep(0.1)  # Let Vue render
+            # await asyncio.sleep(0.1)  # Removed as requested
             logger.success("ContentRenderer: Browser + page ready!")
         except Exception as e:
             logger.error(f"ContentRenderer: Failed to start browser: {e}")
@@ -224,7 +224,7 @@ class ContentRenderer:
             await self._page.evaluate("(data) => window.updateRenderData(data)", render_data)
             
             # Wait for Vue to update DOM
-            await asyncio.sleep(0.1)
+            # await asyncio.sleep(0.1) # Removed as requested
             
             # Wait for images to load
             try:

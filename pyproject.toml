@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "3.5.0-rc6"
+version = "3.5.0-rc7"
 description = "Use large language models to interpret chat messages"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
@@ -16,7 +16,7 @@ dependencies = [
     "jinja2>=3.0",
     "ddgs>=9.10.0",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
 keywords = ["entari", "llm", "ai", "bot", "chat"]
