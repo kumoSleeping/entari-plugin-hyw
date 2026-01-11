@@ -944,7 +944,7 @@ class ProcessingPipeline:
                     return f"[{unified_id_map[oid]}]"
                 if oid in image_url_map:
                     return "" # Remove standalone image citations like [5] if they aren't in ![]()
-                return match.group(0)
+                return "" # Remove hallucinated or invalid citations like [99] if not found in results
             
             return body_pattern.sub(sub_norm_ref, text)
 
