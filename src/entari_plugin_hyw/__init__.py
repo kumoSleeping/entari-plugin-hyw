@@ -1,7 +1,14 @@
 from dataclasses import dataclass, field
+from importlib.metadata import version as get_version
 from typing import List, Dict, Any, Optional, Union
 import time
 import asyncio
+
+# 从 pyproject.toml 读取版本号，避免重复维护
+try:
+    __version__ = get_version("entari_plugin_hyw")
+except Exception:
+    __version__ = "0.0.0"
 
 from arclet.alconna import Alconna, Args, AllParam, CommandMeta, Option, Arparma, MultiVar, store_true
 from arclet.entari import metadata, listen, Session, plugin_config, BasicConfModel, plugin, command
@@ -12,10 +19,10 @@ from loguru import logger
 import arclet.letoderea as leto
 from arclet.entari.event.command import CommandReceive
 
-from .core.hyw import HYW
-from .core.history import HistoryManager
-from .core.render_vue import ContentRenderer
-from .utils.misc import process_onebot_json, process_images, resolve_model_name
+from .pipeline import ProcessingPipeline
+from .history import HistoryManager
+from .render_vue import ContentRenderer
+from .misc import process_onebot_json, process_images, resolve_model_name
 from arclet.entari.event.lifespan import Cleanup
 
 import os
@@ -25,71 +32,29 @@ import base64
 import re
 
 
-# Color name to hex mapping
-COLOR_NAME_MAP = {
-    'red': '#ff0000',
-    'green': '#00ff00',
-    'blue': '#0000ff',
-    'yellow': '#ffff00',
-    'cyan': '#00ffff',
-    'magenta': '#ff00ff',
-    'black': '#000000',
-    'white': '#ffffff',
-    'gray': '#808080',
-    'grey': '#808080',
-    'orange': '#ffa500',
-    'purple': '#800080',
-    'pink': '#ffc0cb',
-    'brown': '#a52a2a',
-    'lime': '#00ff00',
-    'navy': '#000080',
-    'teal': '#008080',
-    'olive': '#808000',
-    'maroon': '#800000',
-    'aqua': '#00ffff',
-    'silver': '#c0c0c0',
-    'gold': '#ffd700',
-    'indigo': '#4b0082',
-    'violet': '#ee82ee',
-}
-
-
 def parse_color(color: str) -> str:
     """
-    Parse color from various formats to hex.
-    Supports:
-    - Hex: #ff0000 or ff0000
-    - RGB tuple: (255, 0, 0)
-    - Color names: red, blue, etc.
-    
-    Returns hex color string with #.
+    Parse color from hex or RGB tuple to hex format.
+    Supports: #ff0000, ff0000, (255, 0, 0), 255,0,0
     """
     if not color:
-        return "#ef4444"  # default
+        return "#ef4444"
     
     color = str(color).strip()
     
-    # Already hex format
+    # Hex format: #fff or #ffffff or ffffff
     if color.startswith('#') and len(color) in [4, 7]:
         return color
     if re.match(r'^[0-9a-fA-F]{6}$', color):
         return f'#{color}'
     
-    # RGB tuple format: (r, g, b) or r, g, b
+    # RGB tuple: (r, g, b) or r,g,b
     rgb_match = re.match(r'^\(?(\d+)[,\s]+(\d+)[,\s]+(\d+)\)?$', color)
     if rgb_match:
-        r, g, b = map(int, rgb_match.groups())
-        # Clamp values to 0-255
-        r, g, b = max(0, min(255, r)), max(0, min(255, g)), max(0, min(255, b))
+        r, g, b = (max(0, min(255, int(x))) for x in rgb_match.groups())
         return f'#{r:02x}{g:02x}{b:02x}'
     
-    # Color name
-    color_lower = color.lower()
-    if color_lower in COLOR_NAME_MAP:
-        return COLOR_NAME_MAP[color_lower]
-    
-    # Fallback to default
-    logger.warning(f"Invalid color format '{color}', using default #ef4444")
+    logger.warning(f"Invalid color '{color}', using default #ef4444")
     return "#ef4444"
 
 class _RecentEventDeduper:
@@ -176,7 +141,6 @@ class HywConfig(BasicConfModel):
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
 renderer = ContentRenderer()
-hyw = HYW(config=conf)
 
 
 class GlobalCache:
@@ -191,9 +155,14 @@ async def react(session: Session, emoji: str):
     except Exception as e:
         logger.warning(f"Reaction failed: {e}")
 
-async def process_request(session: Session[MessageCreatedEvent], all_param: Optional[MessageChain] = None, 
-                         selected_model: Optional[str] = None, selected_vision_model: Optional[str] = None, 
-                         conversation_key_override: Optional[str] = None, local_mode: bool = False):
+async def process_request(
+    session: Session[MessageCreatedEvent],
+    all_param: Optional[MessageChain] = None,
+    selected_model: Optional[str] = None,
+    selected_vision_model: Optional[str] = None,
+    conversation_key_override: Optional[str] = None,
+    local_mode: bool = False,
+) -> None:
     logger.info(f"Processing request: {all_param}")
     mc = MessageChain(all_param)
     logger.info(f"reply: {session.reply}")
@@ -273,12 +242,19 @@ async def process_request(session: Session[MessageCreatedEvent], all_param: Opti
 
         images, err = await process_images(mc, vision_model)
 
-        # Call Agent (Step 1)
-        # Sanitize user_input: use extracted text only
+        # Call Pipeline directly
         safe_input = msg_text
-            
-        resp = await hyw.agent(safe_input, conversation_history=hist_payload, images=images, 
-                              selected_model=model, selected_vision_model=vision_model, local_mode=local_mode)
+        pipeline = ProcessingPipeline(conf)
+        try:
+            resp = await pipeline.execute(
+                safe_input,
+                hist_payload,
+                model_name=model,
+                images=images,
+                selected_vision_model=vision_model,
+            )
+        finally:
+            await pipeline.close()
         
         # Step 1 Results
         step1_vision_model = resp.get("vision_model_used")
@@ -416,7 +392,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     
     await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None, local_mode=False)
 
-metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version="3.5.0-rc1", config=HywConfig)
+metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version=__version__, config=HywConfig)
 
 
 @listen(CommandReceive)

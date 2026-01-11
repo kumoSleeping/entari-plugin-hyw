@@ -24,8 +24,7 @@ class ContentRenderer:
     def __init__(self, template_path: str = None, auto_start: bool = True):
         if template_path is None:
             current_dir = Path(__file__).parent
-            plugin_root = current_dir.parent
-            template_path = plugin_root / "assets" / "card-dist" / "index.html"
+            template_path = current_dir / "assets" / "card-dist" / "index.html"
         
         self.template_path = Path(template_path)
         if not self.template_path.exists():

@@ -9,10 +9,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .config import HYWConfig
-from ..utils.search import SearchService
-from ..utils.image_cache import get_cached_images
-from ..utils.prompts import (
+from .search import SearchService
+from .image_cache import get_cached_images
+from .prompts import (
     AGENT_SP,
     AGENT_SP_INSTRUCT_VISION_ADD,
     AGENT_SP_TOOLS_STANDARD_ADD,
@@ -33,7 +32,7 @@ class ProcessingPipeline:
     Core pipeline (vision -> instruct/search -> agent).
     """
 
-    def __init__(self, config: HYWConfig):
+    def __init__(self, config: Any):
         self.config = config
         self.search_service = SearchService(config)
         self.client = AsyncOpenAI(base_url=self.config.base_url, api_key=self.config.api_key)
@@ -120,12 +119,9 @@ class ProcessingPipeline:
         final_response_content = ""
         structured: Dict[str, Any] = {}
         
-        # Reset search cache and ID counters for this execution
+        # Reset search cache and ID counter for this execution
         self.all_web_results = []
         self.global_id_counter = 0
-        self.search_id_counter = 0
-        self.page_id_counter = 0
-        self.image_id_counter = 0
 
         try:
             logger.info(f"Pipeline: Starting workflow for '{user_input}' using {active_model}")
@@ -189,7 +185,8 @@ class ProcessingPipeline:
                 vision_text=vision_text,
                 model=instruct_model,
             )
-            instruct_time = time.time() - instruct_start
+            # Instruct time excludes search time (search_time is returned separately)
+            instruct_time = time.time() - instruct_start - search_time
             
             # Calculate Instruct Cost
             instruct_cost = 0.0
@@ -704,7 +701,7 @@ class ProcessingPipeline:
                     structured["response"] = markdown_img_pattern.sub(replace_markdown_img, structured.get("response", ""))
                     
                     # Log cache stats
-                    from ..utils.image_cache import get_image_cache
+                    from .image_cache import get_image_cache
                     cache_stats = get_image_cache().get_stats()
                     logger.info(f"ImageCache stats: {cache_stats}")
                     
@@ -1206,4 +1203,4 @@ class ProcessingPipeline:
         except Exception:
             pass
         # Do NOT close shared crawler here, as pipeline instances are now per-request.
-        # Shared crawler lifecycle is managed by HYW.close() or global cleanup.
+        # Shared crawler lifecycle is managed globally.

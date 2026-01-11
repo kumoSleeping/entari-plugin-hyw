@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 
 import { marked, type Tokens } from 'marked'
+import katex from 'katex'
+import 'katex/dist/katex.min.css'
 import hljs from 'highlight.js/lib/core'
 // Import only common languages to reduce bundle size
 import python from 'highlight.js/lib/languages/python'
@@ -108,6 +110,19 @@ renderer.code = ({ text, lang }: Tokens.Code): string => {
 
 marked.use({ renderer })
 
+// Render LaTeX math with KaTeX
+function renderMath(tex: string, displayMode: boolean): string {
+  try {
+    return katex.renderToString(tex, {
+      displayMode,
+      throwOnError: false,
+      strict: false,
+    })
+  } catch {
+    return `<code>${tex}</code>`
+  }
+}
+
 // Process markdown and convert citations to badges
 const processedHtml = computed(() => {
   let md = props.markdown || ''
@@ -115,8 +130,33 @@ const processedHtml = computed(() => {
   // Remove References section at end
   md = md.replace(/(?:^|\n)\s*(?:#{1,3}|\*\*)\s*(?:References|Citations|Sources)[\s\S]*$/i, '')
   
+  // Protect math blocks from markdown parsing by replacing with placeholders
+  const mathBlocks: { placeholder: string; html: string }[] = []
+  let mathIndex = 0
+  
+  // Block math: $$...$$ or \[...\]
+  md = md.replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]/g, (_, tex1, tex2) => {
+    const tex = tex1 || tex2
+    const placeholder = `%%MATH_BLOCK_${mathIndex++}%%`
+    mathBlocks.push({ placeholder, html: `<div class="my-4 overflow-x-auto">${renderMath(tex.trim(), true)}</div>` })
+    return placeholder
+  })
+  
+  // Inline math: $...$ or \(...\) (but not $$)
+  md = md.replace(/\$([^\$\n]+?)\$|\\\((.+?)\\\)/g, (_, tex1, tex2) => {
+    const tex = tex1 || tex2
+    const placeholder = `%%MATH_INLINE_${mathIndex++}%%`
+    mathBlocks.push({ placeholder, html: renderMath(tex.trim(), false) })
+    return placeholder
+  })
+  
   // Convert markdown to HTML
   let html = marked.parse(md) as string
+  
+  // Restore math blocks
+  for (const { placeholder, html: mathHtml } of mathBlocks) {
+    html = html.replace(placeholder, mathHtml)
+  }
   
   // Render <summary> tags as technical highlight blocks
   html = html.replace(/<summary>([\s\S]*?)<\/summary>/g, (_, content) => {
