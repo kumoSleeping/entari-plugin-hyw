@@ -798,15 +798,18 @@ class ProcessingPipeline:
             # Cancel all background image tasks on error
             if hasattr(self, '_image_search_tasks') and self._image_search_tasks:
                 for task in self._image_search_tasks:
-                    if not task.done():
-                        task.cancel()
+                    if not task.done(): task.cancel()
+                # Wait briefly for cleanup
+                await asyncio.wait(self._image_search_tasks, timeout=0.1)
                 self._image_search_tasks.clear()
+
             from .image_cache import get_image_cache
             cache = get_image_cache()
             if cache._pending:
-                for task in cache._pending.values():
-                    if not task.done():
-                        task.cancel()
+                pending_tasks = list(cache._pending.values())
+                for task in pending_tasks:
+                    if not task.done(): task.cancel()
+                await asyncio.wait(pending_tasks, timeout=0.1)
                 cache._pending.clear()
             return {
                 "llm_response": f"I encountered a critical error: {e}",
@@ -993,12 +996,12 @@ class ProcessingPipeline:
                         item["is_image"] = True
                         self.all_web_results.append(item)
                     logger.info(f"Background image search completed: {len(images)} images for query '{query}'")
-                except asyncio.CancelledError:
-                    # Task was cancelled when agent ended - this is expected
-                    logger.debug(f"Background image search cancelled for query '{query}' (agent ended)")
-                    raise  # Re-raise to properly handle cancellation
-                except Exception as e:
-                    logger.error(f"Background image search failed for query '{query}': {e}")
+                except (asyncio.CancelledError, Exception) as e:
+                    # Silently handle cancellation or minor errors in background pre-warming
+                    if isinstance(e, asyncio.CancelledError):
+                        logger.debug(f"Background image search cancelled for query '{query}'")
+                    else:
+                        logger.error(f"Background image search failed for query '{query}': {e}")
             
             task = asyncio.create_task(_background_image_search())
             self._image_search_tasks.append(task)
@@ -1309,5 +1312,27 @@ class ProcessingPipeline:
             await self.search_service.close()
         except Exception:
             pass
-        # Do NOT close shared crawler here, as pipeline instances are now per-request.
-        # Shared crawler lifecycle is managed globally.
+
+        # Gracefully handle background tasks completion
+        if hasattr(self, '_image_search_tasks') and self._image_search_tasks:
+            for task in self._image_search_tasks:
+                if not task.done(): task.cancel()
+            try:
+                # Wait briefly for cancellation to propagate
+                await asyncio.wait(self._image_search_tasks, timeout=0.2)
+            except Exception: pass
+            self._image_search_tasks = []
+
+        # Also cleanup image cache pending tasks if any
+        try:
+            from .image_cache import get_image_cache
+            cache = get_image_cache()
+            if cache._pending:
+                pending = list(cache._pending.values())
+                for task in pending:
+                    if not task.done(): task.cancel()
+                await asyncio.wait(pending, timeout=0.2)
+                cache._pending.clear()
+        except Exception: pass
+        
+        self.all_web_results = []
