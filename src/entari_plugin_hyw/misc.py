@@ -88,3 +88,41 @@ def resolve_model_name(name: str, models_config: List[Dict[str, Any]]) -> Tuple[
         
     # Default: assume it's a valid ID passed directly
     return name, None
+
+
+# Hardcoded markdown for refuse answer
+REFUSE_ANSWER_MARKDOWN = """
+<summary>
+Instruct 专家分配此任务流程失败，请尝试提出其他问题~
+</summary>
+"""
+
+
+async def render_refuse_answer(
+    renderer,
+    output_path: str,
+    theme_color: str = "#ef4444",
+) -> bool:
+    """
+    Render a refuse-to-answer image using hardcoded markdown.
+    
+    Args:
+        renderer: ContentRenderer instance
+        output_path: Path to save the output image
+        theme_color: Theme color for the card
+        
+    Returns:
+        True if render succeeded, False otherwise
+    """
+    return await renderer.render(
+        markdown_content=REFUSE_ANSWER_MARKDOWN,
+        output_path=output_path,
+        stats={},
+        references=[],
+        page_references=[],
+        image_references=[],
+        stages_used=[],
+        image_timeout=1000,  # No images to load
+        theme_color=theme_color,
+    )
+

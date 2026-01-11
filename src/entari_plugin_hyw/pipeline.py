@@ -40,6 +40,8 @@ class ProcessingPipeline:
         self.current_mode = "standard"  # standard | agent
         # Global ID counter for all types (unified numbering)
         self.global_id_counter = 0
+        # Background tasks for async image search (not blocking agent)
+        self._image_search_tasks: List[asyncio.Task] = []
 
         self.web_search_tool = {
             "type": "function",
@@ -94,6 +96,23 @@ class ProcessingPipeline:
                 },
             },
         }
+        self.refuse_answer_tool = {
+            "type": "function",
+            "function": {
+                "name": "refuse_answer",
+                "description": "拒绝回答问题。当用户问题涉及敏感、违规、不适宜内容时调用此工具，立即终止流程并返回拒绝回答的图片。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "reason": {"type": "string", "description": "拒绝回答的原因（内部记录，不展示给用户）"},
+                    },
+                    "required": [],
+                },
+            },
+        }
+        # Flag to indicate refuse_answer was called
+        self._should_refuse = False
+        self._refuse_reason = ""
 
     async def execute(
         self,
@@ -122,6 +141,9 @@ class ProcessingPipeline:
         # Reset search cache and ID counter for this execution
         self.all_web_results = []
         self.global_id_counter = 0
+        # Reset refuse_answer flag
+        self._should_refuse = False
+        self._refuse_reason = ""
 
         try:
             logger.info(f"Pipeline: Starting workflow for '{user_input}' using {active_model}")
@@ -203,6 +225,21 @@ class ProcessingPipeline:
             instruct_trace["cost"] = instruct_cost
             trace["instruct"] = instruct_trace
 
+            # Check if refuse_answer was called - terminate early
+            if self._should_refuse:
+                logger.info(f"Pipeline: refuse_answer triggered. Reason: {self._refuse_reason}")
+                stats["total_time"] = time.time() - start_time
+                return {
+                    "llm_response": "",
+                    "structured_response": {},
+                    "stats": stats,
+                    "model_used": active_model,
+                    "conversation_history": current_history,
+                    "refuse_answer": True,
+                    "refuse_reason": self._refuse_reason,
+                    "stages_used": [],
+                }
+
             # Start agent loop
             agent_start_time = time.time()
             current_history.append({"role": "user", "content": user_input or "..."})
@@ -245,10 +282,10 @@ class ProcessingPipeline:
                 user_msgs_text = user_input or ""
 
                 search_msgs_text = self._format_search_msgs()
-                image_msgs_text = self._format_image_search_msgs()
+                # Image search results are NOT passed to LLM - they're for UI rendering only
                 
                 has_search_results = any(r.get("_type") == "search" for r in self.all_web_results)
-                has_image_results = any(r.get("_type") == "image" for r in self.all_web_results)
+                has_image_results = any(r.get("_type") == "image" for r in self.all_web_results)  # For UI rendering only
 
                 # Build agent system prompt
                 mode_desc_text = AGENT_SP_TOOLS_AGENT_ADD.format(tools_desc=tools_desc) if mode == "agent" else AGENT_SP_TOOLS_STANDARD_ADD
@@ -263,15 +300,14 @@ class ProcessingPipeline:
                 if vision_text:
                     system_prompt += AGENT_SP_INSTRUCT_VISION_ADD.format(vision_msgs=vision_text)
                 
-                # Append all search results (text, page, image) in one block
+                # Append search results (text and page only, NOT images)
                 page_msgs_text = self._format_page_msgs()
                 all_search_parts = []
                 if has_search_results and search_msgs_text:
                     all_search_parts.append(search_msgs_text)
                 if page_msgs_text:
                     all_search_parts.append(page_msgs_text)
-                if has_image_results and image_msgs_text:
-                    all_search_parts.append(image_msgs_text)
+                # Images are excluded from LLM prompt - they're for UI rendering only
                 
                 if all_search_parts:
                     system_prompt += AGENT_SP_SEARCH_ADD.format(search_msgs="\n".join(all_search_parts))
@@ -348,7 +384,13 @@ class ProcessingPipeline:
 
                 final_response_content = response.content or ""
                 current_history.append({"role": "assistant", "content": final_response_content})
-                agent_trace_steps.append({"step": step, "final": True, "output": final_response_content})
+                agent_trace_steps.append({
+                    "step": step, 
+                    "final": True, 
+                    "output": final_response_content,
+                    "llm_time": step_llm_time,
+                    "usage": step_usage
+                })
                 break
 
             if not final_response_content:
@@ -384,19 +426,20 @@ class ProcessingPipeline:
             stats["total_time"] = time.time() - start_time
             stats["steps"] = step
 
-            # Calculate billing info
+            # Calculate billing info correctly by summing up all actual costs
+            total_cost_sum = vision_cost + instruct_cost
+            for s in agent_trace_steps:
+                s_usage = s.get("usage", {})
+                if s_usage:
+                    s_in_price = float(getattr(self.config, "input_price", 0.0) or 0.0)
+                    s_out_price = float(getattr(self.config, "output_price", 0.0) or 0.0)
+                    total_cost_sum += (s_usage.get("input_tokens", 0) / 1_000_000 * s_in_price) + (s_usage.get("output_tokens", 0) / 1_000_000 * s_out_price)
+
             billing_info = {
                 "input_tokens": usage_totals["input_tokens"],
                 "output_tokens": usage_totals["output_tokens"],
-                "total_cost": 0.0,
+                "total_cost": total_cost_sum,
             }
-            input_price = getattr(self.config, "input_price", None) or 0.0
-            output_price = getattr(self.config, "output_price", None) or 0.0
-            
-            if input_price > 0 or output_price > 0:
-                input_cost = (usage_totals["input_tokens"] / 1_000_000) * input_price
-                output_cost = (usage_totals["output_tokens"] / 1_000_000) * output_price
-                billing_info["total_cost"] = input_cost + output_cost
 
             # Build stages_used list for UI display
             stages_used = []
@@ -598,12 +641,19 @@ class ProcessingPipeline:
                             })
 
                     elif s.get("final"):
+                        # Correctly calculate final step cost
+                        step_usage = s.get("usage", {})
+                        step_cost = 0.0
+                        if a_in_price > 0 or a_out_price > 0:
+                             step_cost = (step_usage.get("input_tokens", 0) / 1_000_000 * a_in_price) + (step_usage.get("output_tokens", 0) / 1_000_000 * a_out_price)
+
                         stages_used.append({
                             "name": "Agent",
                             "model": a_model,
                             "icon_config": agent_icon,
                             "provider": agent_provider,
-                            "time": 0, "cost": 0
+                            "time": s.get("llm_time", 0), 
+                            "cost": step_cost
                         })
 
             # Assign total time/cost to last Agent stage
@@ -668,10 +718,10 @@ class ProcessingPipeline:
             markdown_urls = markdown_img_pattern.findall(final_content)
             all_image_urls.update(markdown_urls)
             
-            # Get cached versions (waits for pending downloads, with timeout)
+            # Get cached versions (waits for pending downloads until agent ends)
             if all_image_urls:
                 try:
-                    cached_map = await get_cached_images(list(all_image_urls), wait_timeout=3.0)
+                    cached_map = await get_cached_images(list(all_image_urls))
                     
                     # Apply cached URLs to structured response
                     for img_ref in structured.get("image_references", []):
@@ -708,6 +758,29 @@ class ProcessingPipeline:
                 except Exception as e:
                     logger.warning(f"Failed to apply image cache: {e}")
 
+            # Cancel all background image search/download tasks when agent ends
+            if self._image_search_tasks:
+                logger.info(f"Cancelling {len(self._image_search_tasks)} background image search tasks")
+                for task in self._image_search_tasks:
+                    if not task.done():
+                        task.cancel()
+                # Wait a bit for tasks to handle cancellation gracefully
+                try:
+                    await asyncio.gather(*self._image_search_tasks, return_exceptions=True)
+                except Exception:
+                    pass
+                self._image_search_tasks.clear()
+            
+            # Also cancel any pending image downloads in the cache
+            from .image_cache import get_image_cache
+            cache = get_image_cache()
+            if cache._pending:
+                logger.info(f"Cancelling {len(cache._pending)} pending image downloads")
+                for task in cache._pending.values():
+                    if not task.done():
+                        task.cancel()
+                cache._pending.clear()
+
             return {
                 "llm_response": final_content,
                 "structured_response": structured,
@@ -722,6 +795,19 @@ class ProcessingPipeline:
 
         except Exception as e:
             logger.exception("Pipeline Critical Failure")
+            # Cancel all background image tasks on error
+            if hasattr(self, '_image_search_tasks') and self._image_search_tasks:
+                for task in self._image_search_tasks:
+                    if not task.done():
+                        task.cancel()
+                self._image_search_tasks.clear()
+            from .image_cache import get_image_cache
+            cache = get_image_cache()
+            if cache._pending:
+                for task in cache._pending.values():
+                    if not task.done():
+                        task.cancel()
+                cache._pending.clear()
             return {
                 "llm_response": f"I encountered a critical error: {e}",
                 "stats": stats,
@@ -893,18 +979,32 @@ class ProcessingPipeline:
 
         if name == "internal_image_search":
             query = args.get("query")
-            images = await self.search_service.image_search(query)
-
-            # Cache results and assign global IDs
-            for item in images:
-                self.global_id_counter += 1
-                item["_id"] = self.global_id_counter
-                item["_type"] = "image"
-                item["query"] = query
-                item["is_image"] = True
-                self.all_web_results.append(item)
-
-            return json.dumps({"image_results_count": len(images), "status": "cached_for_prompt"}, ensure_ascii=False)
+            # Start image search in background (non-blocking)
+            # Images are for UI rendering only, not passed to LLM
+            async def _background_image_search():
+                try:
+                    images = await self.search_service.image_search(query)
+                    # Cache results and assign global IDs for UI rendering
+                    for item in images:
+                        self.global_id_counter += 1
+                        item["_id"] = self.global_id_counter
+                        item["_type"] = "image"
+                        item["query"] = query
+                        item["is_image"] = True
+                        self.all_web_results.append(item)
+                    logger.info(f"Background image search completed: {len(images)} images for query '{query}'")
+                except asyncio.CancelledError:
+                    # Task was cancelled when agent ended - this is expected
+                    logger.debug(f"Background image search cancelled for query '{query}' (agent ended)")
+                    raise  # Re-raise to properly handle cancellation
+                except Exception as e:
+                    logger.error(f"Background image search failed for query '{query}': {e}")
+            
+            task = asyncio.create_task(_background_image_search())
+            self._image_search_tasks.append(task)
+            
+            # Return immediately without waiting for search to complete
+            return json.dumps({"image_results_count": 0, "status": "searching_in_background"}, ensure_ascii=False)
 
         if name == "crawl_page":
             url = args.get("url")
@@ -938,6 +1038,13 @@ class ProcessingPipeline:
             mode = args.get("mode", "standard")
             self.current_mode = mode
             return f"Mode set to {mode}"
+
+        if name == "refuse_answer":
+            reason = args.get("reason", "")
+            self._should_refuse = True
+            self._refuse_reason = reason
+            logger.info(f"[Tool] refuse_answer called. Reason: {reason}")
+            return "Refuse answer triggered. Pipeline will terminate early."
 
         return f"Unknown tool {name}"
 
@@ -1003,9 +1110,9 @@ class ProcessingPipeline:
         self, user_input: str, vision_text: str, model: str
     ) -> Tuple[str, List[str], Dict[str, Any], Dict[str, int], float]:
         """Returns (instruct_text, search_payloads, trace_dict, usage_dict, search_time)."""
-        # Instruct has access to: web_search, image_search, set_mode, crawl_page
-        tools = [self.web_search_tool, self.image_search_tool, self.set_mode_tool, self.crawl_page_tool]
-        tools_desc = "- internal_web_search: 搜索文本\n- internal_image_search: 搜索图片\n- crawl_page: 获取网页内容\n- set_mode: 设定standard/agent模式"
+        # Instruct has access to: web_search, image_search, set_mode, crawl_page, refuse_answer
+        tools = [self.web_search_tool, self.image_search_tool, self.set_mode_tool, self.crawl_page_tool, self.refuse_answer_tool]
+        tools_desc = "- internal_web_search: 搜索文本\n- internal_image_search: 搜索图片\n- crawl_page: 获取网页内容\n- set_mode: 设定standard/agent模式\n- refuse_answer: 拒绝回答（敏感/违规内容）"
 
         prompt = INSTRUCT_SP.format(user_msgs=user_input or "", tools_desc=tools_desc)
         

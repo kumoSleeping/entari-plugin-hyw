@@ -126,9 +126,11 @@ const headerTextColor = computed(() => {
 const themeStyle = computed(() => ({ 
   '--theme-color': themeColor.value,
   '--header-text-color': headerTextColor.value,
-  '--text-muted': '#4b5563',      // gray-600, higher contrast for mobile
-  '--border-color': '#e5e7eb',    // gray-200, for borders
-  '--bg-subtle': '#f9fafb'        // gray-50, for subtle backgrounds
+  '--text-primary': '#2c2c2e',       // Warm dark gray for headings (Apple HIG inspired)
+  '--text-body': '#3a3a3c',          // Softer reading color for body text
+  '--text-muted': '#636366',         // Muted secondary text
+  '--border-color': '#e5e7eb',       // gray-200, for borders
+  '--bg-subtle': '#f9fafb'           // gray-50, for subtle backgrounds
 }))
 
 
@@ -328,14 +330,14 @@ java -Xmx1024M -Xms1024M -jar prism-launcher.jar
 </script>
 
 <template>
-  <div class="min-h-screen bg-[#f2f2f2] flex justify-center" :style="themeStyle">
+  <div class="bg-[#f2f2f2] flex justify-center" :style="themeStyle">
     <!-- Main container with explicit background for screenshot capture -->
-    <div id="main-container" class="w-[540px] pt-16 pb-28 space-y-8 !bg-[#f2f2f2]" data-theme="light">
+    <div id="main-container" class="w-[540px] pt-16 pb-12 space-y-8 !bg-[#f2f2f2]" data-theme="light">
       
       <!-- Title -->
       <header v-if="mainTitle" class="px-6 mb-8">
         <!-- Removed Time/Icon Badge as requested -->
-        <h1 class="text-4xl font-black text-gray-800 leading-tight tracking-tighter uppercase tabular-nums" v-html="processedTitle"></h1>
+        <h1 class="text-4xl font-black leading-tight tracking-tighter uppercase tabular-nums" style="color: var(--text-primary)" v-html="processedTitle"></h1>
       </header>
 
       <!-- Content Sections -->

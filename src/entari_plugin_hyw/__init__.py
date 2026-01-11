@@ -22,7 +22,7 @@ from arclet.entari.event.command import CommandReceive
 from .pipeline import ProcessingPipeline
 from .history import HistoryManager
 from .render_vue import ContentRenderer
-from .misc import process_onebot_json, process_images, resolve_model_name
+from .misc import process_onebot_json, process_images, resolve_model_name, render_refuse_answer, REFUSE_ANSWER_MARKDOWN
 from arclet.entari.event.lifespan import Cleanup
 
 import os
@@ -288,18 +288,27 @@ async def process_request(
 
         # Use stats_list if available, otherwise standard stats
         stats_to_render = final_resp.get("stats_list", final_resp.get("stats", {}))
-             
-        render_ok = await renderer.render(
-            markdown_content=content,
-            output_path=output_path,
-            stats=stats_to_render,
-            references=structured.get("references", []),
-            page_references=structured.get("page_references", []),
-            image_references=structured.get("image_references", []),
-            stages_used=final_resp.get("stages_used", []),
-            image_timeout=conf.render_image_timeout_ms,
-            theme_color=conf.theme_color,
-        )
+        
+        # Check if refuse_answer was triggered
+        if final_resp.get("refuse_answer"):
+            logger.info(f"Refuse answer triggered. Rendering refuse image. Reason: {final_resp.get('refuse_reason', '')}")
+            render_ok = await render_refuse_answer(
+                renderer=renderer,
+                output_path=output_path,
+                theme_color=conf.theme_color,
+            )
+        else:
+            render_ok = await renderer.render(
+                markdown_content=content,
+                output_path=output_path,
+                stats=stats_to_render,
+                references=structured.get("references", []),
+                page_references=structured.get("page_references", []),
+                image_references=structured.get("image_references", []),
+                stages_used=final_resp.get("stages_used", []),
+                image_timeout=conf.render_image_timeout_ms,
+                theme_color=conf.theme_color,
+            )
         
         # Send & Save
         if not render_ok:
@@ -397,5 +406,4 @@ metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}
 
 @listen(CommandReceive)
 async def remove_at(content: MessageChain):
-    logger.info(f"remove_at: {content}")
     return content.lstrip(At)

@@ -653,8 +653,8 @@ class SearchService:
             result = await crawler.arun(
                 url=url,
                 config=CrawlerRunConfig(
-                    wait_until="networkidle",
-                    wait_for_images=True,
+                    wait_until="domcontentloaded",  # 不需要等 networkidle
+                    wait_for_images=False,          # 只需要 img src，不需要图片内容
                     wait_for="img",
                     cache_mode=CacheMode.BYPASS,
                     word_count_threshold=1,

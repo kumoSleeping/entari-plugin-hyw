@@ -163,7 +163,7 @@ const processedHtml = computed(() => {
     return `
        <div class="my-8 group shadow-sm shadow-black/10">
         <div class="h-4 w-full" style="background-color: var(--theme-color);"></div>
-        <div class="p-6 text-[19px] leading-relaxed text-gray-700 font-medium bg-white">
+        <div class="p-6 text-[19px] leading-relaxed font-medium bg-white" style="color: var(--text-body)">
           ${content}
         </div>
       </div>
@@ -235,9 +235,9 @@ const processedHtml = computed(() => {
   })
   
   // Convert [N] citations to small square badges with shadow
-  html = html.replace(/\[(\d+)\]/g, (_, n) => {
+  html = html.replace(/(\s*)\[(\d+)\]/g, (_, _space, n) => {
     const num = parseInt(n)
-    return `<sup class="inline-flex items-center justify-center w-[15px] h-[15px] text-[10px] font-bold cursor-default select-none ml-1 align-middle" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 2px 0 rgba(0,0,0,0.15)">${num}</sup>`
+    return `<sup class="inline-flex items-center justify-center w-[15px] h-[15px] text-[10px] font-bold cursor-default select-none ml-0.5 mr-0 align-middle" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 2px 0 rgba(0,0,0,0.15)">${num}</sup>`
   })
   
   // Style <u> underline tags with theme-colored solid underline
@@ -252,15 +252,16 @@ const processedHtml = computed(() => {
 <template>
   <div ref="contentRef"
        class="prose prose-slate max-w-none prose-lg
-              prose-headings:text-gray-800 prose-headings:font-bold prose-headings:mb-3 prose-headings:mt-8 prose-headings:tracking-tight
-              prose-p:text-gray-800 prose-p:leading-7 prose-p:my-4 prose-p:text-[20px] prose-li:text-[20px] prose-li:text-gray-800
+              prose-headings:font-bold prose-headings:mb-3 prose-headings:mt-8 prose-headings:tracking-tight
+              prose-p:leading-7 prose-p:my-4 prose-p:text-[20px] prose-li:text-[20px]
               prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline
-              prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.85em] prose-code:font-mono prose-code:text-gray-800
+              prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.85em] prose-code:font-mono
               prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200 prose-pre:rounded-none prose-pre:p-0
               prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200
               prose-ol:list-decimal prose-ol:pl-7 prose-ol:list-outside prose-ol:my-5
               prose-li:my-2.5 prose-li:leading-7
               [&>*:first-child]:!mt-0"
+       style="--prose-headings: var(--text-primary); --prose-body: var(--text-body); --prose-bold: var(--text-primary); --prose-code: var(--text-body)"
        v-html="processedHtml">
   </div>
 </template>
@@ -326,7 +327,7 @@ const processedHtml = computed(() => {
   margin-left: 0 !important;
   position: relative !important;
   font-style: italic !important;
-  color: #1f2937 !important; /* gray-800 */
+  color: var(--text-body, #3a3a3c) !important; /* Premium reading color */
 }
 
 .prose blockquote::before {

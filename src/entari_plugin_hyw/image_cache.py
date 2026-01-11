@@ -32,11 +32,9 @@ class ImageCache:
     def __init__(
         self, 
         max_size_kb: int = 500,  # Max image size to cache (KB)
-        timeout: float = 5.0,    # Download timeout per image
         max_concurrent: int = 6,  # Max concurrent downloads
     ):
         self.max_size_bytes = max_size_kb * 1024
-        self.timeout = timeout
         self.max_concurrent = max_concurrent
         
         # Cache storage: url -> base64_data_url or None (if failed)
@@ -78,7 +76,8 @@ class ImageCache:
         """
         async with self._semaphore:
             try:
-                async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
+                # No timeout - images download until agent ends
+                async with httpx.AsyncClient(timeout=None, follow_redirects=True) as client:
                     resp = await client.get(url, headers={
                         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
                     })
@@ -141,8 +140,6 @@ class ImageCache:
                     logger.debug(f"ImageCache: Cached {url} ({len(content)} bytes)")
                     return data_url
                     
-            except asyncio.TimeoutError:
-                logger.debug(f"ImageCache: Timeout downloading {url}")
             except Exception as e:
                 logger.debug(f"ImageCache: Failed to download {url}: {e}")
             
@@ -151,14 +148,13 @@ class ImageCache:
                 self._pending.pop(url, None)
             return None
     
-    async def get_cached(self, url: str, wait: bool = True, wait_timeout: float = 3.0) -> str:
+    async def get_cached(self, url: str, wait: bool = True) -> str:
         """
         Get cached image data URL, or original URL if not cached.
         
         Args:
             url: Original image URL
-            wait: If True, wait for pending download to complete
-            wait_timeout: Max time to wait for pending download
+            wait: If True, wait for pending download to complete (no timeout - waits until agent ends)
             
         Returns:
             Cached data URL or original URL
@@ -174,35 +170,34 @@ class ImageCache:
             
             pending_task = self._pending.get(url)
         
-        # Wait for pending download if requested
+        # Wait for pending download if requested (no timeout - waits until cancelled)
         if pending_task and wait:
             try:
-                await asyncio.wait_for(asyncio.shield(pending_task), timeout=wait_timeout)
+                await pending_task
                 async with self._lock:
                     cached = self._cache.get(url)
                     return cached if cached else url
-            except asyncio.TimeoutError:
-                logger.debug(f"ImageCache: Timeout waiting for {url}")
+            except asyncio.CancelledError:
+                logger.debug(f"ImageCache: Download cancelled for {url}")
                 return url
             except Exception:
                 return url
         
         return url
     
-    async def get_all_cached(self, urls: List[str], wait_timeout: float = 3.0) -> Dict[str, str]:
+    async def get_all_cached(self, urls: List[str]) -> Dict[str, str]:
         """
         Get cached URLs for multiple images.
         
         Args:
             urls: List of original URLs
-            wait_timeout: Max time to wait for all pending downloads
             
         Returns:
             Dict mapping original URL to cached data URL (or original if not cached)
         """
         result = {}
         
-        # Wait for all pending downloads first
+        # Wait for all pending downloads first (no timeout - waits until cancelled)
         pending_tasks = []
         async with self._lock:
             for url in urls:
@@ -211,12 +206,9 @@ class ImageCache:
         
         if pending_tasks:
             try:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending_tasks, return_exceptions=True),
-                    timeout=wait_timeout
-                )
-            except asyncio.TimeoutError:
-                logger.debug(f"ImageCache: Timeout waiting for batch download")
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            except asyncio.CancelledError:
+                logger.debug(f"ImageCache: Batch download cancelled")
         
         # Collect results
         for url in urls:
@@ -268,16 +260,15 @@ async def prefetch_images(urls: List[str]) -> None:
     cache.start_prefetch(urls)
 
 
-async def get_cached_images(urls: List[str], wait_timeout: float = 3.0) -> Dict[str, str]:
+async def get_cached_images(urls: List[str]) -> Dict[str, str]:
     """
     Convenience function to get cached images.
     
     Args:
         urls: List of original URLs
-        wait_timeout: Max time to wait
         
     Returns:
         Dict mapping original URL to cached data URL
     """
     cache = get_image_cache()
-    return await cache.get_all_cached(urls, wait_timeout=wait_timeout)
+    return await cache.get_all_cached(urls)

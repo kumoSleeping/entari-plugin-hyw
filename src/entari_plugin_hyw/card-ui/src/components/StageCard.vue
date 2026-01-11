@@ -1,13 +1,7 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { Icon } from '@iconify/vue'
 import type { Stage } from '../types'
-
-const failedImages = ref<Record<string, boolean>>({})
-
-function handleImageError(url: string) {
-  failedImages.value[url] = true
-}
 
 const props = defineProps<{
   stage: Stage
@@ -16,6 +10,52 @@ const props = defineProps<{
   prevStageName?: string
   refOffset?: number
 }>()
+
+const failedImages = ref<Record<string, boolean>>({})
+const imageHeights = ref<Record<string, number>>({})
+
+function handleImageError(url: string) {
+  failedImages.value[url] = true
+}
+
+function handleImageLoad(url: string, event: Event) {
+  const img = event.target as HTMLImageElement
+  if (img.naturalWidth && img.naturalHeight) {
+    // Store aspect ratio as height per unit width
+    imageHeights.value[url] = img.naturalHeight / img.naturalWidth
+  }
+}
+
+// Compute two columns for masonry layout
+const imageColumns = computed(() => {
+  const images = props.stage.image_references || []
+  const leftColumn: typeof images = []
+  const rightColumn: typeof images = []
+  let leftHeight = 0
+  let rightHeight = 0
+
+  for (const img of images) {
+    if (failedImages.value[img.url]) continue
+    
+    // Get aspect ratio (default to 1 if not loaded yet)
+    const aspectRatio = imageHeights.value[img.url] || 1
+    
+    // Add to shorter column
+    if (leftHeight <= rightHeight) {
+      leftColumn.push(img)
+      leftHeight += aspectRatio
+    } else {
+      rightColumn.push(img)
+      rightHeight += aspectRatio
+    }
+  }
+
+  return { leftColumn, rightColumn }
+})
+
+
+
+
 
 function getDomain(url: string): string {
   try {
@@ -147,17 +187,31 @@ function getModelLogo(model: string): string | undefined {
                 </a>
             </div>
 
-            <!-- Image Search Results -->
+            <!-- Image Search Results - True Masonry Layout -->
             <div v-if="stage.image_references?.length" class="pr-3 py-3 relative z-10">
-              <div class="grid grid-cols-2 gap-2 items-start">
-                <a v-for="(img, idx) in stage.image_references" :key="idx" 
-                   v-show="!failedImages[img.url]"
-                   :href="img.url" target="_blank" 
-                   class="relative overflow-hidden transition-all hover:opacity-90 group">
-                  <img :src="img.thumbnail || img.url" 
-                       @error="handleImageError(img.url)"
-                       class="w-full h-auto block group-hover:scale-[1.02] transition-transform">
-                </a>
+              <div class="flex gap-2">
+                <!-- Left Column -->
+                <div class="flex-1 flex flex-col gap-2">
+                  <a v-for="(img, idx) in imageColumns.leftColumn" :key="`left-${img.url}-${idx}`" 
+                     :href="img.url" target="_blank" 
+                     class="relative overflow-hidden transition-all hover:opacity-90 group block">
+                    <img :src="img.thumbnail || img.url" 
+                         @load="handleImageLoad(img.url, $event)"
+                         @error="handleImageError(img.url)"
+                         class="w-full h-auto block group-hover:scale-[1.02] transition-transform">
+                  </a>
+                </div>
+                <!-- Right Column -->
+                <div class="flex-1 flex flex-col gap-2">
+                  <a v-for="(img, idx) in imageColumns.rightColumn" :key="`right-${img.url}-${idx}`" 
+                     :href="img.url" target="_blank" 
+                     class="relative overflow-hidden transition-all hover:opacity-90 group block">
+                    <img :src="img.thumbnail || img.url" 
+                         @load="handleImageLoad(img.url, $event)"
+                         @error="handleImageError(img.url)"
+                         class="w-full h-auto block group-hover:scale-[1.02] transition-transform">
+                  </a>
+                </div>
               </div>
             </div>
 
