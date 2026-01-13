@@ -196,17 +196,8 @@ class ProcessingPipeline:
                 
                 # Deduplicate while preserving order and filter blocked domains
                 final_fetch_urls = []
-                blocked_domains = getattr(self.config, "fetch_blocked_domains", None)
-                if blocked_domains is None:
-                    blocked_domains = ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"]
-                if isinstance(blocked_domains, str):
-                    blocked_domains = [d.strip() for d in blocked_domains.split(",")]
-                
                 for url in raw_fetch_urls:
                     if url and url not in final_fetch_urls:
-                        # Check blocklist
-                        if any(domain in url.lower() for domain in blocked_domains):
-                            continue
                         final_fetch_urls.append(url)
                 
                 fetch_urls = final_fetch_urls
@@ -574,19 +565,7 @@ class ProcessingPipeline:
                 self._search_error = str(e)
                 raise e
             
-            # Filter blocked domains immediately
-            blocked_domains = getattr(self.config, "fetch_blocked_domains", ["wikipedia.org", "csdn.net", "baidu.com"])
-            if isinstance(blocked_domains, str):
-                blocked_domains = [d.strip() for d in blocked_domains.split(",")]
-            
-            # Use list comprehension for filtering
-            original_count = len(web)
-            web = [
-                item for item in web 
-                if not any(blocked in item.get("url", "").lower() for blocked in blocked_domains)
-            ]
-            if len(web) < original_count:
-                logger.info(f"Filtered {original_count - len(web)} blocked search results.")
+            # Filter blocked domains removed per user request (handled in search query)
             
             # Cache results and assign global IDs
             for item in web:
