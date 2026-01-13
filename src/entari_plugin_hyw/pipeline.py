@@ -196,7 +196,9 @@ class ProcessingPipeline:
                 
                 # Deduplicate while preserving order and filter blocked domains
                 final_fetch_urls = []
-                blocked_domains = getattr(self.config, "fetch_blocked_domains", ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"])
+                blocked_domains = getattr(self.config, "fetch_blocked_domains", None)
+                if blocked_domains is None:
+                    blocked_domains = ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"]
                 if isinstance(blocked_domains, str):
                     blocked_domains = [d.strip() for d in blocked_domains.split(",")]
                 

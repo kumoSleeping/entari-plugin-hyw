@@ -66,7 +66,9 @@ class SearchService:
         self._jina_api_key = getattr(config, "jina_api_key", None)
         
         # Blocked domains for search filtering
-        self._blocked_domains = getattr(config, "fetch_blocked_domains", ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"])
+        self._blocked_domains = getattr(config, "fetch_blocked_domains", None)
+        if self._blocked_domains is None:
+            self._blocked_domains = ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"]
         if isinstance(self._blocked_domains, str):
             self._blocked_domains = [d.strip() for d in self._blocked_domains.split(",")]
             
