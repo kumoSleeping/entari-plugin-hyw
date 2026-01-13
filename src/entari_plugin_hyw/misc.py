@@ -101,28 +101,35 @@ Instruct 专家分配此任务流程失败，请尝试提出其他问题~
 async def render_refuse_answer(
     renderer,
     output_path: str,
+    reason: str = "Instruct 专家分配此任务流程失败，请尝试提出其他问题~",
     theme_color: str = "#ef4444",
 ) -> bool:
     """
-    Render a refuse-to-answer image using hardcoded markdown.
+    Render a refuse-to-answer image using the provided reason.
     
     Args:
         renderer: ContentRenderer instance
         output_path: Path to save the output image
+        reason: The refusal reason to display
         theme_color: Theme color for the card
         
     Returns:
         True if render succeeded, False otherwise
     """
+    markdown = f"""
+# 任务中止
+
+> {reason}
+"""
     return await renderer.render(
-        markdown_content=REFUSE_ANSWER_MARKDOWN,
+        markdown_content=markdown,
         output_path=output_path,
         stats={},
         references=[],
         page_references=[],
         image_references=[],
         stages_used=[],
-        image_timeout=1000,  # No images to load
+        image_timeout=1000,
         theme_color=theme_color,
     )
 

@@ -5,7 +5,7 @@ import html
 from typing import List, Dict, Optional, Any
 from loguru import logger
 from crawl4ai import AsyncWebCrawler
-from crawl4ai.async_configs import CrawlerRunConfig
+from crawl4ai.async_configs import CrawlerRunConfig, DefaultMarkdownGenerator
 from crawl4ai.cache_context import CacheMode
 
 # Optional imports for new strategies
@@ -64,9 +64,16 @@ class SearchService:
         self._search_provider = getattr(config, "search_provider", "crawl4ai")
         self._fetch_provider = getattr(config, "fetch_provider", "crawl4ai")
         self._jina_api_key = getattr(config, "jina_api_key", None)
-        logger.info(f"SearchService initialized: search_provider='{self._search_provider}', fetch_provider='{self._fetch_provider}', limit={self._default_limit}, timeout={self._search_timeout}s")
+        
+        # Blocked domains for search filtering
+        self._blocked_domains = getattr(config, "fetch_blocked_domains", ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"])
+        if isinstance(self._blocked_domains, str):
+            self._blocked_domains = [d.strip() for d in self._blocked_domains.split(",")]
+            
+        logger.info(f"SearchService initialized: search_provider='{self._search_provider}', fetch_provider='{self._fetch_provider}', limit={self._default_limit}, timeout={self._search_timeout}s, blocked={self._blocked_domains}")
 
     def _build_search_url(self, query: str) -> str:
+        # Note: query is already modified with -site:... in search() before calling this
         encoded_query = urllib.parse.quote(query)
         base = getattr(self.config, "search_base_url", "https://lite.duckduckgo.com/lite/?q={query}")
         if "{query}" in base:
@@ -75,6 +82,8 @@ class SearchService:
         return f"{base}{sep}q={encoded_query}"
 
     def _build_image_url(self, query: str) -> str:
+        # Images usually don't need strict text site blocking, but we can apply it if desired.
+        # For now, we apply it to image search as well for consistency.
         encoded_query = urllib.parse.quote(query)
         base = getattr(self.config, "image_search_base_url", "https://duckduckgo.com/?q={query}&iax=images&ia=images")
         if "{query}" in base:
@@ -89,8 +98,17 @@ class SearchService:
         if not query:
             return []
 
+        # Apply blocked domains to query
+        if self._blocked_domains:
+            exclusions = " ".join([f"-site:{d}" for d in self._blocked_domains])
+            # Only append if not already present (simple check)
+            if "-site:" not in query:
+                original_query = query
+                query = f"{query} {exclusions}"
+                logger.debug(f"SearchService: Modified query '{original_query}' -> '{query}'")
+
         provider = self._search_provider.lower()
-        logger.info(f"SearchService: searching for '{query}' using provider='{provider}'")
+        logger.info(f"SearchService: Query='{query}' | Provider='{provider}'")
 
         if provider == "httpx":
             return await self._search_httpx(query)
@@ -220,14 +238,14 @@ class SearchService:
             
             if err:
                  logger.warning(f"SearchService(ddgs) text search failed after retries: {err}")
-                 return []
+                 raise Exception(f"DuckDuckGo API Error: {err}")
             
             logger.info(f"SearchService(ddgs): Got {len(results)} text results")
             return results
 
         except Exception as e:
             logger.error(f"SearchService(ddgs) thread execution failed: {e}")
-            return []
+            raise e
 
     async def _search_ddgs_images(self, query: str) -> List[Dict[str, str]]:
         """
@@ -417,7 +435,8 @@ class SearchService:
             return {
                 "content": content[:8000],
                 "title": title,
-                "url": url
+                "url": url,
+                "images": []
             }
 
         except Exception as e:
@@ -467,7 +486,8 @@ class SearchService:
             return {
                 "content": content[:8000],
                 "title": title,
-                "url": url
+                "url": url,
+                "images": []
             }
 
         except Exception as e:
@@ -488,6 +508,14 @@ class SearchService:
                     cache_mode=CacheMode.BYPASS,
                     word_count_threshold=1,
                     screenshot=False,
+                    # Markdown config from test.py
+                    markdown_generator=DefaultMarkdownGenerator(
+                        options={
+                            "ignore_links": True,
+                            "ignore_images": False,
+                            "skip_internal_links": True
+                        }
+                    ),
                     capture_console_messages=False,
                     capture_network_requests=False,
                 ),
@@ -506,10 +534,19 @@ class SearchService:
                  # Minimal fallback not really possible without parsing HTML again or regex
                  pass
 
+            # Extract images from media
+            images = []
+            if result.media and "images" in result.media:
+                for img in result.media["images"]:
+                     src = img.get("src")
+                     if src and src.startswith("http"):
+                         images.append(src)
+            
             return {
                 "content": content[:8000], 
                 "title": title, 
-                "url": result.url or url 
+                "url": result.url or url,
+                "images": images
             }
         except Exception as e:
             logger.error(f"Crawl4AI fetch failed: {e}")

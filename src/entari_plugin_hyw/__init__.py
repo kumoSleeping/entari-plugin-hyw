@@ -129,6 +129,20 @@ class HywConfig(BasicConfModel):
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
     instruct_model_provider: Optional[str] = None
+    # Fetch Model Config
+    fetch_model_name: Optional[str] = None
+    fetch_api_key: Optional[str] = None
+    fetch_base_url: Optional[str] = None
+    fetch_extra_body: Optional[Dict[str, Any]] = None
+    fetch_input_price: Optional[float] = None
+    fetch_output_price: Optional[float] = None
+    # Summary Model Config
+    summary_model_name: Optional[str] = None
+    summary_api_key: Optional[str] = None
+    summary_base_url: Optional[str] = None
+    summary_extra_body: Optional[Dict[str, Any]] = None
+    summary_input_price: Optional[float] = None
+    summary_output_price: Optional[float] = None
     # UI Theme
     theme_color: str = "#ef4444"  # Tailwind red-500, supports hex/RGB/color names
     
@@ -295,6 +309,7 @@ async def process_request(
             render_ok = await render_refuse_answer(
                 renderer=renderer,
                 output_path=output_path,
+                reason=final_resp.get('refuse_reason', 'Instruct 专家分配此任务流程失败，请尝试提出其他问题~'),
                 theme_color=conf.theme_color,
             )
         else:
@@ -352,8 +367,7 @@ async def process_request(
             code=display_session_id,
         )
         
-        if conf.save_conversation and sent_id:
-            history_manager.save_to_disk(sent_id)
+
 
 
     except Exception as e:
@@ -370,8 +384,8 @@ async def process_request(
                 # Use a temporary ID for error cases
                 error_id = f"error_{int(time.time())}_{secrets.token_hex(4)}"
                 history_manager.remember(error_id, resp.get("conversation_history", []), [], {"model": model_used if 'model_used' in locals() else "unknown", "error": str(e)}, context_id, code=display_session_id if 'display_session_id' in locals() else None)
-                history_manager.save_to_disk(error_id)
-                logger.info(f"Saved error conversation to {error_id}")
+                # history_manager.save_to_disk(error_id)
+                logger.info(f"Saved error conversation memory to {error_id}")
             except Exception as save_err:
                 logger.error(f"Failed to save error conversation: {save_err}")
 
