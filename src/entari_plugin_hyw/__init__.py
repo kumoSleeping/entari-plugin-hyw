@@ -129,6 +129,14 @@ class HywConfig(BasicConfModel):
     model_provider: Optional[str] = None
     vision_model_provider: Optional[str] = None
     instruct_model_provider: Optional[str] = None
+    
+    # Search/Fetch Settings
+    search_timeout: float = 10.0
+    search_retries: int = 2
+    fetch_timeout: float = 15.0
+    fetch_max_results: int = 5
+    fetch_blocked_domains: List[str] = field(default_factory=lambda: ["wikipedia.org", "csdn.net", "sohu.com", "sogou.com"])
+    
     # Fetch Model Config
     fetch_model_name: Optional[str] = None
     fetch_api_key: Optional[str] = None
