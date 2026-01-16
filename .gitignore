@@ -56,3 +56,13 @@ images
 data
 # Node
 node_modules/
+
+
+# Icons (bulky/generated)
+**/icon/
+**/icons/
+public/icon
+src/assets/icon
+
+.browser_context
+

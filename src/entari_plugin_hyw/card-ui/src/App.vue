@@ -2,19 +2,37 @@
 import { ref, computed, onMounted } from 'vue'
 import { Icon } from '@iconify/vue'
 
-import type { RenderData } from './types'
-import StageCard from './components/StageCard.vue'
+import type { RenderData, Reference } from './types'
 import MarkdownContent from './components/MarkdownContent.vue'
+
+// Import icons for Flow area
+import iconOpenai from './assets/icon/openai.svg'
+import iconGemini from './assets/icon/gemini.svg'
+import iconAnthropic from './assets/icon/anthropic.svg'
+import iconDeepseek from './assets/icon/deepseek.png'
+import iconQwen from './assets/icon/qwen.png'
+import iconMistral from './assets/icon/mistral.png'
+import iconGrok from './assets/icon/grok.png'
+import iconHuggingface from './assets/icon/huggingface.png'
+import iconCerebras from './assets/icon/cerebras.svg'
+import iconMinimax from './assets/icon/minimax.png'
+import iconPerplexity from './assets/icon/perplexity.svg'
+import iconNvidia from './assets/icon/nvida.png'
+import iconMicrosoft from './assets/icon/microsoft.svg'
+import iconXiaomi from './assets/icon/xiaomi.png'
+import iconOpenrouter from './assets/icon/openrouter.png'
 
 // Get icon for card type
 const getCardIcon = (contentType?: string): string => {
   switch (contentType) {
-    case 'summary': return 'mdi:file-document-outline'
+    case 'summary': return 'mdi:text-box-outline'
     case 'code': return 'mdi:code-braces'
     case 'table': return 'mdi:table'
     default: return 'mdi:card-outline'
   }
 }
+
+
 
 // Get display label for card
 const getCardLabel = (contentType?: string, language?: string): string => {
@@ -43,34 +61,85 @@ window.updateRenderData = (newData: RenderData) => {
 const numSearchRefs = computed(() => data.value?.references?.length || 0)
 const numPageRefs = computed(() => data.value?.page_references?.length || 0)
 
-// Calculate the reference offset for each stage (for unified badge numbering)
-const getRefOffset = (stageIndex: number): number => {
-  if (!data.value?.stages) return 0
-  let offset = 0
-  for (let i = 0; i < stageIndex; i++) {
-    const stage = data.value.stages[i]
-    if (stage) {
-      offset += (stage.references?.length || 0) + (stage.crawled_pages?.length || 0)
-    }
-  }
-  return offset
-}
 
 // Helper: Strips content before the first H1 heading (e.g., AI "thought" prefixes)
 const stripPrefixBeforeH1 = (text: string): string => {
   // Find the first line starting with "# " (H1)
   const h1Match = text.match(/^#\s+/m)
+  const summaryMatch = text.match(/<summary>/)
+  
+  let startIndex = -1
+  
   if (h1Match && h1Match.index !== undefined) {
-    // If found, return everything starting from that H1
-    // This effectively discards any "thought" blocks or "### ASSISTANT" prefixes appearing before it.
-    return text.substring(h1Match.index)
+    startIndex = h1Match.index
   }
+  
+  if (summaryMatch && summaryMatch.index !== undefined) {
+    // If summary is found and is BEFORE the H1 (or no H1 found), start from summary
+    if (startIndex === -1 || summaryMatch.index < startIndex) {
+        startIndex = summaryMatch.index
+    }
+  }
+
+  if (startIndex !== -1) {
+    return text.substring(startIndex)
+  }
+  
   // If no H1 found, return text as-is (fallback)
   return text
 }
 
+// Reorder citations and return cleaned markdown + reordered refs
+const reorderedData = computed(() => {
+  const originalMd = stripPrefixBeforeH1(data.value?.markdown || '')
+  if (!originalMd) return { markdown: '', references: [] }
+
+  const searchRefs = (data.value?.references || []).map((r, i) => ({...r, type: 'search', _orig: i + 1}))
+  const pageRefs = (data.value?.page_references || []).map((r, i) => ({...r, type: 'page', _orig: (data.value?.references?.length || 0) + i + 1}))
+  const allRefs = [...searchRefs, ...pageRefs]
+
+  const citationRegex = /\[(\d+)\]/g
+  const usageOrder: number[] = []
+  let match
+  // Scan for usage order
+  while ((match = citationRegex.exec(originalMd)) !== null) {
+    const id = parseInt(match[1]!)
+    if (!usageOrder.includes(id)) usageOrder.push(id)
+  }
+  
+  const idMap = new Map()
+  const newReferences: any[] = []
+  
+  // 1. Used refs
+  usageOrder.forEach((oldId, idx) => {
+    const newId = idx + 1
+    idMap.set(oldId, newId)
+    const sourceRef = allRefs[oldId - 1]
+    if (sourceRef) newReferences.push({ ...sourceRef, original_idx: newId })
+  })
+  
+  // 2. Unused refs
+  allRefs.forEach((ref, idx) => {
+    const oldId = idx + 1
+    if (!idMap.has(oldId)) {
+      const newId = newReferences.length + 1
+      idMap.set(oldId, newId)
+      newReferences.push({ ...ref, original_idx: newId })
+    }
+  })
+  
+  const newMd = originalMd.replace(citationRegex, (m, n) => {
+    const newId = idMap.get(parseInt(n))
+    return newId ? `[${newId}]` : m
+  })
+  
+  return { markdown: newMd, references: newReferences }
+})
+
+const referencesList = computed(() => reorderedData.value.references)
+
 const mainTitle = computed(() => {
-  const md = stripPrefixBeforeH1(data.value?.markdown || '')
+  const md = reorderedData.value.markdown || ''
   const match = md.match(/^#\s+(.+)$/m)
   return match && match[1] ? match[1].trim() : ''
 })
@@ -80,6 +149,141 @@ const processedTitle = computed(() => {
   return mainTitle.value.replace(/<u>([^<]*)<\/u>/g, (_, content) => {
     return `<span class="underline decoration-[5px] underline-offset-8" style="text-decoration-color: var(--theme-color)">${content}</span>`
   })
+})
+
+function getDomain(url: string): string {
+  try {
+    const urlObj = new URL(url)
+    const hostname = urlObj.hostname.replace('www.', '')
+    let pathname = urlObj.pathname === '/' ? '' : decodeURIComponent(urlObj.pathname)
+    
+    // Truncate if too long
+    const maxLen = 40
+    let result = hostname + pathname
+    if (result.length > maxLen) {
+      result = result.slice(0, maxLen - 3) + '...'
+    }
+    return result
+  } catch {
+    return url.length > 40 ? url.slice(0, 37) + '...' : url
+  }
+}
+
+function getFavicon(url: string): string {
+  const domain = getDomain(url)
+  return `https://www.google.com/s2/favicons?domain=${domain}&sz=32`
+}
+
+/**
+ * Robustly formats an image source.
+ * Handles:
+ * 1. Absolute URLs (http, https, //)
+ * 2. Data URIs (data:image/...)
+ * 3. Raw Base64 strings (fallbacks to data URI)
+ */
+function getImageUrl(src: string): string {
+  if (!src) return ''
+  
+  // 1. Data URI
+  if (src.startsWith('data:')) return src
+  
+  // 2. Protocol-relative or Absolute URL
+  if (src.startsWith('//') || src.startsWith('http:') || src.startsWith('https:')) {
+    return src
+  }
+  
+  // 3. Assume raw base64 (remove potential whitespace)
+  const cleanBase64 = src.trim()
+  if (cleanBase64.length > 0) {
+    return `data:image/jpeg;base64,${cleanBase64}`
+  }
+  
+  return src
+}
+
+function isValidImage(src: string): boolean {
+  if (!src) return false
+  if (src.startsWith('http') || src.startsWith('//')) return true
+  if (src.length < 20) return false // Too short for meaningful data
+  return true
+}
+
+// Get all instruct/analysis stages for aggregation
+const instructStages = computed(() => data.value?.stages?.filter(s => 
+  s.name?.toLowerCase() === 'instruct' || 
+  s.name?.toLowerCase().startsWith('analysis') ||
+  s.provider?.toLowerCase() === 'instruct'
+) || [])
+
+// Aggregated instruct data (sum of all rounds)
+const instructStage = computed(() => {
+  const stages = instructStages.value
+  if (!stages.length) return null
+  
+  // Get first stage as base for model/icon info
+  const first = stages[0]
+  
+  // Sum time, usage, and cost from all rounds
+  const totalTime = stages.reduce((sum, s) => sum + (s.time || 0), 0)
+  const totalInputTokens = stages.reduce((sum, s) => sum + (s.usage?.input_tokens || 0), 0)
+  const totalOutputTokens = stages.reduce((sum, s) => sum + (s.usage?.output_tokens || 0), 0)
+  const totalCost = stages.reduce((sum, s) => sum + (s.cost || 0), 0)
+  
+  return {
+    ...first,
+    time: totalTime,
+    usage: { input_tokens: totalInputTokens, output_tokens: totalOutputTokens },
+    cost: totalCost
+  }
+})
+
+const summaryStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'summary' || s.name?.toLowerCase() === 'agent'))
+// searchStage removed - no longer needed for display
+
+// Collect all extracted images from references
+const galleryImages = computed(() => {
+  const refs = (data.value?.references || []) as Reference[]
+  const images: string[] = []
+  const seenHashes = new Set<string>()
+  
+  // Strategy: Balanced picking
+  // 1. First Pass: Try to pick 1-2 from each
+  for (const ref of refs) {
+    if (ref.images && Array.isArray(ref.images)) {
+      let count = 0
+      for (const b64 of ref.images) {
+        if (!isValidImage(b64)) continue
+        const hash = `${b64.substring(0, 100)}_${b64.length}`
+        if (!seenHashes.has(hash)) {
+          seenHashes.add(hash)
+          images.push(b64)
+          count++
+          if (count >= 2) break
+        }
+      }
+    }
+  }
+  
+  // 2. Second Pass: If still too few, pick more from anyone
+  if (images.length < 8) {
+    for (const ref of refs) {
+      if (ref.images && Array.isArray(ref.images)) {
+        for (const b64 of ref.images) {
+          if (!isValidImage(b64)) continue
+          const hash = `${b64.substring(0, 100)}_${b64.length}`
+          if (!seenHashes.has(hash)) {
+            seenHashes.add(hash)
+            images.push(b64)
+            if (images.length >= 12) break
+          }
+        }
+      }
+      if (images.length >= 12) break
+    }
+  }
+
+  console.log(`[Gallery] Selected ${images.length} images. First 100 chars of #1:`, images[0]?.substring(0, 100))
+  return images.slice(0, 12)
 })
 
 
@@ -123,24 +327,47 @@ const headerTextColor = computed(() => {
   return luminance > 0.4 ? '#1f2937' : '#ffffff'  // gray-800 or white
 })
 
+
+
+const getIconPath = (stage?: any): string => {
+  if (!stage) return iconOpenai
+  const model = (stage.model || '').toLowerCase()
+  const provider = (stage.provider || '').toLowerCase()
+  
+  // Match to imported icons
+  if (model.includes('gpt') || model.includes('o1') || provider.includes('openai')) return iconOpenai
+  if (model.includes('gemini') || provider.includes('google')) return iconGemini
+  if (model.includes('claude') || provider.includes('anthropic')) return iconAnthropic
+  if (model.includes('deepseek') || provider.includes('deepseek')) return iconDeepseek
+  if (model.includes('qwen') || provider.includes('qwen') || provider.includes('alibaba')) return iconQwen
+  if (model.includes('mistral') || provider.includes('mistral')) return iconMistral
+  if (model.includes('grok') || provider.includes('xai')) return iconGrok
+  if (model.includes('huggingface')) return iconHuggingface
+  if (model.includes('cerebras')) return iconCerebras
+  if (model.includes('minimax')) return iconMinimax
+  if (model.includes('perplexity')) return iconPerplexity
+  if (model.includes('nvidia')) return iconNvidia
+  if (model.includes('phi') || provider.includes('microsoft')) return iconMicrosoft
+  if (model.includes('xiaomi') || model.includes('mimo')) return iconXiaomi
+  
+  return iconOpenrouter  // Default fallback
+}
+
+
 const themeStyle = computed(() => ({ 
   '--theme-color': themeColor.value,
   '--header-text-color': headerTextColor.value,
   '--text-primary': '#2c2c2e',       // Warm dark gray for headings (Apple HIG inspired)
   '--text-body': '#3a3a3c',          // Softer reading color for body text
-  '--text-muted': '#636366',         // Muted secondary text
+  '--text-muted': '#86868b',         // Lighter muted secondary text (updated from #636366)
   '--border-color': '#e5e7eb',       // gray-200, for borders
   '--bg-subtle': '#f9fafb'           // gray-50, for subtle backgrounds
 }))
 
 
 const parsedSections = computed(() => {
-  const rawMd = data.value?.markdown || ''
-  if (!rawMd) return []
-  
-  // Robustness: Strip any content (AI thoughts, system role prefixes) before the first H1 heading
-  // User request: "Match the first big header, ignore what comes before it" ("匹配第一个大标题 无视前面的")
-  const md = stripPrefixBeforeH1(rawMd)
+  const md = reorderedData.value.markdown || ''
+  if (!md) return []
   
   let content = md.replace(/^#\s+.+$/m, '')
   content = content.replace(/(?:^|\n)\s*(?:#{1,3}|\*\*)\s*(?:References|Citations|Sources)[\s\S]*$/i, '')
@@ -215,114 +442,70 @@ onMounted(() => {
   } else {
     // Demo data for development preview
     data.value = {
-      markdown: `# 终极硬核整合包格雷科技新视野
+      markdown: `# Entari Headless Browser System
+This interface demonstrates the capabilities of the Entari Headless Browser system. It generates high-resolution, pixel-perfect captures of AI interactions [1].
 
 <summary>
-《格雷科技：新视野》（GregTech: New Horizons，简称 GTNH）是一款基于 Minecraft 1.7.10 版本的深度硬核科技向整合包。它以 GregTech 5 Unofficial 为核心，通过超过 8 年的持续开发，将 300 多个模组深度集成，构建了极其严苛且逻辑严密的科技树，是公认的生存挑战巅峰之作。
+The system renders Markdown, Code, Tables, and complex UI layouts using a headless browser, optimized for archiving and sharing AI logic flows. This summary block highlights key information [2].
 </summary>
 
-## 核心机制与游戏体验
-GTNH 的核心在于"格雷化"改造，几乎所有模组的合成表都经过重新设计，以匹配其严苛的阶级制度 [4][8]。玩家需要从原始的石器时代开始，历经蒸汽时代、电力时代，最终向星际航行迈进。其游戏过程极其漫长，旨在让玩家在每一毫秒的进度中感受工业发展的成就感 [3][7]。
+## Component Showcase
 
-![GTNH 游戏场景](https://i.ytimg.com/vi/5T-oSWAgaMM/maxresdefault.jpg)
+### Code Highlighting
+\`\`\`python
+class EntariBrowser:
+    def capture(self, url: str) -> bytes:
+        """Captures a screenshot of the given URL."""
+        return self.driver.get_screenshot_as_png()
+\`\`\`
 
-## 科技阶层与任务系统
-整合包拥有 15 个清晰的科技等级（Tiers），最终目标是建造"星门"（Stargate）[2]。为了引导玩家不迷失在复杂的工业流程中，GTNH 内置了超过 3900 条任务的巨型任务书，涵盖了从基础生存到高阶多方块结构的详细指导 [4][7]。
+### Data Tables
+| Feature | Status | Priority |
+| :--- | :--- | :--- |
+| Markdown | ✅ Supported | High |
+| Syntax Highlight | ✅ Supported | Medium |
+| Tables | ✅ Supported | Low |
 
-- 15 个科技等级
-    - 任务数量：3900+
-    - 最终目标：建造"星门"
-
-> 机动战士高达系列是日本动画史上最具影响力的动画作品之一，深受全球观众的喜爱。
-
-| 特性 | 详细描述 |
-| :--- | :--- |
-| **基础版本** | Minecraft 1.7.10 (高度优化) |
-| **任务数量** | 3900+ 任务引导 [7] |
-| **科技阶层** | 15 个技术等级 [2] |
-| **核心模组** | GregTech 5 Unofficial, Thaumcraft 等 [8] |
-
-## 安装与运行建议
-由于其高度集成的特性，官方强烈建议使用 **Prism Launcher** 进行安装和管理 [5]。在运行环境方面，虽然基于旧版 MC，但通过社区努力，目前推荐使用 **Java 17-25** 版本以获得最佳的内存管理和性能优化，确保大型自动化工厂运行流畅 [5]。
-
-\`\`\`bash
-curl -s https://raw.githubusercontent.com/GTNewHorizons/GT-New-Horizons-Modpack/master/README.md
-java -version
-java -Xmx1024M -Xms1024M -jar prism-launcher.jar
-\`\`\``,
-      total_time: 8.5,
+## Citation Handling
+The system automatically handles citations like [1] and [2], reordering them dynamically to match the flow.`,
+      total_time: 1.5,
       stages: [
         {
           name: 'instruct',
-          model: 'qwen/qwen3-235b-a22b-2507',
-          provider: 'Qwen',
-          time: 1.83,
-          cost: 0.0002,
+          model: 'entari/demo-v1',
+          provider: 'Entari',
+          time: 0.8,
+          cost: 0.001,
         },
         {
-          name: 'search',
-          model: '',
-          provider: '',
-          time: 0.5,
-          cost: 0.0,
-          references: [
-            { title: 'GTNH 2025 Server Information', url: 'https://stonelegion.com/mc-gtnh-2026/' },
-            { title: 'GT New Horizons Wiki', url: 'https://gtnh.miraheze.org/wiki/Main_Page' },
-            { title: 'GT New Horizons - GitHub', url: 'https://github.com/GTNewHorizons/GT-New-Horizons-Modpack' },
-            { title: 'GT New Horizons - CurseForge', url: 'https://www.curseforge.com/minecraft/modpacks/gt-new-horizons' },
-            { title: 'Installing and Migrating - GTNH', url: 'https://gtnh.miraheze.org/wiki/Installing_and_Migrating' },
-            { title: 'Modlist - GT New Horizons', url: 'https://wiki.gtnewhorizons.com/wiki/Modlist' },
-            { title: 'GregTech: New Horizons - Home', url: 'https://www.gtnewhorizons.com/' },
-            { title: 'GT New Horizons - FTB Wiki', url: 'https://ftb.fandom.com/wiki/GT_New_Horizons' }
-          ],
-          image_references: [
-            { title: 'GTNH Live Lets Play', url: 'https://i.ytimg.com/vi/5T-oSWAgaMM/maxresdefault.jpg', thumbnail: 'https://tse4.mm.bing.net/th/id/OIP.b_56VnY4nyrzeqp1JetmFQHaEK?pid=Api' },
-            { title: 'GTNH Modpack Cover', url: 'https://i.mcmod.cn/modpack/cover/20240113/1705139595_29797_dSkE.jpg', thumbnail: 'https://tse1.mm.bing.net/th/id/OIP.KNKaZX1d_4Ueq6vpl1qJNAHaEo?pid=Api' },
-            { title: 'GTNH Steam Age', url: 'https://i.ytimg.com/vi/8IPwXxqB71w/maxresdefault.jpg', thumbnail: 'https://tse4.mm.bing.net/th/id/OIP.P-KrnI4GBH21yPgwpNPSzAHaEK?pid=Api' },
-            { title: 'GTNH MCMod Cover', url: 'https://i.mcmod.cn/post/cover/20230201/1675241030_2_VqDc.jpg', thumbnail: 'https://tse2.mm.bing.net/th/id/OIP.GvYz7YWrg-fnpAHjOiW3OAHaEo?pid=Api' },
-            { title: 'GTNH Tectech Tutorial', url: 'http://i0.hdslb.com/bfs/archive/1ed1e53341fd44018138f2823b2fe6c499fb9c9c.jpg', thumbnail: 'https://tse4.mm.bing.net/th/id/OIP.0Wg7xFHTjhxIV9hKuUo4xwHaEo?pid=Api' }
-          ]
-        },
-        {
-          name: 'crawler',
-          model: '',
-          provider: '',
-          time: 2.5,
-          cost: 0.0,
-          crawled_pages: [
-            { title: 'GregTech: New Horizons Official Wiki', url: 'https://gtnh.miraheze.org/wiki/Main_Page' },
-            { title: 'GT New Horizons Modpack Download', url: 'https://www.curseforge.com/minecraft/modpacks/gt-new-horizons' },
-            { title: 'Installing and Migrating Guide', url: 'https://gtnh.miraheze.org/wiki/Installing_and_Migrating' }
-          ]
-        },
-        {
-          name: 'agent',
-          model: 'google/gemini-3-flash-preview',
-          provider: 'Google',
-          time: 13.0,
-          cost: 0.0018,
+          name: 'summary',
+          model: 'entari/summary-v1',
+          provider: 'Entari',
+          time: 0.7,
+          cost: 0.0005,
         }
       ],
       references: [
-        { title: 'GTNH 2025 Server Information', url: 'https://stonelegion.com/mc-gtnh-2026/' },
-        { title: 'GT New Horizons Wiki', url: 'https://gtnh.miraheze.org/wiki/Main_Page' },
-        { title: 'GT New Horizons - GitHub', url: 'https://github.com/GTNewHorizons/GT-New-Horizons-Modpack' },
-        { title: 'GT New Horizons - CurseForge', url: 'https://www.curseforge.com/minecraft/modpacks/gt-new-horizons' },
-        { title: 'Installing and Migrating - GTNH', url: 'https://gtnh.miraheze.org/wiki/Installing_and_Migrating' },
-        { title: 'Modlist - GT New Horizons', url: 'https://wiki.gtnewhorizons.com/wiki/Modlist' },
-        { title: 'GregTech: New Horizons - Home', url: 'https://www.gtnewhorizons.com/' },
-        { title: 'GT New Horizons - FTB Wiki', url: 'https://ftb.fandom.com/wiki/GT_New_Horizons' }
+        { 
+          title: 'Entari Project Documentation', 
+          url: 'https://github.com/entari/docs', 
+          snippet: 'Official documentation for Entari framework...' 
+        },
+        { 
+          title: 'Headless Browser Concepts', 
+          url: 'https://en.wikipedia.org/wiki/Headless_browser', 
+          snippet: 'A **headless browser** is a web browser without a graphical user interface.' 
+        }
       ],
       page_references: [
-        { title: 'GregTech: New Horizons Official Wiki', url: 'https://gtnh.miraheze.org/wiki/Main_Page' },
-        { title: 'GT New Horizons Modpack Download', url: 'https://www.curseforge.com/minecraft/modpacks/gt-new-horizons' }
+        { 
+          title: 'Vue.js Framework', 
+          url: 'https://vuejs.org/', 
+          snippet: 'The Progressive JavaScript Framework. Approachable, Performant, and Versatile.' 
+        }
       ],
-      image_references: [
-        { title: 'GTNH Live Lets Play', url: 'https://i.ytimg.com/vi/5T-oSWAgaMM/maxresdefault.jpg', thumbnail: 'https://tse4.mm.bing.net/th/id/OIP.b_56VnY4nyrzeqp1JetmFQHaEK?pid=Api' },
-        { title: 'GTNH Modpack Cover', url: 'https://i.mcmod.cn/modpack/cover/20240113/1705139595_29797_dSkE.jpg', thumbnail: 'https://tse1.mm.bing.net/th/id/OIP.KNKaZX1d_4Ueq6vpl1qJNAHaEo?pid=Api' },
-        { title: 'GTNH Steam Age', url: 'https://i.ytimg.com/vi/8IPwXxqB71w/maxresdefault.jpg', thumbnail: 'https://tse4.mm.bing.net/th/id/OIP.P-KrnI4GBH21yPgwpNPSzAHaEK?pid=Api' }
-      ],
-      stats: { total_time: 8.5 },
+      image_references: [],
+      stats: { total_time: 1.5 },
       theme_color: '#ef4444'
     }
   }
@@ -330,83 +513,244 @@ java -Xmx1024M -Xms1024M -jar prism-launcher.jar
 </script>
 
 <template>
-  <div class="bg-[#f2f2f2] flex justify-center" :style="themeStyle">
-    <!-- Main container with explicit background for screenshot capture -->
-    <div id="main-container" class="w-[540px] pt-16 pb-12 space-y-8 !bg-[#f2f2f2]" data-theme="light">
-      
-      <!-- Title -->
-      <header v-if="mainTitle" class="px-6 mb-8">
-        <!-- Removed Time/Icon Badge as requested -->
-        <h1 class="text-4xl font-black leading-tight tracking-tighter uppercase tabular-nums" style="color: var(--text-primary)" v-html="processedTitle"></h1>
-      </header>
-
-      <!-- Content Sections -->
-      <template v-for="(section, idx) in parsedSections" :key="idx">
+  <div id="app-wrapper" class="min-h-screen w-full flex justify-center bg-[#f2f2f2]" :style="themeStyle">
+    <!-- 
+      Container Scaling:
+      Width: 560px
+      Zoom: 1.5
+      Resulting Visual Width: 840px
+    -->
+    <div class="origin-top my-10" :style="{ zoom: 1.5 }">
+      <div id="main-container" class="w-[560px] min-h-[500px] px-8 py-10 space-y-6 bg-[#f2f2f2]" data-theme="light">
         
-        <!-- Standard Markdown -->
-        <div v-if="section.type === 'markdown'" class="px-7">
-          <MarkdownContent 
-            :markdown="section.content" 
-            :num-search-refs="numSearchRefs"
-            :num-page-refs="numPageRefs"
-            class="prose-h2:text-[26px] prose-h2:font-black prose-h2:uppercase prose-h2:tracking-tight prose-h2:mb-4 prose-h2:text-gray-800"
-          />
-        </div>
+        <!-- Title -->
+        <header v-if="mainTitle" class="mb-6">
+          <h1 class="text-[32px] font-black leading-tight tracking-tighter uppercase tabular-nums" style="color: var(--text-primary)" v-html="processedTitle"></h1>
+        </header>
 
-        <!-- Special Card (Table/Code/Summary) -->
-        <div v-else-if="section.type === 'card'" class="mx-6 relative">
-          <!-- Corner Rectangle Badge with Icon and Label -->
-          <div 
-            class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center gap-1.5"
-            :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
-          >
-            <Icon :icon="getCardIcon(section.contentType)" class="text-base" />
-            <span class="text-xs font-bold uppercase tracking-wide">{{ getCardLabel(section.contentType, section.language) }}</span>
-          </div>
-          <div 
-            class="shadow-sm shadow-black/10 bg-white" 
-            :class="[
-              section.contentType === 'summary' ? 'pt-8 px-5 pb-3 text-base leading-relaxed' : '',
-              section.contentType === 'code' ? 'pt-7 pb-2' : '',
-              section.contentType === 'table' ? 'pt-5' : ''
-            ]"
-          >
+        <!-- Content Sections -->
+        <template v-for="(section, idx) in parsedSections" :key="idx">
+          
+          <!-- Standard Markdown -->
+          <div v-if="section.type === 'markdown'">
             <MarkdownContent 
-              :markdown="section.content"
-              :bare="true"
+              :markdown="section.content" 
               :num-search-refs="numSearchRefs"
               :num-page-refs="numPageRefs"
+              class="prose-h2:text-[22px] prose-h2:font-black prose-h2:uppercase prose-h2:tracking-tight prose-h2:mb-4 prose-h2:text-gray-800"
             />
+          </div>
+
+          <!-- Special Card (Table/Code/Summary) -->
+          <div v-else-if="section.type === 'card'" class="relative">
+            <!-- Corner Rectangle Badge with Icon and Label -->
+            <div 
+              class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
+              :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
+            >
+              <Icon :icon="getCardIcon(section.contentType)" class="text-[14px]" />
+              <span class="text-[12px] font-bold uppercase tracking-wide">{{ getCardLabel(section.contentType, section.language) }}</span>
+            </div>
+            <div 
+              class="shadow-sm shadow-black/5 bg-white" 
+              :class="[
+                section.contentType === 'summary' ? 'pt-8 px-5 pb-4 text-base leading-relaxed text-justify break-words' : '',
+                section.contentType === 'code' ? 'pt-7 pb-2' : '',
+                section.contentType === 'table' ? 'pt-5' : ''
+              ]"
+            >
+              <MarkdownContent 
+                :markdown="section.content"
+                :bare="true"
+                :num-search-refs="numSearchRefs"
+                :num-page-refs="numPageRefs"
+              />
+            </div>
+          </div>
+
+        </template>
+        
+        <!-- Sources Section (Bibliography) - Styled as Card -->
+        <div v-if="referencesList.length" class="relative group/sources">
+          <!-- Corner Rectangle Badge -->
+          <div 
+            class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
+            :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
+          >
+            <Icon icon="mdi:book-open-page-variant-outline" class="text-[14px]" />
+            <span class="text-[12px] font-bold uppercase tracking-wide">Sources</span>
+          </div>
+          
+          <div class="shadow-sm shadow-black/5 bg-white pt-10 px-5 pb-6 space-y-6">
+             <div v-for="ref in referencesList" :key="ref.url" class="group/item flex items-start gap-3 pl-0.5">
+                <!-- Number -->
+                <div class="shrink-0 w-5 h-5 text-[14px] font-bold flex items-center justify-center pt-0.5" 
+                     :style="{ color: themeColor }">
+                  {{ ref.original_idx }}
+                </div>
+                
+                <!-- Content -->
+                <div class="flex-1 min-w-0">
+                   <!-- Title -->
+                   <a :href="ref.url" target="_blank" class="block mb-0.5">
+                     <div class="text-[16px] font-bold leading-tight group-hover/item:text-[var(--theme-color)] transition-colors" style="color: var(--text-primary)">
+                       {{ ref.title }}
+                     </div>
+                   </a>
+                   
+                   <!-- Domain & Favicon -->
+                   <div class="flex items-center gap-2.5 text-[10px] font-mono mb-2" style="color: var(--text-muted)">
+                      <img :src="getFavicon(ref.url)" class="w-3 h-3 object-contain rounded-sm">
+                      <span>{{ getDomain(ref.url) }}</span>
+                   </div>
+                   
+                   <!-- Snippet / Screenshot (Condition: Must have snippet or raw screenshot) -->
+                   <div v-if="ref.raw_screenshot_b64 || ref.snippet" 
+                        class="mt-1.5 pl-3 py-0.5"
+                        :class="[(ref.is_fetched || ref.type === 'page') ? 'border-l-[3px]' : 'border-l-2 border-transparent']"
+                        :style="(ref.is_fetched || ref.type === 'page') ? { borderColor: themeColor } : {}"
+                   >
+                      <!-- Real page screenshot if available -->
+                      <img v-if="ref.raw_screenshot_b64" 
+                           :src="getImageUrl(ref.raw_screenshot_b64)"
+                           class="max-w-full h-auto rounded-sm border border-gray-200 shadow-sm"
+                           alt="Page preview"
+                      />
+                      <!-- Fallback to markdown snippet -->
+                      <MarkdownContent v-else
+                        :markdown="ref.snippet" 
+                        :bare="true"
+                        :compact="true"
+                      /> 
+                   </div>
+                </div>
+             </div>
           </div>
         </div>
 
-      </template>
+        <!-- Gallery Section (Extracted Images) - Masonry Layout -->
+        <div v-if="galleryImages.length" class="relative group/gallery mb-8">
+            <!-- Corner Badge -->
+            <div 
+              class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
+              :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
+            >
+              <Icon icon="mdi:image-multiple-outline" class="text-[14px]" />
+              <span class="text-[12px] font-bold uppercase tracking-wide">Gallery</span>
+            </div>
+            
+            <div class="shadow-sm shadow-black/5 bg-white pt-10 px-6 pb-6">
+                <!-- Masonry Layout: 2 Columns -->
+                <div class="columns-2 gap-4 space-y-4">
+                    <div v-for="(img, idx) in galleryImages" :key="idx" class="break-inside-avoid relative rounded-sm overflow-hidden border border-gray-100 bg-gray-50">
+                        <img 
+                            :src="getImageUrl(img)" 
+                            class="w-full h-auto block object-cover transform hover:scale-105 transition-transform duration-500"
+                            loading="lazy"
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
 
-      <!-- Workflow -->
-      <div v-if="data?.stages?.length" class="mx-6 relative">
-        <!-- Corner Rectangle Badge with Icon and Label -->
-        <div 
-          class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center gap-1.5"
-          :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
-        >
-          <Icon icon="mdi:link-variant" class="text-base" />
-          <span class="text-xs font-bold uppercase tracking-wide">Flow</span>
+        <!-- Flow: Unified Stage Info Area -->
+        <div v-if="instructStage || summaryStage" class="relative group/flow">
+            <!-- Corner Badge -->
+            <div 
+              class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
+              :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
+            >
+              <Icon icon="mdi:sitemap-outline" class="text-[14px]" />
+              <span class="text-[12px] font-bold uppercase tracking-wide">Flow</span>
+            </div>
+            
+            <!-- Flow Content (Timeline Style) -->
+            <div class="shadow-sm shadow-black/5 bg-white pt-8 px-6 pb-8">
+              <div class="space-y-8 relative">
+
+                <!-- Instruct Stage -->
+                <div v-if="instructStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Brand Logo -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white">
+                     <img :src="getIconPath(instructStage)" class="w-5 h-5 object-contain" alt="" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Instruct</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
+                      <span class="truncate max-w-[180px]" :title="instructStage.model">{{ instructStage.model }}</span>
+                      
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ (instructStage.time || 0).toFixed(2) }}s</span>
+                        </div>
+                        <template v-if="instructStage.cost">
+                          <div class="flex items-center gap-0.5 opacity-80">
+                            <span>${{ instructStage.cost.toFixed(5) }}</span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Summary Stage -->
+                <div v-if="summaryStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Brand Logo -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white">
+                     <img :src="getIconPath(summaryStage)" class="w-5 h-5 object-contain" alt="" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Summary</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
+                      <span class="truncate max-w-[180px]" :title="summaryStage.model">{{ summaryStage.model }}</span>
+                      
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ summaryStage.time?.toFixed(2) }}s</span>
+                        </div>
+                        <template v-if="summaryStage.cost">
+                          <div class="flex items-center gap-0.5 opacity-80">
+                            <span>${{ summaryStage.cost.toFixed(5) }}</span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+            </div>
         </div>
-        <div class="p-2 pt-5 bg-white shadow-sm shadow-black/10">
-          <StageCard 
-            v-for="(stage, index) in data.stages" 
-            :key="index"
-            :stage="stage"
-            :is-first="index === 0"
-            :is-last="index === data.stages.length - 1"
-            :prev-stage-name="index > 0 ? data.stages[index - 1]?.name : undefined"
-            :ref-offset="getRefOffset(index)"
-          />
-        </div>
+
       </div>
-
     </div>
   </div>
 </template>
 
+<style>
+/* Global background fix to prevent white bottom strip */
+:root, html, body {
+  background-color: #f2f2f2 !important;
+  margin: 0;
+  padding: 0;
+  overflow: hidden !important; /* Force hide scrollbars on root */
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE and Edge */
+}
 
+/* Hide scrollbars for all elements */
+*::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+* {
+  scrollbar-width: none !important;
+  -ms-overflow-style: none !important;
+}
+</style>

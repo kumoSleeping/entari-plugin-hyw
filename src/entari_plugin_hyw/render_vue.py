@@ -1,27 +1,26 @@
 """
-Vue-based Card Renderer (Minimal Python)
+Vue-based Card Renderer (DrissionPage-based)
 
-Python only provides raw data. All frontend logic (markdown, syntax highlighting,
-math rendering, citations) is handled by the Vue frontend.
+Renders content to image using the shared DrissionPage browser.
+Wraps synchronous DrissionPage operations in a thread pool.
 """
 
 import json
-import gc
-import os
-import threading
 import asyncio
 from pathlib import Path
-from typing import List, Dict, Any
-from concurrent.futures import Future
+from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
-from playwright.async_api import async_playwright
+from .browser.manager import SharedBrowserManager
 
 
 class ContentRenderer:
-    """Minimal renderer with background browser thread for instant startup."""
+    """Renderer using DrissionPage with thread pool for async interface."""
     
-    def __init__(self, template_path: str = None, auto_start: bool = True):
+    def __init__(self, template_path: str = None, auto_start: bool = True, headless: bool = True):
+        self.headless = headless
+        
         if template_path is None:
             current_dir = Path(__file__).parent
             template_path = current_dir / "assets" / "card-dist" / "index.html"
@@ -33,282 +32,370 @@ class ContentRenderer:
         self.template_content = self.template_path.read_text(encoding="utf-8")
         logger.info(f"ContentRenderer: loaded Vue template ({len(self.template_content)} bytes)")
         
-        # Browser state (managed by background thread)
-        self._playwright = None
-        self._browser = None
-        self._context = None
-        self._page = None
-        self._render_count = 0
-        self._max_renders_before_restart = 50
-        
-        # Background event loop for playwright
-        self._loop: asyncio.AbstractEventLoop = None
-        self._thread: threading.Thread = None
-        self._ready = threading.Event()
-        self._lock = threading.Lock()
+        self._manager = None
+        self._executor = ThreadPoolExecutor(max_workers=10) # Enough for batch crawls
+        self._render_tab = None
         
         if auto_start:
-            self._start_background_loop()
+            self._ensure_manager()
 
-    def _start_background_loop(self):
-        """Start dedicated event loop in background thread."""
-        def _run_loop():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            # Start browser immediately
-            self._loop.run_until_complete(self._init_browser())
-            self._ready.set()
-            # Keep loop running for future tasks
-            self._loop.run_forever()
-        
-        self._thread = threading.Thread(target=_run_loop, daemon=True, name="ContentRenderer-Browser")
-        self._thread.start()
-        logger.info("ContentRenderer: Background browser thread started")
+    def _ensure_manager(self):
+        """Ensure shared browser manager exists."""
+        if not self._manager:
+            from .browser.manager import get_shared_browser_manager
+            self._manager = get_shared_browser_manager(headless=self.headless)
 
-    async def _init_browser(self, timeout: int = 6000):
-        """Initialize browser and page with warmup render (runs in background loop)."""
-        logger.info("ContentRenderer: Starting browser...")
+    async def start(self, timeout: int = 6000):
+        """Initialize renderer manager (async wrapper)."""
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(self._executor, self._ensure_manager)
+    
+    async def prepare_tab(self) -> str:
+        """Async wrapper to prepare a new render tab."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._prepare_tab_sync)
+
+    def _prepare_tab_sync(self) -> str:
+        """Create and warm up a new tab, return its ID."""
+        import time as pytimeout
+        start = pytimeout.time()
+        self._ensure_manager()
         try:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
-                headless=True, 
-                args=['--no-sandbox', '--disable-setuid-sandbox']
-            )
-            self._context = await self._browser.new_context(
-                viewport={"width": 540, "height": 1400},
-                device_scale_factor=2.0,
-            )
-            self._page = await self._context.new_page()
-            await self._page.goto(self.template_path.as_uri(), wait_until="domcontentloaded", timeout=timeout)
+            tab = self._manager.new_tab(self.template_path.as_uri())
+            tab_id = tab.tab_id
             
-            # Pre-warm the page with initial data so Vue compiles and renders
+            # Basic wait
+            tab.wait(1)
+            
+            # Pre-warm
             warmup_data = {
                 "markdown": "# Ready",
+                "total_time": 0,
+                "stages": [],
+                "references": [],
+                "stats": {},
+                "theme_color": "#ef4444",
+            }
+            
+            if tab.ele('#app', timeout=5):
+                tab.run_js(f"window.updateRenderData({json.dumps(warmup_data)})")
+            
+            elapsed = pytimeout.time() - start
+            logger.info(f"ContentRenderer: Prepared tab {tab_id} in {elapsed:.2f}s")
+            return tab_id
+        except Exception as e:
+            logger.error(f"ContentRenderer: Failed to prepare tab: {e}")
+            raise
+
+    async def render_pages_batch(
+        self,
+        pages: List[Dict[str, Any]],
+        theme_color: str = "#ef4444"
+    ) -> List[str]:
+        """
+        Render multiple page markdown contents to images concurrently.
+        
+        Args:
+            pages: List of dicts with 'title', 'content', 'url' keys
+            theme_color: Theme color for rendering
+            
+        Returns:
+            List of base64-encoded JPG images
+        """
+        if not pages:
+            return []
+        
+        loop = asyncio.get_running_loop()
+        
+        # Prepare tabs concurrently
+        logger.info(f"ContentRenderer: Preparing {len(pages)} tabs for batch render")
+        tab_tasks = [
+            loop.run_in_executor(self._executor, self._prepare_tab_sync)
+            for _ in pages
+        ]
+        tab_ids = await asyncio.gather(*tab_tasks, return_exceptions=True)
+        
+        # Filter out failed tab preparations
+        valid_pairs = []
+        for i, (page, tab_id) in enumerate(zip(pages, tab_ids)):
+            if isinstance(tab_id, Exception):
+                logger.warning(f"ContentRenderer: Failed to prepare tab for page {i}: {tab_id}")
+            else:
+                valid_pairs.append((page, tab_id))
+        
+        if not valid_pairs:
+            return []
+        
+        # Render concurrently
+        render_tasks = [
+            loop.run_in_executor(
+                self._executor, 
+                self._render_page_to_b64_sync,
+                page,
+                tab_id,
+                theme_color
+            )
+            for page, tab_id in valid_pairs
+        ]
+        
+        results = await asyncio.gather(*render_tasks, return_exceptions=True)
+        
+        # Process results
+        screenshots = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.warning(f"ContentRenderer: Batch render error for page {i}: {res}")
+                screenshots.append(None)
+            else:
+                screenshots.append(res)
+        
+        logger.info(f"ContentRenderer: Batch rendered {len([s for s in screenshots if s])} pages")
+        return screenshots
+
+    def _render_page_to_b64_sync(
+        self,
+        page_data: Dict[str, Any],
+        tab_id: str,
+        theme_color: str
+    ) -> Optional[str]:
+        """Render a single page's markdown to base64 image."""
+        tab = None
+        try:
+            self._ensure_manager()
+            browser_page = self._manager.page
+            
+            try:
+                tab = browser_page.get_tab(tab_id)
+            except Exception:
+                return None
+            
+            if not tab:
+                return None
+            
+            # Build render data for this page
+            markdown = f"# {page_data.get('title', 'Page')}\n\n{page_data.get('content', '')}"
+            
+            render_data = {
+                "markdown": markdown,
                 "total_time": 0,
                 "stages": [],
                 "references": [],
                 "page_references": [],
                 "image_references": [],
                 "stats": {},
-                "theme_color": "#ef4444",
+                "theme_color": theme_color,
             }
-            await self._page.evaluate("(data) => window.updateRenderData(data)", warmup_data)
-            # await asyncio.sleep(0.1)  # Removed as requested
-            logger.success("ContentRenderer: Browser + page ready!")
+            
+            # 1. Update Data & Settle
+            tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
+            tab.wait(0.5) # Since images are Base64, decoding is nearly instant once injected
+
+            # 2. Dynamic Resize
+            # Get actual content height to prevent clipping
+            scroll_height = tab.run_js('return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);')
+            viewport_height = int(scroll_height) + 200
+            
+            tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                width=1920, height=viewport_height, deviceScaleFactor=1, mobile=False
+            )
+            
+            # 3. Hide Scrollbars (Now that viewport is large enough, overflow:hidden won't clip)
+            tab.run_js('document.documentElement.style.overflow = "hidden"')
+            tab.run_js('document.body.style.overflow = "hidden"')
+            
+            # Use element's actual position and size
+            main_ele = tab.ele('#main-container', timeout=3)
+            if main_ele:
+                # Robustly hide scrollbars via CDP and Style Injection
+                SharedBrowserManager.hide_scrollbars(tab)
+                
+                # Force root styles to eliminate gutter and ensure full width
+                tab.run_js('document.documentElement.style.overflow = "hidden";')
+                tab.run_js('document.body.style.overflow = "hidden";')
+                tab.run_js('document.documentElement.style.scrollbarGutter = "unset";') 
+                tab.run_js('document.documentElement.style.width = "100%";')
+
+                orig_overflow = "auto" # just a placeholder, we rely on full refresh usually or don't care about restoring for single-purpose tabs
+                
+                b64_img = main_ele.get_screenshot(as_base64='jpg')
+                
+                # Restore not strictly needed for throwaway render tabs, but good practice
+                # tab.run_js(f'document.documentElement.style.overflow = "{orig_overflow}";')
+                try:
+                    tab.set.scroll_bars(True)
+                except:
+                    pass
+                return b64_img
+            else:
+                return tab.get_screenshot(as_base64='jpg', full_page=False)
+                
         except Exception as e:
-            logger.error(f"ContentRenderer: Failed to start browser: {e}")
-            raise
+            logger.error(f"ContentRenderer: Failed to render page: {e}")
+            return None
+        finally:
+            if tab:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
 
-    def _run_in_background(self, coro) -> Future:
-        """Schedule coroutine in background loop and return Future."""
-        if not self._loop or not self._loop.is_running():
-            raise RuntimeError("Background loop not running")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
-
-    async def start(self, timeout: int = 6000):
-        """Wait for browser to be ready (for compatibility)."""
-        ready = await asyncio.to_thread(self._ready.wait, timeout / 1000)
-        if not ready:
-            raise TimeoutError("Browser startup timeout")
-
-    async def close(self):
-        """Clean up browser resources."""
-        if self._loop and self._loop.is_running():
-            future = self._run_in_background(self._close_internal())
-            # Use asyncio.to_thread to wait without blocking the event loop
-            await asyncio.to_thread(future.result, 10)
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
-            # Use asyncio.to_thread to wait without blocking the event loop
-            await asyncio.to_thread(self._thread.join, 5)
-        logger.info("ContentRenderer: Browser closed.")
-
-    async def _close_internal(self):
-        """Internal close (runs in background loop)."""
-        if self._page:
-            await self._page.close()
-            self._page = None
-        if self._context:
-            await self._context.close()
-            self._context = None
-        if self._browser:
-            await self._browser.close()
-            self._browser = None
-        if self._playwright:
-            await self._playwright.stop()
-            self._playwright = None
-
-    async def _ensure_page(self):
-        """Ensure page is ready, restart if needed (runs in background loop)."""
-        if self._render_count >= self._max_renders_before_restart:
-            logger.info(f"ContentRenderer: Restarting browser after {self._render_count} renders...")
-            await self._close_internal()
-            self._render_count = 0
-        
-        if not self._page:
-            await self._init_browser()
 
     async def render(
         self,
         markdown_content: str,
         output_path: str,
+        tab_id: Optional[str] = None,
         stats: Dict[str, Any] = None,
         references: List[Dict[str, Any]] = None,
         page_references: List[Dict[str, Any]] = None,
         image_references: List[Dict[str, Any]] = None,
         stages_used: List[Dict[str, Any]] = None,
-        image_timeout: int = 3000,
         theme_color: str = "#ef4444",
         **kwargs
     ) -> bool:
-        """Render content to image."""
-        # Wait for browser ready (non-blocking)
-        ready = await asyncio.to_thread(self._ready.wait, 30)
-        if not ready:
-            logger.error("ContentRenderer: Browser not ready after 30s")
-            return False
-        
-        # Prepare data
-        resolved_output_path = Path(output_path).resolve()
-        resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        stats_dict = stats[0] if isinstance(stats, list) and stats else (stats or {})
-        
-        render_data = {
-            "markdown": markdown_content,
-            "total_time": stats_dict.get("total_time", 0) or 0,
-            "stages": [
-                {
-                    "name": s.get("name", "Step"),
-                    "model": s.get("model", ""),
-                    "provider": s.get("provider", ""),
-                    "time": s.get("time", 0),
-                    "cost": s.get("cost", 0),
-                    "references": s.get("references") or s.get("search_results"),
-                    "image_references": s.get("image_references"),
-                    "crawled_pages": s.get("crawled_pages"),
-                }
-                for s in (stages_used or [])
-            ],
-            "references": references or [],
-            "page_references": page_references or [],
-            "image_references": image_references or [],
-            "stats": stats_dict,
-            "theme_color": theme_color,
-        }
-        
-        # Reorder images in stages
-        self._reorder_images_in_stages(render_data["markdown"], render_data["stages"])
-        
-        # Run render in background loop (non-blocking wait for result)
-        try:
-            future = self._run_in_background(
-                self._render_internal(render_data, str(resolved_output_path), image_timeout)
-            )
-            # Use asyncio.to_thread to wait for the future without blocking the event loop
-            return await asyncio.to_thread(future.result, 60)
-        except Exception as e:
-            logger.error(f"ContentRenderer: render failed ({e})")
-            return False
-
-    async def _render_internal(self, render_data: dict, output_path: str, image_timeout: int) -> bool:
-        """Internal render (runs in background loop)."""
-        import time
-        start_time = time.time()
-        
-        try:
-            await self._ensure_page()
-            
-            # Update data via JS
-            await self._page.evaluate("(data) => window.updateRenderData(data)", render_data)
-            
-            # Wait for Vue to update DOM
-            # await asyncio.sleep(0.1) # Removed as requested
-            
-            # Wait for images to load
-            try:
-                await self._page.wait_for_function(
-                    "() => Array.from(document.images).every(img => img.complete)",
-                    timeout=image_timeout
-                )
-            except Exception:
-                logger.warning(f"ContentRenderer: Timeout waiting for images ({image_timeout}ms)")
-            
-            # Take screenshot
-            element = await self._page.query_selector("#main-container")
-            if element:
-                await element.screenshot(path=output_path, type="jpeg", quality=88)
-            else:
-                await self._page.screenshot(path=output_path, full_page=True, type="jpeg", quality=88)
-            
-            self._render_count += 1
-            duration = time.time() - start_time
-            logger.success(f"ContentRenderer: Rendered in {duration:.3f}s (No.{self._render_count})")
-            return True
-            
-        except Exception as exc:
-            logger.error(f"ContentRenderer: render failed ({exc})")
-            # Reset page to force restart next time
-            self._page = None
-            return False
-        finally:
-            gc.collect()
-
-    async def render_models_list(
-        self,
-        models: List[Dict[str, Any]],
-        output_path: str,
-        default_base_url: str = "https://openrouter.ai/api/v1",
-        **kwargs
-    ) -> bool:
-        """Render models list."""
-        lines = ["# 模型列表"]
-        for idx, model in enumerate(models or [], start=1):
-            name = model.get("name", "unknown")
-            base_url = model.get("base_url") or default_base_url
-            provider = model.get("provider", "")
-            lines.append(f"{idx}. **{name}**  \n   - base_url: {base_url}  \n   - provider: {provider}")
-
-        markdown_content = "\n\n".join(lines) if len(lines) > 1 else "# 模型列表\n暂无模型"
-
-        return await self.render(
-            markdown_content=markdown_content,
-            output_path=output_path,
-            stats={},
-            references=[],
-            stages_used=[],
+        """Render content to image using a specific (pre-warmed) tab or a temp one."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._render_sync,
+            markdown_content,
+            output_path,
+            tab_id,
+            stats,
+            references,
+            page_references,
+            image_references,
+            stages_used,
+            theme_color
         )
 
-    def _reorder_images_in_stages(self, markdown: str, stages: List[Dict[str, Any]]) -> None:
-        """Reorder image references in stages based on appearance in markdown."""
-        import re
+    def _render_sync(
+        self,
+        markdown_content: str,
+        output_path: str,
+        tab_id: Optional[str],
+        stats: Dict[str, Any],
+        references: List[Dict[str, Any]],
+        page_references: List[Dict[str, Any]],
+        image_references: List[Dict[str, Any]],
+        stages_used: List[Dict[str, Any]],
+        theme_color: str
+    ) -> bool:
+        """Synchronous render implementation."""
+        tab = None
         
-        img_urls = []
-        for match in re.finditer(r'!\[.*?\]\((.*?)\)', markdown):
-            url_part = match.group(1).split()[0].strip()
-            if url_part and url_part not in img_urls:
-                img_urls.append(url_part)
-                
-        if not img_urls:
-            return
+        try:
+            self._ensure_manager()
+            page = self._manager.page
+            
+            if tab_id:
+                try:
+                    tab = page.get_tab(tab_id)
+                except Exception:
+                    pass
+            
+            if not tab:
+                logger.warning("ContentRenderer: Pre-warmed tab not found, creating new.")
+                tab = page.new_tab(self.template_path.as_uri())
+                tab.wait(0.5)
+            
+            resolved_output_path = Path(output_path).resolve()
+            resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            stats_dict = stats[0] if isinstance(stats, list) and stats else (stats or {})
+            
+            render_data = {
+                "markdown": markdown_content,
+                "total_time": stats_dict.get("total_time", 0) or 0,
+                "stages": stages_used or [],
+                "references": references or [],
+                "page_references": page_references or [],
+                "image_references": image_references or [],
+                "stats": stats_dict,
+                "theme_color": theme_color,
+            }
+            
+            tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
 
-        for stage in stages:
-            refs = stage.get("image_references")
-            if not refs:
-                continue
+            # Brief settle wait for masonry/images
+            tab.wait(0.6)
+            
+            # Dynamic Resize
+            scroll_height = tab.run_js('return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);')
+            viewport_height = int(scroll_height) + 200
+            
+            tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                width=1920, height=viewport_height, deviceScaleFactor=1, mobile=False
+            )
+            
+            # Hide scrollbars
+            tab.run_js('document.documentElement.style.overflow = "hidden"')
+            tab.run_js('document.body.style.overflow = "hidden"')
+            
+            # Use element's actual position and size
+            main_ele = tab.ele('#main-container', timeout=5)
+            if main_ele:
+                import base64
                 
-            ref_map = {r["url"]: r for r in refs}
-            new_refs = []
-            seen_urls = set()
+                # Robustly hide scrollbars via CDP and Style Injection
+                SharedBrowserManager.hide_scrollbars(tab)
+                
+                # Force root styles to eliminate gutter and ensure full width
+                tab.run_js('document.documentElement.style.overflow = "hidden";')
+                tab.run_js('document.body.style.overflow = "hidden";')
+                tab.run_js('document.documentElement.style.scrollbarGutter = "unset";') 
+                tab.run_js('document.documentElement.style.width = "100%";')
+
+                b64_img = main_ele.get_screenshot(as_base64='jpg')
+
+                # Restore scrollbars (optional here since we often close or navigate away)
+                try:
+                    tab.set.scroll_bars(True)
+                except:
+                    pass
+
+                with open(str(resolved_output_path), 'wb') as f:
+                    f.write(base64.b64decode(b64_img))
+            else:
+                logger.warning("ContentRenderer: #main-container not found, using fallback")
+                tab.get_screenshot(path=str(resolved_output_path.parent), name=resolved_output_path.name, full_page=True)
             
-            for url in img_urls:
-                if url in ref_map:
-                    new_refs.append(ref_map[url])
-                    seen_urls.add(url)
-            
-            for r in refs:
-                if r["url"] not in seen_urls:
-                    new_refs.append(r)
-            
-            stage["image_references"] = new_refs
+            return True
+        except Exception as e:
+            logger.error(f"ContentRenderer: Render failed: {e}")
+            return False
+        finally:
+            if tab:
+                try:
+                    tab.close()
+                except Exception:
+                    pass
+
+    async def close(self):
+        """Close renderer."""
+        self._executor.shutdown(wait=False)
+        if self._render_tab:
+            try:
+                self._render_tab.close()
+            except Exception:
+                pass
+            self._render_tab = None
+
+
+# Singleton
+_content_renderer: Optional[ContentRenderer] = None
+
+
+
+async def get_content_renderer() -> ContentRenderer:
+    global _content_renderer
+    if _content_renderer is None:
+        _content_renderer = ContentRenderer()
+        await _content_renderer.start()
+    return _content_renderer
+
+
+def set_global_renderer(renderer: ContentRenderer):
+    """Set the global renderer instance."""
+    global _content_renderer
+    _content_renderer = renderer

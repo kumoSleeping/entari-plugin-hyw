@@ -19,9 +19,9 @@ from loguru import logger
 import arclet.letoderea as leto
 from arclet.entari.event.command import CommandReceive
 
-from .pipeline import ProcessingPipeline
+from .modular_pipeline import ModularPipeline
 from .history import HistoryManager
-from .render_vue import ContentRenderer
+from .render_vue import ContentRenderer, get_content_renderer
 from .misc import process_onebot_json, process_images, resolve_model_name, render_refuse_answer, REFUSE_ANSWER_MARKDOWN
 from arclet.entari.event.lifespan import Cleanup
 
@@ -84,91 +84,146 @@ class _RecentEventDeduper:
 _event_deduper = _RecentEventDeduper()
 
 @dataclass
+class ModelConfig:
+    """Model configuration for a specific stage."""
+    model_name: Optional[str] = None
+    api_key: Optional[str] = None
+    base_url: Optional[str] = None
+    extra_body: Optional[Dict[str, Any]] = None
+    model_provider: Optional[str] = None
+    input_price: Optional[float] = None
+    output_price: Optional[float] = None
+
+
+@dataclass
 class HywConfig(BasicConfModel):
+    # Core Settings
     admins: List[str] = field(default_factory=list)
     models: List[Dict[str, Any]] = field(default_factory=list)
     question_command: str = "/q"
+    language: str = "Simplified Chinese"
+    temperature: float = 0.4
+    
+    # Root-level defaults (backward compatible)
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: str = "https://openrouter.ai/api/v1"
-    vision_model_name: Optional[str] = None
-    vision_api_key: Optional[str] = None
-    language: str = "Simplified Chinese"
-    vision_base_url: Optional[str] = None
-    instruct_model_name: Optional[str] = None
-    instruct_api_key: Optional[str] = None
-    instruct_base_url: Optional[str] = None
-    search_base_url: str = "https://lite.duckduckgo.com/lite/?q={query}"
-    image_search_base_url: str = "https://duckduckgo.com/?q={query}&iax=images&ia=images"
-    headless: bool = False
-    save_conversation: bool = False
-    icon: str = "openai"
-    render_timeout_ms: int = 6000
-    render_image_timeout_ms: int = 3000
     extra_body: Optional[Dict[str, Any]] = None
-    vision_extra_body: Optional[Dict[str, Any]] = None
-    instruct_extra_body: Optional[Dict[str, Any]] = None
-    enable_browser_fallback: bool = False
-    reaction: bool = False
-    quote: bool = True
-    temperature: float = 0.4
-    # Billing configuration (price per million tokens)
-    input_price: Optional[float] = None  # $ per 1M input tokens
-    output_price: Optional[float] = None  # $ per 1M output tokens
-    # Vision model pricing overrides (defaults to main model pricing if not set)
-    vision_input_price: Optional[float] = None
-    vision_output_price: Optional[float] = None
-    # Instruct model pricing overrides (defaults to main model pricing if not set)
-    instruct_input_price: Optional[float] = None
-    instruct_output_price: Optional[float] = None
-    # Provider Names
-    search_name: str = "DuckDuckGo"
-    search_provider: str = "crawl4ai"  # crawl4ai | httpx | ddgs
-    fetch_provider: str = "crawl4ai"  # crawl4ai | jinaai
-    jina_api_key: Optional[str] = None  # Optional API key for Jina AI
     model_provider: Optional[str] = None
-    vision_model_provider: Optional[str] = None
-    instruct_model_provider: Optional[str] = None
+    input_price: Optional[float] = None
+    output_price: Optional[float] = None
+    
+    # Nested Stage Configs
+    instruct: Optional[ModelConfig] = None
+    qa: Optional[ModelConfig] = None
+    main: Optional[ModelConfig] = None  # Summary stage
     
     # Search/Fetch Settings
-    search_timeout: float = 10.0
-    search_retries: int = 2
-    fetch_timeout: float = 15.0
-    fetch_max_results: int = 5
-    fetch_blocked_domains: Optional[List[str]] = None
+    search_engine: str = "bing"
+    enable_domain_blocking: bool = True
+    page_content_mode: str = "text"
     
-    # Fetch Model Config
-    fetch_model_name: Optional[str] = None
-    fetch_api_key: Optional[str] = None
-    fetch_base_url: Optional[str] = None
-    fetch_extra_body: Optional[Dict[str, Any]] = None
-    fetch_input_price: Optional[float] = None
-    fetch_output_price: Optional[float] = None
-    # Summary Model Config
-    summary_model_name: Optional[str] = None
-    summary_api_key: Optional[str] = None
-    summary_base_url: Optional[str] = None
-    summary_extra_body: Optional[Dict[str, Any]] = None
-    summary_input_price: Optional[float] = None
-    summary_output_price: Optional[float] = None
+    # Rendering Settings
+    headless: bool = False
+    render_timeout_ms: int = 6000
+    render_image_timeout_ms: int = 3000
+    
+    # Bot Behavior
+    save_conversation: bool = False
+    reaction: bool = False
+    quote: bool = True
+    
     # UI Theme
-    theme_color: str = "#ef4444"  # Tailwind red-500, supports hex/RGB/color names
+    theme_color: str = "#ef4444"
     
     def __post_init__(self):
         """Parse and normalize theme color after initialization."""
         self.theme_color = parse_color(self.theme_color)
-
+        # Convert dicts to ModelConfig if needed
+        if isinstance(self.instruct, dict):
+            self.instruct = ModelConfig(**self.instruct)
+        if isinstance(self.qa, dict):
+            self.qa = ModelConfig(**self.qa)
+        if isinstance(self.main, dict):
+            self.main = ModelConfig(**self.main)
+    
+    def get_model_config(self, stage: str) -> Dict[str, Any]:
+        """
+        Get resolved model config for a stage.
+        
+        Args:
+            stage: "instruct", "qa", or "main" (summary)
+        
+        Returns:
+            Dict with model_name, api_key, base_url, extra_body, etc.
+        """
+        # Determine primary and secondary config sources
+        primary = None
+        secondary = None
+        
+        if stage == "instruct":
+            primary = self.instruct
+            secondary = self.main # Fallback to main
+        elif stage == "qa":
+            # QA fallback to main as well if ever used
+            primary = self.qa
+            secondary = self.main
+        elif stage == "main":
+            primary = self.main
+            
+        # Build result with fallback logic
+        def resolve(field_name: str, is_essential: bool = True):
+            """Resolve a field with fallback: Primary -> Secondary -> Root."""
+            # 1. Try Primary
+            val = getattr(primary, field_name, None) if primary else None
+            
+            # 2. Try Secondary (if value missing)
+            if val is None and secondary:
+                val = getattr(secondary, field_name, None)
+                
+            # 3. Try Root (if value still missing)
+            if val is None:
+                val = getattr(self, field_name, None)
+            return val
+        
+        return {
+            "model_name": resolve("model_name"),
+            "api_key": resolve("api_key"),
+            "base_url": resolve("base_url"),
+            "extra_body": resolve("extra_body", is_essential=False),
+            "model_provider": resolve("model_provider", is_essential=False),
+            "input_price": resolve("input_price", is_essential=False),
+            "output_price": resolve("output_price", is_essential=False),
+        }
 
 
 conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
-renderer = ContentRenderer()
+renderer = ContentRenderer(headless=conf.headless)
+from .render_vue import set_global_renderer
+set_global_renderer(renderer)
+
+# Pre-start Crawl4AI browser for fast fetching/screenshots
+from .browser.service import prestart_browser, close_screenshot_service
+# prestart_browser(headless=conf.headless)  # Removed to avoid RuntimeError: no running event loop
 
 
 class GlobalCache:
     models_image_path: Optional[str] = None
 
 global_cache = GlobalCache()
+
+
+@listen(Cleanup)
+async def cleanup_screenshot_service():
+    """Cleanup shared browser on shutdown."""
+    try:
+        await close_screenshot_service()
+        # Also close the shared browser manager
+        from .browser.manager import close_shared_browser
+        await close_shared_browser()
+    except Exception as e:
+        logger.warning(f"Failed to cleanup browser services: {e}")
 
 async def react(session: Session, emoji: str):
     if not conf.reaction: return
@@ -185,9 +240,7 @@ async def process_request(
     conversation_key_override: Optional[str] = None,
     local_mode: bool = False,
 ) -> None:
-    logger.info(f"Processing request: {all_param}")
     mc = MessageChain(all_param)
-    logger.info(f"reply: {session.reply}")
     if session.reply:
         try:
             # Check if reply is from self (the bot)
@@ -197,12 +250,10 @@ async def process_request(
             
             if reply_msg_id and history_manager.is_bot_message(reply_msg_id):
                 is_bot = True
-                logger.info(f"Reply target {reply_msg_id} identified as bot message via history")
 
             if is_bot:
-                logger.info("Reply is from me - ignoring content")
+                pass  # Reply is from bot - ignoring
             else:
-                logger.info(f"Reply is from user (or unknown) - including content")
                 mc.extend(MessageChain(" ") + session.reply.origin.message)
         except Exception as e:
             logger.warning(f"Failed to process reply origin: {e}")
@@ -211,7 +262,7 @@ async def process_request(
     # Filter and reconstruct MessageChain
     filtered_elements = mc.get(Text) + mc.get(Image) + mc.get(Custom)
     mc = MessageChain(filtered_elements)
-    logger.info(f"mc: {mc}")
+
 
     text_content = str(mc.get(Text)).strip()
     # Remove HTML image tags from text content to prevent "unreasonable code behavior"
@@ -263,10 +314,15 @@ async def process_request(
                 logger.warning(f"Vision model resolution warning for {vision_model}: {err_v}")
 
         images, err = await process_images(mc, vision_model)
+        
+        # Start preparing render tab (async)
+        renderer = await get_content_renderer()
+        render_tab_task = asyncio.create_task(renderer.prepare_tab())
+        tab_id = None
 
         # Call Pipeline directly
         safe_input = msg_text
-        pipeline = ProcessingPipeline(conf)
+        pipeline = ModularPipeline(conf)
         try:
             resp = await pipeline.execute(
                 safe_input,
@@ -294,6 +350,13 @@ async def process_request(
         content = final_resp.get("llm_response", "")
         structured = final_resp.get("structured_response", {})
         
+        # Wait for tab preparation if needed (should be ready by now)
+        try:
+            tab_id = await render_tab_task
+        except Exception as e:
+            logger.warning(f"Failed to prepare render tab: {e}")
+            tab_id = None
+        
         # Render
         import tempfile
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
@@ -319,23 +382,24 @@ async def process_request(
                 output_path=output_path,
                 reason=final_resp.get('refuse_reason', 'Instruct 专家分配此任务流程失败，请尝试提出其他问题~'),
                 theme_color=conf.theme_color,
+                tab_id=tab_id,
             )
         else:
             render_ok = await renderer.render(
                 markdown_content=content,
                 output_path=output_path,
+                tab_id=tab_id,
                 stats=stats_to_render,
                 references=structured.get("references", []),
                 page_references=structured.get("page_references", []),
                 image_references=structured.get("image_references", []),
                 stages_used=final_resp.get("stages_used", []),
-                image_timeout=conf.render_image_timeout_ms,
                 theme_color=conf.theme_color,
             )
         
         # Send & Save
         if not render_ok:
-            logger.error("Render failed; skipping reply. Check Crawl4AI rendering status.")
+            logger.error("Render failed; skipping reply.")
             if os.path.exists(output_path):
                 try:
                     os.remove(output_path)
@@ -375,6 +439,24 @@ async def process_request(
             code=display_session_id,
         )
         
+        if conf.save_conversation and sent_id:
+            try:
+                # Pass web_results to save fetched pages as markdown, and output image
+                history_manager.save_to_disk(
+                    sent_id, 
+                    web_results=final_resp.get("web_results"),
+                    image_path=output_path if 'output_path' in locals() else None
+                )
+            except Exception as e:
+                logger.warning(f"Failed to save conversation: {e}")
+        
+        # Cleanup temp image
+        if 'output_path' in locals() and output_path and os.path.exists(output_path):
+            try:
+                os.remove(output_path)
+            except Exception:
+                pass
+        
 
 
 
@@ -391,9 +473,29 @@ async def process_request(
             try:
                 # Use a temporary ID for error cases
                 error_id = f"error_{int(time.time())}_{secrets.token_hex(4)}"
-                history_manager.remember(error_id, resp.get("conversation_history", []), [], {"model": model_used if 'model_used' in locals() else "unknown", "error": str(e)}, context_id, code=display_session_id if 'display_session_id' in locals() else None)
-                # history_manager.save_to_disk(error_id)
-                logger.info(f"Saved error conversation memory to {error_id}")
+                
+                # Try to salvage history
+                partial_hist = []
+                if 'resp' in locals() and resp:
+                    partial_hist = resp.get("conversation_history", [])
+                elif 'context' in locals() and context and hasattr(context, 'instruct_history'):
+                    partial_hist = context.instruct_history
+                    
+                related_ids = []
+                if 'session' in locals():
+                     msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
+                     related_ids = [msg_id]
+
+                history_manager.remember(error_id, partial_hist, related_ids, {"model": "error", "error": str(e)}, context_id, code=display_session_id if 'display_session_id' in locals() else None)
+                
+                # Save debug data on error
+                web_res = context.web_results if 'context' in locals() and context else []
+                
+                history_manager.save_to_disk(
+                    error_id,
+                    web_results=web_res
+                )
+
             except Exception as save_err:
                 logger.error(f"Failed to save error conversation: {save_err}")
 
@@ -419,9 +521,8 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
     logger.info(f"Question Command Triggered. Message: {session.event.message}")
     
     args = result.all_matched_args
-    logger.info(f"Matched Args: {args}")
     
-    await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None, local_mode=False)
+    await process_request(session, args.get("all_param"), selected_model=None, selected_vision_model=None, conversation_key_override=None)
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version=__version__, config=HywConfig)
 

@@ -9,6 +9,7 @@ const props = defineProps<{
   isLast?: boolean
   prevStageName?: string
   refOffset?: number
+  hideRefs?: boolean
 }>()
 
 const failedImages = ref<Record<string, boolean>>({})
@@ -167,28 +168,24 @@ function getModelLogo(model: string): string | undefined {
           </div>
 
 
-          <div v-if="stage.references?.length || stage.image_references?.length || stage.crawled_pages?.length" class="bg-white pl-11 relative">
-            <div v-if="stage.references?.length" class="divide-y divide-gray-50 relative z-10">
-                <a v-for="(ref, idx) in stage.references" :key="idx" 
-                   :href="ref.url" target="_blank" 
-                   class="flex items-start gap-3 pr-3 py-3 hover:bg-gray-50 transition-colors group">
-                  <!-- Favicon - Aligned with Title -->
-                  <img :src="getFavicon(ref.url)" class="w-4 h-4 rounded-none shrink-0 object-contain mt-[4px]">
-                  
-                  <!-- Content: Title and Domain -->
-                  <div class="flex-1 min-w-0 flex flex-col">
-                    <div class="flex items-center gap-2">
-                      <span class="flex-1 text-[18px] font-bold text-gray-700 truncate leading-tight tracking-tight">{{ ref.title }}</span>
-                      <!-- Square Badge with Shadow -->
-                      <span class="shrink-0 w-[18px] h-[18px] text-[11px] font-bold flex items-center justify-center" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 3px 0 rgba(0,0,0,0.15)">{{ (refOffset || 0) + idx + 1 }}</span>
+          <div v-if="stage.description" class="px-5 py-3 text-[14.5px] text-gray-600 bg-gray-50/40 border-y border-gray-100 italic leading-relaxed font-sans">
+             <span class="mr-1 text-[var(--theme-color)] not-italic opacity-50">✦</span> {{ stage.description }}
+          </div>
+
+          <div v-if="stage.references?.length || stage.image_references?.length || stage.crawled_pages?.length || stage.tasks?.length" class="bg-white pl-11 relative">
+            
+            <!-- Tasks List -->
+            <div v-if="stage.tasks?.length" class="pr-3 py-3 relative z-10 border-b border-gray-50 last:border-0">
+                <div v-for="(task, idx) in stage.tasks" :key="idx" class="flex items-start gap-2.5 mb-2 last:mb-0">
+                    <div class="w-4 h-4 rounded-full border border-[var(--theme-color)] flex items-center justify-center shrink-0 mt-0.5 bg-[var(--theme-color)]/10">
+                         <Icon icon="mdi:check" class="text-[10px] text-[var(--theme-color)]" />
                     </div>
-                    <div class="text-[15.5px] font-mono truncate mt-0.5 tracking-tighter" style="color: var(--text-muted)">{{ getDomain(ref.url) }}</div>
-                  </div>
-                </a>
+                    <span class="text-[15px] text-gray-700 font-medium leading-tight select-text">{{ task }}</span>
+                </div>
             </div>
 
             <!-- Image Search Results - True Masonry Layout -->
-            <div v-if="stage.image_references?.length" class="pr-3 py-3 relative z-10">
+            <div v-if="stage.image_references?.length && !hideRefs" class="pr-3 py-3 relative z-10">
               <div class="flex gap-2">
                 <!-- Left Column -->
                 <div class="flex-1 flex flex-col gap-2">
@@ -215,20 +212,26 @@ function getModelLogo(model: string): string | undefined {
               </div>
             </div>
 
-            <div v-if="stage.crawled_pages?.length" class="divide-y divide-gray-50 relative z-10">
-                <a v-for="(page, idx) in stage.crawled_pages" :key="idx" 
-                   :href="page.url" target="_blank" 
-                   class="flex items-start gap-3 pr-3 py-3 hover:bg-gray-50 transition-colors group">
-                  <img :src="getFavicon(page.url)" class="w-4 h-4 rounded-none shrink-0 object-contain mt-[4px]">
-                  <div class="flex-1 min-w-0 flex flex-col">
-                    <div class="flex items-center gap-2">
-                      <span class="flex-1 text-[18px] font-bold text-gray-700 truncate leading-tight tracking-tight">{{ page.title }}</span>
-                      <!-- Square Badge with Shadow -->
-                      <span class="shrink-0 w-[18px] h-[18px] text-[11px] font-bold flex items-center justify-center" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 3px 0 rgba(0,0,0,0.15)">{{ (refOffset || 0) + (stage.references?.length || 0) + idx + 1 }}</span>
+            <div v-if="stage.crawled_pages?.length && !hideRefs" class="divide-y divide-gray-50 relative z-10">
+                <div v-for="(page, idx) in stage.crawled_pages" :key="idx" class="pr-3 py-3 hover:bg-gray-50 transition-colors group">
+                  <!-- Header Row: Title & Link -->
+                  <a :href="page.url" target="_blank" class="flex items-start gap-3 block">
+                    <img :src="getFavicon(page.url)" class="w-4 h-4 rounded-none shrink-0 object-contain mt-[4px]">
+                    <div class="flex-1 min-w-0 flex flex-col">
+                      <div class="flex items-center gap-2">
+                        <span class="flex-1 text-[18px] font-bold text-gray-700 truncate leading-tight tracking-tight group-hover:text-[var(--theme-color)] transition-colors">{{ page.title }}</span>
+                        <!-- Square Badge with Shadow -->
+                        <span class="shrink-0 w-[18px] h-[18px] text-[11px] font-bold flex items-center justify-center" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 3px 0 rgba(0,0,0,0.15)">{{ (refOffset || 0) + (stage.references?.length || 0) + idx + 1 }}</span>
+                      </div>
+                      <div class="text-[15.5px] font-mono truncate mt-0.5 tracking-tighter" style="color: var(--text-muted)">{{ getDomain(page.url) }}</div>
                     </div>
-                    <div class="text-[15.5px] font-mono truncate mt-0.5 tracking-tighter" style="color: var(--text-muted)">{{ getDomain(page.url) }}</div>
+                  </a>
+                  
+                  <!-- Description Sub-container -->
+                  <div v-if="page.description" class="ml-7 mt-2.5 p-3 bg-gray-100/80 text-[14px] text-gray-600 leading-snug font-sans border-l-[3px] border-[var(--theme-color)] rounded-r-sm">
+                      {{ page.description }}
                   </div>
-                </a>
+                </div>
             </div>
           </div>
         </div>

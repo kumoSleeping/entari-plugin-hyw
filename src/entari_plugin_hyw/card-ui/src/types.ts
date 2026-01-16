@@ -6,16 +6,24 @@ export interface Stage {
     model: string
     provider: string
     icon_name?: string  // Icon identifier (e.g., "google", "openai")
+    icon_config?: string // Config key for icon (e.g. "openai")
     time: number        // Time in seconds (raw number)
     cost: number        // Cost in dollars (raw number)
+    usage?: any         // Token usage stats
     references?: Reference[]
     image_references?: ImageReference[]
     crawled_pages?: CrawledPage[]
+    description?: string // Brief intro or thought for this stage
+    tasks?: string[]
 }
 
 export interface Reference {
     title: string
     url: string
+    is_fetched?: boolean
+    snippet?: string
+    type?: string
+    images?: string[]  // Extracted images (base64)
 }
 
 export interface ImageReference {
@@ -27,6 +35,7 @@ export interface ImageReference {
 export interface CrawledPage {
     title: string
     url: string
+    description?: string
 }
 
 export interface Stats {

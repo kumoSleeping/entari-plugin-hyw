@@ -56,7 +56,8 @@ const props = defineProps<{
   markdown: string
   numSearchRefs?: number
   numPageRefs?: number
-  bare?: boolean  // When true, tables and code blocks render without window decoration
+  bare?: boolean
+  compact?: boolean
 }>()
 
 // Configure marked with syntax highlighting
@@ -251,20 +252,15 @@ const processedHtml = computed(() => {
 
 <template>
   <div ref="contentRef"
-       class="prose prose-slate max-w-none prose-lg
-              prose-headings:font-bold prose-headings:mb-3 prose-headings:mt-8 prose-headings:tracking-tight
-              prose-p:leading-7 prose-p:my-4 prose-p:text-[20px] prose-li:text-[20px]
-              prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline
-              prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.85em] prose-code:font-mono
-              prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200 prose-pre:rounded-none prose-pre:p-0
-              prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200
-              prose-ol:list-decimal prose-ol:pl-7 prose-ol:list-outside prose-ol:my-5
-              prose-li:my-2.5 prose-li:leading-7
-              [&>*:first-child]:!mt-0"
+       class="prose prose-slate max-w-none"
+       :class="props.compact 
+         ? 'prose-sm !prose-p:my-1 !prose-p:leading-snug !prose-p:text-[13.5px] !prose-li:text-[13.5px] !prose-headings:text-[14px] !prose-headings:mt-2 !prose-headings:mb-1 prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline [&>*:first-child]:!mt-0' 
+         : 'prose-lg prose-headings:font-bold prose-headings:mb-3 prose-headings:mt-8 prose-headings:tracking-tight prose-p:leading-7 prose-p:my-4 prose-p:text-[20px] prose-li:text-[20px] prose-a:text-blue-600 prose-a:no-underline hover:prose-a:underline prose-code:bg-gray-100 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded-none prose-code:text-[0.85em] prose-code:font-mono prose-pre:bg-gray-50 prose-pre:border prose-pre:border-gray-200 prose-pre:rounded-none prose-pre:p-0 prose-img:rounded-none prose-img:my-6 prose-img:max-h-[400px] prose-img:w-auto prose-img:object-contain prose-img:border prose-img:border-gray-200 prose-ol:list-decimal prose-ol:pl-7 prose-ol:list-outside prose-ol:my-5 prose-li:my-2.5 prose-li:leading-7 [&>*:first-child]:!mt-0'"
        style="--prose-headings: var(--text-primary); --prose-body: var(--text-body); --prose-bold: var(--text-primary); --prose-code: var(--text-body)"
        v-html="processedHtml">
   </div>
 </template>
+
 
 <style>
 /* Highlight.js theme - minimal */
