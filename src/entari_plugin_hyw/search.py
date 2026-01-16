@@ -8,7 +8,8 @@ from loguru import logger
 from .browser.service import get_screenshot_service
 # New engines
 from .browser.engines.bing import BingEngine
-from .browser.engines.searxng import SearXNGEngine
+from .browser.engines.duckduckgo import DuckDuckGoEngine
+from .browser.engines.google import GoogleEngine
 
 class SearchService:
     def __init__(self, config: Any):
@@ -24,8 +25,13 @@ class SearchService:
         self._engine_name = getattr(config, "search_engine", "bing").lower()
         if self._engine_name == "bing":
             self._engine = BingEngine()
+        elif self._engine_name == "google":
+            self._engine = GoogleEngine()
+        elif self._engine_name == "duckduckgo":
+            self._engine = DuckDuckGoEngine()
         else:
-            self._engine = SearXNGEngine()
+            # Default fallback
+            self._engine = BingEngine()
         
         logger.info(f"SearchService initialized with engine: {self._engine_name}")
 
@@ -40,15 +46,14 @@ class SearchService:
     async def search(self, query: str) -> List[Dict[str, Any]]:
         """
         Main search entry point. 
-        Returns parsed results + 1 raw page item (marked hidden).
+        Returns parsed search results only.
         """
         if not query:
             return []
 
         # Apply blocking
         final_query = query
-        enable_blocking = getattr(self.config, "enable_domain_blocking", True)
-        if enable_blocking and self._blocked_domains and "-site:" not in query:
+        if self._blocked_domains and "-site:" not in query:
              exclusions = " ".join([f"-site:{d}" for d in self._blocked_domains])
              final_query = f"{query} {exclusions}"
 
@@ -60,23 +65,24 @@ class SearchService:
             # Fetch - Search parsing doesn't need screenshot, only HTML
             page_data = await self.fetch_page_raw(url, include_screenshot=False)
             content = page_data.get("html", "") or page_data.get("content", "")
-            
-            # 1. Add Raw Page Item (Always)
-            # This allows history manager to save the raw search page for debugging
-            raw_item = {
-                "title": f"Raw Search: {query}",
-                "url": url,
-                "content": content,     # Keep original content
-                "type": "search_raw_page",   # Special type for history
-                "_hidden": False,        # Unhidden to allow LLM access if needed
-                "query": query,
-                "images": page_data.get("images", [])
-            }
-            results.append(raw_item)
 
-            # 2. Parse Results
+            # Parse Results (skip raw page - only return parsed results)
             if content and not content.startswith("Error"):
                 parsed = self._engine.parse(content)
+
+                # JAVASCRIPT IMAGE INJECTION
+                # Inject base64 images from JS extraction if available
+                # This provides robust fallback if HTTP URLs fail to load
+                js_images = page_data.get("images", [])
+                if js_images:
+                    logger.info(f"Search: Injecting {len(js_images)} base64 images into top results")
+                    for i, img_b64 in enumerate(js_images):
+                        if i < len(parsed):
+                            b64_src = f"data:image/jpeg;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
+                            if "images" not in parsed[i]: parsed[i]["images"] = []
+                            # Prepend to prioritize base64 (guaranteed render) over HTTP URLs
+                            parsed[i]["images"].insert(0, b64_src)
+
                 logger.info(f"Search parsed {len(parsed)} results for '{query}' using {self._engine_name}")
                 results.extend(parsed)
             else:

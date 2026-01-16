@@ -7,14 +7,14 @@ Simpler flow with self-correction/feedback loop.
 
 import asyncio
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Callable, Awaitable
 
 from loguru import logger
 from openai import AsyncOpenAI
 
 from .stage_base import StageContext
 from .stage_instruct import InstructStage
-from .stage_instruct_review import InstructReviewStage
+from .stage_instruct_deepsearch import InstructDeepsearchStage
 from .stage_summary import SummaryStage
 from .search import SearchService
 
@@ -24,19 +24,20 @@ class ModularPipeline:
     Modular Pipeline.
     
     Flow:
-    1. Instruct (Round 1): Initial Discovery.
-    2. Instruct Review (Round 2): Review & Refine.
+    1. Instruct: Initial Discovery + Mode Decision (fast/deepsearch).
+    2. [Deepsearch only] Instruct Deepsearch Loop: Supplement info (max 3 iterations).
     3. Summary: Generate final response.
     """
     
-    def __init__(self, config: Any):
+    def __init__(self, config: Any, send_func: Optional[Callable[[str], Awaitable[None]]] = None):
         self.config = config
+        self.send_func = send_func
         self.search_service = SearchService(config)
         self.client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
         
         # Initialize stages
         self.instruct_stage = InstructStage(config, self.search_service, self.client)
-        self.instruct_review_stage = InstructReviewStage(config, self.search_service, self.client)
+        self.instruct_deepsearch_stage = InstructDeepsearchStage(config, self.search_service, self.client)
         self.summary_stage = SummaryStage(config, self.search_service, self.client)
     
     async def execute(
@@ -60,6 +61,16 @@ class ModularPipeline:
             conversation_history=conversation_history,
         )
         
+        # Determine if model supports image input
+        model_cfg_dict = next((m for m in self.config.models if m.get("name") == active_model), None)
+        if model_cfg_dict:
+            context.image_input_supported = model_cfg_dict.get("image_input", True)
+        else:
+             context.image_input_supported = True # Default to True if unknown
+             
+        logger.info(f"Pipeline Execution: Model '{active_model}' Image Input Supported: {context.image_input_supported}")
+
+        
         trace: Dict[str, Any] = {
             "instruct_rounds": [],
             "summary": None,
@@ -82,21 +93,33 @@ class ModularPipeline:
             if context.should_refuse:
                 return self._build_refusal_response(context, conversation_history, active_model, stats)
 
-            # === Stage 2: Instruct Review (Refine) ===
-            logger.info("Pipeline: Stage 2 - Instruct Review")
-            review_result = await self.instruct_review_stage.execute(context)
-            
-            # Trace & Usage
-            review_result.trace["stage_name"] = "Instruct Review (Round 2)"
-            trace["instruct_rounds"].append(review_result.trace)
-            usage_totals["input_tokens"] += review_result.usage.get("input_tokens", 0)
-            usage_totals["output_tokens"] += review_result.usage.get("output_tokens", 0)
+            # === Stage 2: Deepsearch Loop (if mode is deepsearch) ===
+            if context.selected_mode == "deepsearch":
+                MAX_DEEPSEARCH_ITERATIONS = 3
+                logger.info(f"Pipeline: Mode is 'deepsearch', starting loop (max {MAX_DEEPSEARCH_ITERATIONS} iterations)")
+                
+                for i in range(MAX_DEEPSEARCH_ITERATIONS):
+                    logger.info(f"Pipeline: Stage 2 - Deepsearch Iteration {i + 1}")
+                    deepsearch_result = await self.instruct_deepsearch_stage.execute(context)
+                    
+                    # Trace & Usage
+                    deepsearch_result.trace["stage_name"] = f"Deepsearch (Iteration {i + 1})"
+                    trace["instruct_rounds"].append(deepsearch_result.trace)
+                    usage_totals["input_tokens"] += deepsearch_result.usage.get("input_tokens", 0)
+                    usage_totals["output_tokens"] += deepsearch_result.usage.get("output_tokens", 0)
+                    
+                    # Check if should stop
+                    if deepsearch_result.data.get("should_stop"):
+                        logger.info(f"Pipeline: Deepsearch loop ended at iteration {i + 1}")
+                        break
+            else:
+                logger.info("Pipeline: Mode is 'fast', skipping deepsearch stage")
             
             # === Stage 3: Summary ===
             # Collect page screenshots if image mode (already rendered in InstructStage)
             all_images = list(images) if images else []
             
-            if getattr(self.config, "page_content_mode", "text") == "image":
+            if context.image_input_supported:
                 # Collect pre-rendered screenshots from web_results
                 for r in context.web_results:
                     if r.get("_type") == "page" and r.get("screenshot_b64"):
@@ -134,16 +157,26 @@ class ModularPipeline:
                     # 3. Update structured response with cached (base64) URLs
                     for ref in structured.get("references", []):
                         if ref.get("images"):
-                            # Filter: Only keep images that were successfully cached (starts with data:)
-                            # Discard original URLs if download failed, to prevent broken images in UI
+                            # Keep cached images, but preserve original URLs as fallback
                             new_images = []
                             for img in ref["images"]:
+                                # 1. Already Base64 (from Search Injection) -> Keep it
+                                if img.startswith("data:"):
+                                    new_images.append(img)
+                                    continue
+
+                                # 2. Cached successfully -> Keep it
                                 cached_val = cached_map.get(img)
                                 if cached_val and cached_val.startswith("data:"):
                                     new_images.append(cached_val)
+                                # 3. Else -> DROP IT (User request: "Delete Fallback, must download in advance")
                             ref["images"] = new_images
             except Exception as e:
                 logger.warning(f"Pipeline: Image caching failed: {e}")
+            
+            # Debug: Log image counts
+            total_ref_images = sum(len(ref.get("images", []) or []) for ref in structured.get("references", []))
+            logger.info(f"Pipeline: Final structured response has {len(structured.get('references', []))} refs with {total_ref_images} images total")
             
             stages_used = self._build_stages_ui(trace, context, images)
             

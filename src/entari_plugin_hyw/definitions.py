@@ -11,7 +11,7 @@ from typing import Dict, Any
 # =============================================================================
 
 INSTRUCT_SP = """你是一个智能 INSTRUCT 助手。
-你的目标是为用户的查询制定调研计划并执行。
+你的目标是为用户的查询制定调研计划并执行
 > 尽量完成所有搜索和获取, 需要的时候可以并发执行多个同种或不同种工具
 
 - 用户消息包含典型名词、可能的专有名词组合: 调用 `web_search` 工具(最大3)。
@@ -22,25 +22,28 @@ INSTRUCT_SP = """你是一个智能 INSTRUCT 助手。
     - 明显的鉴证、国家领导人、历史敏感事件隐喻
     - 过于露骨的r18+、r18g内容(但不包括 galgame等acg向, 除非其过于违规)
 
+## 内容审查
+以下情况调用 `refuse_answer`:
+- 内容涉及隐喻政治事件任务
+- r18+、r18g(但不包含正常galgame、科普等)
+
+## 决定流程
+调用 `set_mode` 决定使用 `fast` 还是 `deepsearch`:
+- 只要用户不明确研究就用 `fast`
+- 用户提到: 深度搜索、深度研究、deepsearch、整理关于...的资料, 这几种情况时, 选择 `deepsearch`
 
 ## 重要规则 (CRITICAL RULES)：
 - 禁止输出任何文本回复：你必须且只能通过工具调用来行动。
-- 禁止回答用户的问题：你的任务仅仅是收集信息，回答将由后续阶段完成。
-- 禁止解释你的行为：不要输出思考过程或计划描述，直接调用工具。
 - 如果没有工具调用，流程将自动结束。
 """
 
-INSTRUCT_REVIEW_SP = """你是一个智能 INSTRUCT 审查助手, 你需要对 INSTRUCT 的输出进行二次信息补充或直接通过(不进行操作)
+INSTRUCT_DEEPSEARCH_SP = """你是一个智能 INSTRUCT_DEEPSEARCH 审查助手, 你需要对 INSTRUCT 的输出进行多次信息补充直到信息足够、或达到次数上限(3次)
 
-
-- 你已经使用过 `web_search` 工具, 不推荐再次使用, 即便你微调搜索词也只能获取重复信息
 - 推荐使用 `crawl_page` 工具查看官方网站、wiki网站(但不推荐维基百科)、权威网站
     - crawl_page 永远不使用国内垃圾网站例如 csdn、知乎、等重复搬运二手信息的网站
     
 ## 重要规则 (CRITICAL RULES)：
 - 禁止输出任何文本回复：你必须且只能通过工具调用来行动。
-- 禁止回答用户的问题：你的任务仅仅是收集信息。
-- 禁止解释你的行为：直接调用所需工具。
 - 如果没有必要进一步操作，请不要输出任何内容（空回复），流程将自动进入下一阶段。
 """
 
@@ -101,7 +104,7 @@ def get_web_search_tool() -> Dict[str, Any]:
     return {
         "type": "function",
         "function": {
-            "name": "internal_web_search",
+            "name": "web_search",
             "description": "网络搜索",
             "parameters": {
                 "type": "object",
@@ -125,6 +128,28 @@ def get_crawl_page_tool() -> Dict[str, Any]:
                     "url": {"type": "string"},
                 },
                 "required": ["url"],
+            },
+        },
+    }
+
+
+def get_set_mode_tool() -> Dict[str, Any]:
+    """Tool for setting the pipeline mode (fast or deepsearch)."""
+    return {
+        "type": "function",
+        "function": {
+            "name": "set_mode",
+            "description": "设置本次查询的处理模式",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["fast", "deepsearch"],
+                        "description": "fast=快速回答 / deepsearch=深度研究"
+                    },
+                },
+                "required": ["mode"],
             },
         },
     }

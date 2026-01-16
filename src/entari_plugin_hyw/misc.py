@@ -133,3 +133,37 @@ async def render_refuse_answer(
         theme_color=theme_color,
     )
 
+
+IMAGE_UNSUPPORTED_MARKDOWN = """
+<summary>
+当前模型不支持图片输入，请使用支持视觉能力的模型或仅发送文本。
+</summary>
+"""
+
+async def render_image_unsupported(
+    renderer,
+    output_path: str,
+    theme_color: str = "#ef4444",
+    tab_id: str = None
+) -> bool:
+    """
+    Render a card indicating that the model does not support image input.
+    """
+    markdown = f"""
+# 图片输入不支持
+
+> 当前选择的模型不支持图片输入。
+> 请切换到支持视觉的模型，或仅发送文本内容。
+"""
+    return await renderer.render(
+        markdown_content=markdown,
+        output_path=output_path,
+        stats={},
+        references=[],
+        page_references=[],
+        image_references=[],
+        stages_used=[],
+        image_timeout=1000,
+        theme_color=theme_color,
+        tab_id=tab_id
+    )

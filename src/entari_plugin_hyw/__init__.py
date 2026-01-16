@@ -22,7 +22,7 @@ from arclet.entari.event.command import CommandReceive
 from .modular_pipeline import ModularPipeline
 from .history import HistoryManager
 from .render_vue import ContentRenderer, get_content_renderer
-from .misc import process_onebot_json, process_images, resolve_model_name, render_refuse_answer, REFUSE_ANSWER_MARKDOWN
+from .misc import process_onebot_json, process_images, resolve_model_name, render_refuse_answer, render_image_unsupported, REFUSE_ANSWER_MARKDOWN
 from arclet.entari.event.lifespan import Cleanup
 
 import os
@@ -93,6 +93,7 @@ class ModelConfig:
     model_provider: Optional[str] = None
     input_price: Optional[float] = None
     output_price: Optional[float] = None
+    image_input: bool = True
 
 
 @dataclass
@@ -119,9 +120,7 @@ class HywConfig(BasicConfModel):
     main: Optional[ModelConfig] = None  # Summary stage
     
     # Search/Fetch Settings
-    search_engine: str = "bing"
-    enable_domain_blocking: bool = True
-    page_content_mode: str = "text"
+    search_engine: str = "google"
     
     # Rendering Settings
     headless: bool = False
@@ -131,10 +130,10 @@ class HywConfig(BasicConfModel):
     # Bot Behavior
     save_conversation: bool = False
     reaction: bool = False
-    quote: bool = True
+    quote: bool = False
     
     # UI Theme
-    theme_color: str = "#ef4444"
+    theme_color: str = "#ff0000"
     
     def __post_init__(self):
         """Parse and normalize theme color after initialization."""
@@ -315,7 +314,48 @@ async def process_request(
 
         images, err = await process_images(mc, vision_model)
         
-        # Start preparing render tab (async)
+        # Check image input support
+        model_cfg_dict = next((m for m in conf.models if m.get("name") == model), None)
+        image_input_supported = True
+        if model_cfg_dict:
+            image_input_supported = model_cfg_dict.get("image_input", True)
+        
+        # Log inferenced content mode
+        inferred_content_mode = "image" if image_input_supported else "text"
+        logger.info(f"Process Request: Model '{model}' Image Input: {image_input_supported} -> Mode: {inferred_content_mode}")
+        
+        if images and not image_input_supported:
+            logger.warning(f"Model '{model}' does not support images, but user sent {len(images)} images.")
+            
+            # Start renderer for the unsupported card
+            renderer = await get_content_renderer()
+            render_tab_task = asyncio.create_task(renderer.prepare_tab())
+            
+            # Wait for tab and render unsupported
+            try:
+                tab_id = await render_tab_task
+            except Exception as e:
+                tab_id = None
+                
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                output_path = tf.name
+                
+            render_ok = await render_image_unsupported(
+                renderer=renderer,
+                output_path=output_path,
+                theme_color=conf.theme_color,
+                tab_id=tab_id
+            )
+            
+            if render_ok:
+                with open(output_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode()
+                await session.send(MessageChain(Image(src=f'data:image/png;base64,{img_data}')))
+                if os.path.exists(output_path):
+                    os.remove(output_path)
+            return
+
         renderer = await get_content_renderer()
         render_tab_task = asyncio.create_task(renderer.prepare_tab())
         tab_id = None

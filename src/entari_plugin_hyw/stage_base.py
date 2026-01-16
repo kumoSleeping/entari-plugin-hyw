@@ -31,9 +31,13 @@ class StageContext:
     # Control flags
     should_refuse: bool = False
     refuse_reason: str = ""
+    selected_mode: str = "fast"  # "fast" or "deepsearch"
     
     # ID counter for unified referencing
     global_id_counter: int = 0
+    
+    # Model capabilities
+    image_input_supported: bool = True
     
     def next_id(self) -> int:
         """Get next global ID."""

@@ -5,9 +5,9 @@ from typing import List, Dict, Any
 from loguru import logger
 from .base import SearchEngine
 
-class SearXNGEngine(SearchEngine):
+class DuckDuckGoEngine(SearchEngine):
     """
-    Parser for DuckDuckGo and SearXNG results.
+    Parser for DuckDuckGo Lite results.
     Handles both Markdown (from Crawl4AI) and HTML (fallback).
     """
     
@@ -83,7 +83,7 @@ class SearXNGEngine(SearchEngine):
                 })
                 seen_urls.add(href)
                 
-        logger.info(f"SearXNG Parser(HTML) found {len(results)} results.")
+        logger.info(f"DuckDuckGo Parser(HTML) found {len(results)} results.")
         return results
 
     def _parse_markdown(self, content: str) -> List[Dict[str, Any]]:
@@ -133,5 +133,5 @@ class SearXNGEngine(SearchEngine):
         if current_result:
              results.append(current_result)
         
-        logger.info(f"SearXNG Parser(Markdown) found {len(results)} results.")
+        logger.info(f"DuckDuckGo Parser(Markdown) found {len(results)} results.")
         return results

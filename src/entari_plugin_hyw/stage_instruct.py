@@ -17,6 +17,7 @@ from .definitions import (
     get_refuse_answer_tool,
     get_web_search_tool,
     get_crawl_page_tool,
+    get_set_mode_tool,
     INSTRUCT_SP
 )
 
@@ -31,6 +32,7 @@ class InstructStage(BaseStage):
         self.refuse_answer_tool = get_refuse_answer_tool()
         self.web_search_tool = get_web_search_tool()
         self.crawl_page_tool = get_crawl_page_tool()
+        self.set_mode_tool = get_set_mode_tool()
     
     async def execute(self, context: StageContext) -> StageResult:
         start_time = time.time()
@@ -48,7 +50,7 @@ class InstructStage(BaseStage):
         # Execute Round 1 LLM
         r1_response, r1_usage, r1_tool_calls, r1_content = await self._call_llm(
             messages=r1_messages,
-            tools=[self.refuse_answer_tool, self.web_search_tool, self.crawl_page_tool],
+            tools=[self.refuse_answer_tool, self.web_search_tool, self.crawl_page_tool, self.set_mode_tool],
             tool_choice="auto"
         )
         
@@ -167,7 +169,7 @@ class InstructStage(BaseStage):
                      "id": tc_id, "name": name, "content": f"Refused: {reason}"
                 })
             
-            elif name == "internal_web_search":
+            elif name == "web_search":
                 query = args.get("query")
                 if query: 
                     logger.info(f"Instruct: Planned search query -> '{query}'")
@@ -178,6 +180,18 @@ class InstructStage(BaseStage):
                 if url: 
                     logger.info(f"Instruct: Planned page crawl -> {url}")
                     pending_crawls.append((url, tc_id))
+            
+            elif name == "set_mode":
+                mode = args.get("mode", "fast")
+                if mode in ("fast", "deepsearch"):
+                    context.selected_mode = mode
+                    logger.info(f"Instruct: Mode set to '{mode}'")
+                    results_for_context.append({
+                        "id": tc_id, "name": name, "content": f"Mode set to: {mode}"
+                    })
+                else:
+                    logger.warning(f"Instruct: Invalid mode '{mode}', defaulting to 'fast'")
+                    context.selected_mode = "fast"
         
         # Execute Batches
         
@@ -189,7 +203,8 @@ class InstructStage(BaseStage):
             # Start fetch
             fetch_task = asyncio.create_task(self.search_service.fetch_pages_batch(urls))
             
-            is_image_mode = getattr(self.config, "page_content_mode", "text") == "image"
+            # Use image capability from context to determine content mode
+            is_image_mode = getattr(context, "image_input_supported", True)
             tab_ids = []
             if is_image_mode:
                 from .render_vue import get_content_renderer
@@ -285,6 +300,8 @@ class InstructStage(BaseStage):
                 visible_results = [r for r in web_results if not r.get("_hidden")]
                 
                 # Update global context
+                total_images = sum(len(item.get("images", []) or []) for item in web_results)
+                logger.debug(f"Instruct: Search '{query}' returned {len(web_results)} items with {total_images} images total")
                 for item in web_results:
                     item["_id"] = context.next_id()
                     if "type" in item:
@@ -301,7 +318,7 @@ class InstructStage(BaseStage):
                 
                 results_for_context.append({
                      "id": tc_id, 
-                     "name": "internal_web_search", 
+                     "name": "web_search", 
                      "content": summary
                 })
                 

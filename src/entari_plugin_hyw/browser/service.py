@@ -124,42 +124,71 @@ class ScreenshotService:
             ) or ""
 
             # 2. Extract Images via Parallelized JS (Gallery)
+            # Strategy: For search pages, use Canvas to grab already loaded images (Instant)
+            # For other pages, use fetch (more robust for lazy load)
             images_b64 = []
             try:
-                images_b64 = tab.run_js("""
+                js_code = """
                     (async () => {
                         const blocklist = ['logo', 'icon', 'avatar', 'ad', 'pixel', 'tracker', 'button', 'menu', 'nav'];
                         const candidates = Array.from(document.querySelectorAll('img'));
-                        const validCandidates = candidates.filter(img => {
-                            if (!img.src || img.src.startsWith('data:')) return false;
-                            if (img.naturalWidth < 200 || img.naturalHeight < 150) return false;
-                            const alt = (img.alt || '').toLowerCase();
-                            const cls = (typeof img.className === 'string' ? img.className : '').toLowerCase();
-                            const src = img.src.toLowerCase();
-                            if (blocklist.some(b => alt.includes(b) || cls.includes(b) || src.includes(b))) return false;
-                            return true;
-                        }).slice(0, 10);
-
-                        const fetchImage = async (url) => {
+                        const validImages = [];
+                        
+                        // Helper: Get base64 from loaded image via Canvas
+                        const getBase64 = (img) => {
                             try {
-                                const controller = new AbortController();
-                                const id = setTimeout(() => controller.abort(), 4000);
-                                const resp = await fetch(url, { signal: controller.signal });
-                                clearTimeout(id);
-                                const blob = await resp.blob();
-                                return new Promise(resolve => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                                    reader.onerror = () => resolve(null);
-                                    reader.readAsDataURL(blob);
-                                });
+                                const canvas = document.createElement('canvas');
+                                canvas.width = img.naturalWidth;
+                                canvas.height = img.naturalHeight;
+                                const ctx = canvas.getContext('2d');
+                                ctx.drawImage(img, 0, 0);
+                                return canvas.toDataURL('image/jpeg').split(',')[1];
                             } catch(e) { return null; }
                         };
 
-                        const results = await Promise.all(validCandidates.map(img => fetchImage(img.src)));
-                        return results.filter(b64 => !!b64);
+                        for (const img of candidates) {
+                            if (validImages.length >= 8) break;
+                            
+                            if (img.naturalWidth < 100 || img.naturalHeight < 80) continue;
+                            
+                            const alt = (img.alt || '').toLowerCase();
+                            const cls = (typeof img.className === 'string' ? img.className : '').toLowerCase();
+                            const src = (img.src || '').toLowerCase();
+                            
+                            if (blocklist.some(b => alt.includes(b) || cls.includes(b) || src.includes(b))) continue;
+                            
+                            // 1. Try Canvas (Instant for loaded images)
+                            if (img.complete && img.naturalHeight > 0) {
+                                const b64 = getBase64(img);
+                                if (b64) {
+                                    validImages.push(b64);
+                                    continue;
+                                }
+                            }
+                            
+                            // 2. Fallback to fetch (only for non-search pages to avoid delay)
+                            // We skip fetch for search pages to ensure speed
+                            if (!window.location.href.includes('google') && !window.location.href.includes('search')) {
+                                try {
+                                    const controller = new AbortController();
+                                    const id = setTimeout(() => controller.abort(), 2000);
+                                    const resp = await fetch(img.src, { signal: controller.signal });
+                                    clearTimeout(id);
+                                    const blob = await resp.blob();
+                                    const b64 = await new Promise(resolve => {
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                                        reader.onerror = () => resolve(null);
+                                        reader.readAsDataURL(blob);
+                                    });
+                                    if (b64) validImages.push(b64);
+                                } catch(e) {}
+                            }
+                        }
+                        return validImages;
                     })()
-                """, as_expr=True) or []
+                """
+                images_b64 = tab.run_js(js_code, as_expr=True) or []
                 
                 if images_b64:
                     logger.info(f"ScreenshotService: Extracted {len(images_b64)} images for {url}")
