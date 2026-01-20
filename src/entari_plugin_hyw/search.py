@@ -10,6 +10,7 @@ from .browser.service import get_screenshot_service
 from .browser.engines.bing import BingEngine
 from .browser.engines.duckduckgo import DuckDuckGoEngine
 from .browser.engines.google import GoogleEngine
+from .browser.engines.default import DefaultEngine
 
 class SearchService:
     def __init__(self, config: Any):
@@ -21,8 +22,11 @@ class SearchService:
         # Domain blocking
         self._blocked_domains = getattr(config, "blocked_domains", []) or []
         
-        # Select Engine
-        self._engine_name = getattr(config, "search_engine", "bing").lower()
+        # Select Engine - DefaultEngine when not specified
+        self._engine_name = getattr(config, "search_engine", None)
+        if self._engine_name:
+            self._engine_name = self._engine_name.lower()
+        
         if self._engine_name == "bing":
             self._engine = BingEngine()
         elif self._engine_name == "google":
@@ -30,8 +34,9 @@ class SearchService:
         elif self._engine_name == "duckduckgo":
             self._engine = DuckDuckGoEngine()
         else:
-            # Default fallback
-            self._engine = BingEngine()
+            # Default: use browser address bar search (Google-based)
+            self._engine = DefaultEngine()
+            self._engine_name = "default"
         
         logger.info(f"SearchService initialized with engine: {self._engine_name}")
 
@@ -39,7 +44,8 @@ class SearchService:
         return self._engine.build_url(query, self._default_limit)
 
     async def search_batch(self, queries: List[str]) -> List[List[Dict[str, Any]]]:
-        """Execute multiple searches concurrently."""
+        """Execute multiple searches concurrently using standard URL navigation."""
+        logger.info(f"SearchService: Batch searching {len(queries)} queries in parallel...")
         tasks = [self.search(q) for q in queries]
         return await asyncio.gather(*tasks)
 
@@ -58,17 +64,36 @@ class SearchService:
              final_query = f"{query} {exclusions}"
 
         url = self._build_search_url(final_query)
-        logger.info(f"Search: '{query}' -> {url}")
-
+        
         results = []
         try:
-            # Fetch - Search parsing doesn't need screenshot, only HTML
-            page_data = await self.fetch_page_raw(url, include_screenshot=False)
+            # Check if this is an address bar search (DefaultEngine)
+            if url.startswith("__ADDRESS_BAR_SEARCH__:"):
+                # Extract query from marker
+                search_query = url.replace("__ADDRESS_BAR_SEARCH__:", "")
+                logger.info(f"Search: '{query}' -> [Address Bar Search]")
+                
+                # Use address bar input method
+                service = get_screenshot_service(headless=self._headless)
+                page_data = await service.search_via_address_bar(search_query)
+            else:
+                logger.info(f"Search: '{query}' -> {url}")
+                # Standard URL navigation
+                page_data = await self.fetch_page_raw(url, include_screenshot=False)
+            
             content = page_data.get("html", "") or page_data.get("content", "")
+            
+            # Debug: Log content length
+            logger.debug(f"Search: Raw content length = {len(content)} chars")
+            if len(content) < 500:
+                logger.warning(f"Search: Content too short, may be empty/blocked. First 500 chars: {content[:500]}")
 
             # Parse Results (skip raw page - only return parsed results)
             if content and not content.startswith("Error"):
                 parsed = self._engine.parse(content)
+                
+                # Debug: Log parse result
+                logger.info(f"Search: Engine {self._engine_name} parsed {len(parsed)} results from {len(content)} chars")
 
                 # JAVASCRIPT IMAGE INJECTION
                 # Inject base64 images from JS extraction if available
@@ -84,6 +109,17 @@ class SearchService:
                             parsed[i]["images"].insert(0, b64_src)
 
                 logger.info(f"Search parsed {len(parsed)} results for '{query}' using {self._engine_name}")
+                
+                # ALWAYS add raw search page as hidden item for debug saving
+                # (even when 0 results, so we can debug the parser)
+                results.append({
+                    "title": f"[DEBUG] Raw Search: {query}",
+                    "url": url,
+                    "content": content[:50000],  # Limit to 50KB
+                    "_type": "search_raw_page",
+                    "_hidden": True,  # Don't show to LLM
+                })
+                    
                 results.extend(parsed)
             else:
                 logger.warning(f"Search failed/empty for '{query}': {content[:100]}")

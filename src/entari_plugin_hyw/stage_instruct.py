@@ -8,7 +8,7 @@ Analyze user query and execute initial searches.
 import json
 import time
 import asyncio
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -26,14 +26,15 @@ class InstructStage(BaseStage):
     def name(self) -> str:
         return "Instruct"
     
-    def __init__(self, config: Any, search_service: Any, client: AsyncOpenAI):
+    def __init__(self, config: Any, search_service: Any, client: AsyncOpenAI, send_func: Optional[Callable[[str], Awaitable[None]]] = None):
         super().__init__(config, search_service, client)
+        self.send_func = send_func
         
         self.refuse_answer_tool = get_refuse_answer_tool()
         self.web_search_tool = get_web_search_tool()
         self.crawl_page_tool = get_crawl_page_tool()
         self.set_mode_tool = get_set_mode_tool()
-    
+
     async def execute(self, context: StageContext) -> StageResult:
         start_time = time.time()
         
@@ -113,6 +114,7 @@ class InstructStage(BaseStage):
         model = model_cfg.get("model_name") or self.config.model_name
         
         try:
+            logger.info(f"Instruct: Sending LLM request to {model}...")
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
@@ -186,6 +188,14 @@ class InstructStage(BaseStage):
                 if mode in ("fast", "deepsearch"):
                     context.selected_mode = mode
                     logger.info(f"Instruct: Mode set to '{mode}'")
+                    
+                    # Notify immediately if deepsearch
+                    if mode == "deepsearch" and self.send_func:
+                        try:
+                            await self.send_func("🔍 正在进行深度研究，可能需要一些时间，请耐心等待...")
+                        except Exception as e:
+                            logger.warning(f"Instruct: Failed to send notification: {e}")
+
                     results_for_context.append({
                         "id": tc_id, "name": name, "content": f"Mode set to: {mode}"
                     })

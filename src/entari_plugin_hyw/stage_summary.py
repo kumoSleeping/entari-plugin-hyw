@@ -47,6 +47,11 @@ class SummaryStage(BaseStage):
         # Build Context Message
         context_message = f"## Web Search & Page Content\n\n```context\n{full_context}\n```"
         
+        # Add vision description if present (from VisionStage)
+        if context.vision_description:
+            vision_context = f"## 用户图片描述\n\n{context.vision_description}"
+            context_message = f"{vision_context}\n\n{context_message}"
+        
         # Build user content
         user_text = context.user_input or "..."
         if images:
@@ -104,6 +109,7 @@ class SummaryStage(BaseStage):
                 "provider": model_cfg.get("model_provider") or "Unknown",
                 "usage": usage,
                 "system_prompt": system_prompt,
+                "context_message": context_message,  # Includes vision description + search results
                 "output": content,
                 "time": time.time() - start_time,
                 "images_count": len(images) if images else 0,

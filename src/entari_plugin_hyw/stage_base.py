@@ -39,6 +39,9 @@ class StageContext:
     # Model capabilities
     image_input_supported: bool = True
     
+    # Vision description (from VisionStage)
+    vision_description: str = ""
+    
     def next_id(self) -> int:
         """Get next global ID."""
         self.global_id_counter += 1

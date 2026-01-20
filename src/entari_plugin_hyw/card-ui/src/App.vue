@@ -237,6 +237,8 @@ const instructStage = computed(() => {
   }
 })
 
+const visionStage = computed(() => data.value?.stages?.find(s => s.name === 'Vision'))
+
 const summaryStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'summary' || s.name?.toLowerCase() === 'agent'))
 // searchStage removed - no longer needed for display
 
@@ -654,7 +656,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
         </div>
 
         <!-- Flow: Unified Stage Info Area -->
-        <div v-if="instructStage || summaryStage" class="relative group/flow">
+        <div v-if="instructStage || summaryStage || visionStage" class="relative group/flow">
             <!-- Corner Badge -->
             <div 
               class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
@@ -667,6 +669,35 @@ The system automatically handles citations like [1] and [2], reordering them dyn
             <!-- Flow Content (Timeline Style) -->
             <div class="shadow-sm shadow-black/5 bg-white pt-8 px-6 pb-8">
               <div class="space-y-8 relative">
+
+                <!-- Vision Stage -->
+                <div v-if="visionStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Brand Logo -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white">
+                     <img :src="getIconPath(visionStage)" class="w-5 h-5 object-contain" alt="" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Vision</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
+                      <!-- Model Name (Truncated) -->
+                      <span class="truncate max-w-[180px]" :title="visionStage.model">{{ visionStage.model }}</span>
+                      
+                      <!-- Metrics -->
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ (visionStage.time || 0).toFixed(2) }}s</span>
+                        </div>
+                        <template v-if="visionStage.cost">
+                          <div class="flex items-center gap-0.5 opacity-80">
+                            <span>${{ visionStage.cost.toFixed(5) }}</span>
+                          </div>
+                        </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
                 <!-- Instruct Stage -->
                 <div v-if="instructStage" class="relative flex items-start gap-4 z-10 w-full">

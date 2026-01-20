@@ -16,6 +16,7 @@ from .stage_base import StageContext
 from .stage_instruct import InstructStage
 from .stage_instruct_deepsearch import InstructDeepsearchStage
 from .stage_summary import SummaryStage
+from .stage_vision import VisionStage
 from .search import SearchService
 
 
@@ -36,9 +37,15 @@ class ModularPipeline:
         self.client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
         
         # Initialize stages
-        self.instruct_stage = InstructStage(config, self.search_service, self.client)
+        self.instruct_stage = InstructStage(config, self.search_service, self.client, send_func=send_func)
         self.instruct_deepsearch_stage = InstructDeepsearchStage(config, self.search_service, self.client)
         self.summary_stage = SummaryStage(config, self.search_service, self.client)
+        self.vision_stage = VisionStage(config, self.search_service, self.client)
+    
+    def _has_vision_model(self) -> bool:
+        """Check if a vision model is configured."""
+        vision_cfg = self.config.get_model_config("vision")
+        return bool(vision_cfg.get("model_name"))
     
     async def execute(
         self,
@@ -54,6 +61,9 @@ class ModularPipeline:
         stats = {"start_time": start_time}
         usage_totals = {"input_tokens": 0, "output_tokens": 0}
         active_model = model_name or self.config.model_name
+        if not active_model:
+             # Fallback to instruct model for logging/context
+             active_model = self.config.get_model_config("instruct").get("model_name")
         
         context = StageContext(
             user_input=user_input,
@@ -78,6 +88,24 @@ class ModularPipeline:
         
         try:
             logger.info(f"Pipeline: Processing '{user_input[:30]}...'")
+            
+            # === Stage 0: Vision (if images and vision model configured) ===
+            if images and self._has_vision_model():
+                logger.info("Pipeline: Stage 0 - Vision (generating image description)")
+                vision_result = await self.vision_stage.execute(context, images)
+                
+                if vision_result.success and vision_result.data.get("description"):
+                    context.vision_description = vision_result.data["description"]
+                    logger.info(f"Pipeline: Vision description generated ({len(context.vision_description)} chars)")
+                    
+                    # Add vision trace
+                    trace["vision"] = vision_result.trace
+                    usage_totals["input_tokens"] += vision_result.usage.get("input_tokens", 0)
+                    usage_totals["output_tokens"] += vision_result.usage.get("output_tokens", 0)
+                    
+                    # Clear images since we have the description now
+                    # (don't pass raw images to later stages when using vision model)
+                    images = []
             
             # === Stage 1: Instruct (Initial Discovery) ===
             logger.info("Pipeline: Stage 1 - Instruct")
@@ -115,20 +143,73 @@ class ModularPipeline:
             else:
                 logger.info("Pipeline: Mode is 'fast', skipping deepsearch stage")
             
-            # === Stage 3: Summary ===
-            # Collect page screenshots if image mode (already rendered in InstructStage)
-            all_images = list(images) if images else []
+            # === Parallel Execution: Summary Generation + Image Prefetching ===
+            # We run image prefetching concurrently with Summary generation to save time.
             
-            if context.image_input_supported:
-                # Collect pre-rendered screenshots from web_results
-                for r in context.web_results:
-                    if r.get("_type") == "page" and r.get("screenshot_b64"):
-                        all_images.append(r["screenshot_b64"])
+            # 1. Prepare candidates for prefetch (all images in search results)
+            all_candidate_urls = set()
+            for r in context.web_results:
+                # Add images from search results/pages
+                if r.get("images"):
+                    for img in r["images"]:
+                        if img and isinstance(img, str) and img.startswith("http"):
+                            all_candidate_urls.add(img)
             
-            summary_result = await self.summary_stage.execute(
-                context,
-                images=all_images if all_images else None
-            )
+            prefetch_list = list(all_candidate_urls)
+            logger.info(f"Pipeline: Starting parallel execution (Summary + Prefetch {len(prefetch_list)} images)")
+            
+            # 2. Define parallel tasks with timing
+            async def timed_summary():
+                t0 = time.time()
+                # Collect page screenshots if image mode
+                summary_input_images = list(images) if images else []
+                if context.image_input_supported:
+                    # Collect pre-rendered screenshots from web_results
+                    for r in context.web_results:
+                        if r.get("_type") == "page" and r.get("screenshot_b64"):
+                            summary_input_images.append(r["screenshot_b64"])
+                
+                res = await self.summary_stage.execute(
+                    context,
+                    images=summary_input_images if summary_input_images else None
+                )
+                duration = time.time() - t0
+                return res, duration
+
+            async def timed_prefetch():
+                t0 = time.time()
+                if not prefetch_list:
+                    return {}, 0.0
+                try:
+                    from .image_cache import get_image_cache
+                    cache = get_image_cache()
+                    # Start prefetch (non-blocking kickoff)
+                    cache.start_prefetch(prefetch_list)
+                    # Wait for results (blocking until done)
+                    res = await cache.get_all_cached(prefetch_list)
+                    duration = time.time() - t0
+                    return res, duration
+                except Exception as e:
+                    logger.warning(f"Pipeline: Prefetch failed: {e}")
+                    return {}, time.time() - t0
+
+            # 3. Execute concurrently
+            summary_task = asyncio.create_task(timed_summary())
+            prefetch_task = asyncio.create_task(timed_prefetch())
+            
+            # Wait for both to complete
+            await asyncio.wait([summary_task, prefetch_task])
+            
+            # 4. Process results and log timing
+            summary_result, summary_time = await summary_task
+            cached_map, prefetch_time = await prefetch_task
+            
+            time_diff = abs(summary_time - prefetch_time)
+            if summary_time > prefetch_time:
+                logger.info(f"Pipeline: Image Prefetch finished first ({prefetch_time:.2f}s). Summary took {summary_time:.2f}s. (Waited {time_diff:.2f}s for Summary)")
+            else:
+                logger.info(f"Pipeline: Summary finished first ({summary_time:.2f}s). Image Prefetch took {prefetch_time:.2f}s. (Waited {time_diff:.2f}s for Prefetch)")
+            
             trace["summary"] = summary_result.trace
             usage_totals["input_tokens"] += summary_result.usage.get("input_tokens", 0)
             usage_totals["output_tokens"] += summary_result.usage.get("output_tokens", 0)
@@ -139,40 +220,30 @@ class ModularPipeline:
             stats["total_time"] = time.time() - start_time
             structured = self._parse_response(summary_content, context)
             
-            # === Image Caching (Prefetch images for UI) ===
-            try:
-                from .image_cache import get_image_cache
-                cache = get_image_cache()
-                
-                # 1. Collect all image URLs from structured response
-                all_image_urls = []
-                for ref in structured.get("references", []):
-                    if ref.get("images"):
-                        all_image_urls.extend([img for img in ref["images"] if img and img.startswith("http")])
-                
-                if all_image_urls:
-                    # 2. Prefetch (wait for them as we are about to render)
-                    cached_map = await cache.get_all_cached(all_image_urls)
-                    
-                    # 3. Update structured response with cached (base64) URLs
+            # === Apply Cached Images ===
+            # Update structured response using the map from parallel prefetch
+            if cached_map:
+                try:
+                    total_replaced = 0
                     for ref in structured.get("references", []):
                         if ref.get("images"):
-                            # Keep cached images, but preserve original URLs as fallback
                             new_images = []
                             for img in ref["images"]:
-                                # 1. Already Base64 (from Search Injection) -> Keep it
+                                # 1. Already Base64 -> Keep it
                                 if img.startswith("data:"):
                                     new_images.append(img)
                                     continue
-
-                                # 2. Cached successfully -> Keep it
+                                
+                                # 2. Check cache
                                 cached_val = cached_map.get(img)
                                 if cached_val and cached_val.startswith("data:"):
                                     new_images.append(cached_val)
-                                # 3. Else -> DROP IT (User request: "Delete Fallback, must download in advance")
+                                    total_replaced += 1
+                                # 3. Else -> DROP IT (as per policy)
                             ref["images"] = new_images
-            except Exception as e:
-                logger.warning(f"Pipeline: Image caching failed: {e}")
+                    logger.debug(f"Pipeline: Replaced {total_replaced} images with cached versions")
+                except Exception as e:
+                    logger.warning(f"Pipeline: Applying cached images failed: {e}")
             
             # Debug: Log image counts
             total_ref_images = sum(len(ref.get("images", []) or []) for ref in structured.get("references", []))
@@ -197,6 +268,8 @@ class ModularPipeline:
                 },
                 "stages_used": stages_used,
                 "web_results": context.web_results,
+                "vision_trace": trace.get("vision"),
+                "instruct_traces": trace.get("instruct_rounds", []),
             }
 
         except Exception as e:
@@ -314,6 +387,27 @@ class ModularPipeline:
                 "references": search_refs,
                 "description": f"Found {len(search_refs)} results."
             })
+        
+        # 2. Vision Stage (if used)
+        if trace.get("vision"):
+            v = trace["vision"]
+            if not v.get("skipped"):
+                usage = v.get("usage", {})
+                vision_cfg = self.config.get_model_config("vision")
+                input_price = vision_cfg.get("input_price") or 0
+                output_price = vision_cfg.get("output_price") or 0
+                cost = (usage.get("input_tokens", 0) * input_price + usage.get("output_tokens", 0) * output_price) / 1_000_000
+                
+                stages.append({
+                    "name": "Vision",
+                    "model": v.get("model"),
+                    "icon_config": "google",
+                    "provider": "Vision",
+                    "time": v.get("time", 0),
+                    "description": f"Analyzed {v.get('images_count', 0)} image(s).",
+                    "usage": usage,
+                    "cost": cost
+                })
             
         # 2. Instruct Rounds
         for i, t in enumerate(trace.get("instruct_rounds", [])):

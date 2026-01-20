@@ -118,6 +118,7 @@ class HywConfig(BasicConfModel):
     instruct: Optional[ModelConfig] = None
     qa: Optional[ModelConfig] = None
     main: Optional[ModelConfig] = None  # Summary stage
+    vision: Optional[ModelConfig] = None  # Vision description stage
     
     # Search/Fetch Settings
     search_engine: str = "google"
@@ -145,6 +146,8 @@ class HywConfig(BasicConfModel):
             self.qa = ModelConfig(**self.qa)
         if isinstance(self.main, dict):
             self.main = ModelConfig(**self.main)
+        if isinstance(self.vision, dict):
+            self.vision = ModelConfig(**self.vision)
     
     def get_model_config(self, stage: str) -> Dict[str, Any]:
         """
@@ -169,6 +172,9 @@ class HywConfig(BasicConfModel):
             secondary = self.main
         elif stage == "main":
             primary = self.main
+        elif stage == "vision":
+            primary = self.vision
+            secondary = self.main  # Fallback to main if vision not fully configured
             
         # Build result with fallback logic
         def resolve(field_name: str, is_essential: bool = True):
@@ -362,7 +368,18 @@ async def process_request(
 
         # Call Pipeline directly
         safe_input = msg_text
-        pipeline = ModularPipeline(conf)
+        
+        async def send_noti(msg: str):
+            try:
+                # Send simple text notification
+                if conf.quote:
+                    await session.send([Quote(session.event.message.id), msg])
+                else:
+                    await session.send(msg)
+            except Exception as e:
+                logger.warning(f"Failed to send notification: {e}")
+
+        pipeline = ModularPipeline(conf, send_func=send_noti)
         try:
             resp = await pipeline.execute(
                 safe_input,
@@ -425,6 +442,7 @@ async def process_request(
                 tab_id=tab_id,
             )
         else:
+            logger.info(f"Rendering card with {len(structured.get('references', []))} references...")
             render_ok = await renderer.render(
                 markdown_content=content,
                 output_path=output_path,
@@ -436,6 +454,7 @@ async def process_request(
                 stages_used=final_resp.get("stages_used", []),
                 theme_color=conf.theme_color,
             )
+            logger.info(f"Render completed: {render_ok}")
         
         # Send & Save
         if not render_ok:
@@ -482,10 +501,13 @@ async def process_request(
         if conf.save_conversation and sent_id:
             try:
                 # Pass web_results to save fetched pages as markdown, and output image
+                # Also pass vision_trace and instruct_traces for dedicated logs
                 history_manager.save_to_disk(
                     sent_id, 
                     web_results=final_resp.get("web_results"),
-                    image_path=output_path if 'output_path' in locals() else None
+                    image_path=output_path if 'output_path' in locals() else None,
+                    vision_trace=final_resp.get("vision_trace"),
+                    instruct_traces=final_resp.get("instruct_traces"),
                 )
             except Exception as e:
                 logger.warning(f"Failed to save conversation: {e}")

@@ -65,7 +65,7 @@ class SharedBrowserManager:
             # Hide scrollbars globally
             co.set_argument('--hide-scrollbars')
             # 十万的原因是滚动条屏蔽(大概吧)
-            co.set_argument('--window-size=1280,20000')
+            co.set_argument('--window-size=1280,9000')
             self._page = ChromiumPage(addr_or_opts=co)
             
             # Show Landing Page

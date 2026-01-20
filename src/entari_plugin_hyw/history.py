@@ -75,7 +75,7 @@ class HistoryManager:
                 self._context_history[context_id] = []
             self._context_history[context_id].append(key)
 
-    def save_to_disk(self, key: str, save_root: str = "data/conversations", image_path: Optional[str] = None, web_results: Optional[List[Dict]] = None):
+    def save_to_disk(self, key: str, save_root: str = "data/conversations", image_path: Optional[str] = None, web_results: Optional[List[Dict]] = None, vision_trace: Optional[Dict] = None, instruct_traces: Optional[List[Dict]] = None):
         """Save conversation history to specific folder structure"""
         import os
         import time
@@ -198,51 +198,41 @@ class HistoryManager:
                 except Exception as e:
                     print(f"Failed to copy output image: {e}")
 
-            # 4. Save Full Log (Readme style)
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-            model_name = meta.get("model", "unknown")
-            code = self._key_to_code.get(key, "N/A")
+            # 4. Save Vision Log (if vision stage was used)
+            if vision_trace and not vision_trace.get("skipped"):
+                vision_md = "# Vision Stage Log\n\n"
+                vision_md += f"- **Model**: {vision_trace.get('model', 'unknown')}\n"
+                vision_md += f"- **Time**: {vision_trace.get('time', 0):.2f}s\n"
+                vision_md += f"- **Images Count**: {vision_trace.get('images_count', 0)}\n"
+                vision_md += f"- **Input Tokens**: {vision_trace.get('usage', {}).get('input_tokens', 0)}\n"
+                vision_md += f"- **Output Tokens**: {vision_trace.get('usage', {}).get('output_tokens', 0)}\n\n"
+                vision_md += "## Vision Description Output\n\n"
+                vision_md += f"```\n{vision_trace.get('output', '')}\n```\n"
+                
+                with open(os.path.join(folder_path, "vision_log.md"), "w", encoding="utf-8") as f:
+                    f.write(vision_md)
             
-            md_content = f"# Conversation Log: {folder_name}\n\n"
-            md_content += f"- **Time**: {timestamp}\n"
-            md_content += f"- **Code**: {code}\n"
-            md_content += f"- **Model**: {model_name}\n\n"
-
-            md_content += "## History\n\n"
-            
-            for msg in self._history[key]:
-                role = msg.get("role", "unknown").upper()
-                content = msg.get("content", "")
+            # 5. Save Instruct Log (all instruct rounds)
+            if instruct_traces:
+                instruct_md = "# Instruct Stage Log\n\n"
+                for i, trace in enumerate(instruct_traces):
+                    stage_name = trace.get("stage_name", f"Round {i+1}")
+                    instruct_md += f"## {stage_name}\n\n"
+                    instruct_md += f"- **Model**: {trace.get('model', 'unknown')}\n"
+                    instruct_md += f"- **Time**: {trace.get('time', 0):.2f}s\n"
+                    instruct_md += f"- **Tool Calls**: {trace.get('tool_calls', 0)}\n"
+                    instruct_md += f"- **Input Tokens**: {trace.get('usage', {}).get('input_tokens', 0)}\n"
+                    instruct_md += f"- **Output Tokens**: {trace.get('usage', {}).get('output_tokens', 0)}\n\n"
+                    
+                    output = trace.get("output", "")
+                    if output:
+                        instruct_md += "### Reasoning Output\n\n"
+                        instruct_md += f"```\n{output}\n```\n\n"
+                    
+                    instruct_md += "---\n\n"
                 
-                md_content += f"### {role}\n\n"
-                
-                tool_calls = msg.get("tool_calls")
-                if tool_calls:
-                     try:
-                         tc_str = json.dumps(tool_calls, ensure_ascii=False, indent=2)
-                     except:
-                         tc_str = str(tool_calls)
-                     md_content += f"**Tool Calls**:\n```json\n{tc_str}\n```\n\n"
-                
-                if role == "TOOL":
-                    try:
-                        # Try parsing as JSON first
-                        if isinstance(content, str):
-                            parsed = json.loads(content)
-                            pretty = json.dumps(parsed, ensure_ascii=False, indent=2)
-                            md_content += f"**Output**:\n```json\n{pretty}\n```\n\n"
-                        else:
-                            md_content += f"**Output**:\n```text\n{content}\n```\n\n"
-                    except:
-                         md_content += f"**Output**:\n```text\n{content}\n```\n\n"
-                else:
-                    if content:
-                        md_content += f"{content}\n\n"
-                
-                md_content += "---\n\n"
-            
-            with open(os.path.join(folder_path, "full_log.md"), "w", encoding="utf-8") as f:
-                f.write(md_content)
+                with open(os.path.join(folder_path, "instruct_log.md"), "w", encoding="utf-8") as f:
+                    f.write(instruct_md)
                 
         except Exception as e:
             print(f"Failed to save conversation: {e}")
