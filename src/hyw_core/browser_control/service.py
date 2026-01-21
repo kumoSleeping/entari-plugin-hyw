@@ -543,25 +543,53 @@ class ScreenshotService:
             if not page: return None
             
             tab = page.new_tab(url)
+            
+            # Start monitoring network traffic
+            try:
+                # Listen for data packets (XHR/Fetch/POST)
+                # Targets: xhr, fetch. POST usually falls under these or Document.
+                tab.listen.start(targets=True) # Listen to everything for now to be safe
+            except Exception as e:
+                logger.warning(f"ScreenshotService: Failed to start network listener: {e}")
+
             try:
                 # Wait for full page load (including JS execution)
                 tab.wait.load_complete(timeout=timeout)
                 
                 # Wait for actual content to appear (for CDN verification pages)
                 # Smart Wait Logic (Final Robust):
-                # 1. FORCED WAIT: 1.5s to allow initial redirects/rendering to start.
-                # 2. Browser ReadyState Complete
-                # 3. Height Stable for 2.0 seconds (20 checks)
-                # 4. Text > 100 chars (Crucial: Distinguishes stable content from stable spinners)
-                # 5. No Blacklist phrases
+                # 1. Network Idle: Wait for silence in XHR/POST
+                # 2. Stability: Wait for Height/Text/DOM stability
                 
                 time.sleep(1.5)  # user request: force wait 1.5s before detection
                 
                 last_h = 0
+                last_text_len = 0
+                last_html_len = 0
                 stable_count = 0
                 
                 for i in range(200):  # Max 200 iterations (~20s)
                     try:
+                        # 1. Check Network Activity
+                        has_recent_network = False
+                        try:
+                            # Iterate over any captured packets since last check
+                            for packet in tab.listen.steps(timeout=0.01):
+                                # Check if it's a significant request (POST or XHR/Fetch)
+                                method = packet.method.upper()
+                                r_type = packet.resourceType.upper() if getattr(packet, 'resourceType', None) else ""
+                                
+                                # Interested in: POST requests OR any XHR/Fetch response
+                                if method == 'POST' or 'XMLHTTPREQUEST' in r_type or 'FETCH' in r_type:
+                                    # Ignore some common noise? (Optional: analytics, tracking)
+                                    # For now, simplistic approach: any API traffic resets stability
+                                    has_recent_network = True
+                                    # logger.debug(f"Network Activity: {method} {packet.url[:50]}")
+                                    break
+                        except:
+                            pass
+
+                        # 2. Check DOM State
                         state = tab.run_js('''
                             return {
                                 ready: document.readyState === 'complete',
@@ -571,42 +599,62 @@ class ScreenshotService:
                                     document.documentElement.scrollHeight || 0
                                 ),
                                 text: document.body.innerText.substring(0, 1000) || "",
-                                html: document.body.innerHTML.substring(0, 500) // Debug intro
+                                html_len: document.body.innerHTML.length || 0
                             };
-                        ''') or {'ready': False, 'title': "", 'height': 0, 'text': ""}
+                        ''') or {'ready': False, 'title': "", 'height': 0, 'text': "", 'html_len': 0}
                         
                         is_ready = state.get('ready', False)
                         title = state.get('title', "").lower()
                         current_h = int(state.get('height', 0))
                         text_content = state.get('text', "")
                         text_len = len(text_content)
+                        html_len = int(state.get('html_len', 0))
                         text_lower = text_content.lower()
                         
-                        # Blacklist check
+                        # Blacklist check (Loading indicators)
                         is_verification = "checking your browser" in text_lower or \
                                         "just a moment" in text_lower or \
                                         "please wait" in text_lower or \
                                         "security check" in title or \
-                                        "just a moment" in title
+                                        "just a moment" in title or \
+                                        "loading..." in title
                         
-                        # Stability check
-                        if current_h == last_h:
+                        # Stability check (Multi-metric + Network)
+                        # We require STABILITY across Height, Text Length, DOM Size AND Network Silence
+                        is_height_stable = current_h == last_h
+                        is_text_stable = abs(text_len - last_text_len) < 5  # Allow minor fluctuations
+                        is_dom_stable = abs(html_len - last_html_len) < 20 # Allow minor fluctuations (ads/tracking)
+
+                        if is_height_stable and is_text_stable and is_dom_stable and not has_recent_network:
                             stable_count += 1
                         else:
+                            # Reset if ANY metric changed or NETWORK active
                             stable_count = 0
+                            # if has_recent_network: logger.debug("Stability reset: Network Activity")
                         
                         # Conditions
                         has_content = text_len > 100 # At least 100 real chars
-                        is_stable = stable_count >= 20  # Always require 2s stability
+                        
+                        # Dynamic Stability Requirement:
+                        # If page looks like it's loading (small content), require longer stability
+                        if has_recent_network:
+                             # If we just saw network, enforce at least 1s (10 ticks) clean silence even for large pages
+                             required_stability = max(10, 40 if text_len < 500 else 25)
+                        else:
+                             required_stability = 40 if text_len < 500 else 25  # 4.0s or 2.5s
+                        
+                        is_stable = stable_count >= required_stability
                         
                         # Pass if all conditions met
                         if is_ready and not is_verification and has_content and is_stable:
                             break
                             
                         last_h = current_h
+                        last_text_len = text_len
+                        last_html_len = html_len
                         
-                        # Wait timing
-                        try: tab.wait.eles_loaded(timeout=0.1)
+                        # Wait timing within loop (tab.listen.steps consumed some time, so sleep less)
+                        try: time.sleep(0.05)
                         except: pass
                         
                     except Exception:
@@ -614,6 +662,10 @@ class ScreenshotService:
                         try: time.sleep(0.1)
                         except: pass
                         continue
+                
+                # Cleanup listener
+                try: tab.listen.stop()
+                except: pass
                 
                 # DEBUG: Save HTML to inspect what happened (in data dir)
                 try:
@@ -631,6 +683,7 @@ class ScreenshotService:
                 pass
             
             # Refine calculation: Set viewport width to 1024
+
             capture_width = 1024
             
             # Calculate actual content height after lazy loading
