@@ -12,7 +12,7 @@ from typing import List, Dict, Any, Optional
 from concurrent.futures import ThreadPoolExecutor
 
 from loguru import logger
-from .browser.manager import SharedBrowserManager
+from .manager import SharedBrowserManager, get_shared_browser_manager
 
 
 class ContentRenderer:
@@ -23,7 +23,7 @@ class ContentRenderer:
         
         if template_path is None:
             current_dir = Path(__file__).parent
-            template_path = current_dir / "assets" / "card-dist" / "index.html"
+            template_path = current_dir / "assets" / "index.html"
         
         self.template_path = Path(template_path)
         if not self.template_path.exists():
@@ -42,7 +42,6 @@ class ContentRenderer:
     def _ensure_manager(self):
         """Ensure shared browser manager exists."""
         if not self._manager:
-            from .browser.manager import get_shared_browser_manager
             self._manager = get_shared_browser_manager(headless=self.headless)
 
     async def start(self, timeout: int = 6000):

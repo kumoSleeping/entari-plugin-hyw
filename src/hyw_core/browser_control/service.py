@@ -22,65 +22,22 @@ class ScreenshotService:
         self.headless = headless
         self._manager = None
         self._executor = ThreadPoolExecutor(max_workers=10)
-        self._search_tab_pool = []  # List of Tab objects
-        self._pool_lock = threading.Lock()
         
         if auto_start:
             self._ensure_ready()
-            
-    def prepare_search_tabs_background(self, count: int, url: str = "https://www.google.com") -> None:
-        """
-        Pre-launch tabs for search (BACKGROUND - fire and forget).
-        Tabs are created in background thread, may not be ready immediately.
-        """
-        self._executor.submit(self._prepare_search_tabs_sync, count, url)
 
-    def _prepare_search_tabs_sync(self, count: int, url: str = "https://www.google.com"):
-        """Sync implementation of tab preparation - creates tabs in PARALLEL."""
+    def _get_tab(self, url: str) -> Any:
+        """Create a new tab and navigate to URL."""
+        self._ensure_ready()
+        return self._manager.new_tab(url)
+
+    def _release_tab(self, tab: Any):
+        """Close tab after use."""
+        if not tab: return
         try:
-            self._ensure_ready()
-            page = self._manager.page
-            if not page: return
-            
-            with self._pool_lock:
-                current_count = len(self._search_tab_pool)
-                needed = count - current_count
-            
-            if needed <= 0:
-                return
-                
-            logger.info(f"ScreenshotService: Pre-launching {needed} search tabs for {url} (parallel)...")
-            
-            # Create tabs in parallel using threads
-            created_tabs = [None] * needed
-            
-            def create_single_tab(index):
-                try:
-                    tab = page.new_tab(url)
-                    created_tabs[index] = tab
-                    logger.debug(f"ScreenshotService: Tab {index} ready")
-                except Exception as e:
-                    logger.error(f"ScreenshotService: Failed to create tab {index}: {e}")
-            
-            threads = []
-            for i in range(needed):
-                t = threading.Thread(target=create_single_tab, args=(i,))
-                t.start()
-                threads.append(t)
-            
-            # Wait for all threads to complete
-            for t in threads:
-                t.join()
-            
-            # Add successfully created tabs to pool
-            with self._pool_lock:
-                for tab in created_tabs:
-                    if tab:
-                        self._search_tab_pool.append(tab)
-                logger.info(f"ScreenshotService: Tab pool ready ({len(self._search_tab_pool)} tabs)")
-                
-        except Exception as e:
-            logger.error(f"ScreenshotService: Failed to prepare tabs: {e}")
+            tab.close()
+        except:
+            pass
 
     async def search_via_page_input_batch(self, queries: List[str], url: str, selector: str = "#input") -> List[Dict[str, Any]]:
         """
@@ -104,17 +61,13 @@ class ScreenshotService:
         
         for i in range(len(queries)):
             tab = None
-            # Try to get from pool first
-            with self._pool_lock:
-                if self._search_tab_pool:
-                    tab = self._search_tab_pool.pop(0)
-                    logger.debug(f"ScreenshotService: Got tab {i} from pool")
+            # Try to get from pool first (using shared logic now)
+            try:
+                tab = self._get_tab(target_url)
+            except Exception as e:
+                logger.warning(f"ScreenshotService: Batch search tab creation failed: {e}")
             
-            if not tab:
-                # Create new
-                self._ensure_ready()
-                tab = self._manager.page.new_tab(target_url)
-                logger.debug(f"ScreenshotService: Created tab {i} for {target_url}")
+
             
             tabs.append(tab)
         
@@ -178,8 +131,7 @@ class ScreenshotService:
                 logger.error(f"ScreenshotService: Search error for '{query}': {e}")
                 results[index] = {"content": f"Error: {e}", "title": "Error", "url": "", "html": ""}
             finally:
-                try: tab.close()
-                except: pass
+                self._release_tab(tab)
 
         threads = []
         for i, (tab, query) in enumerate(zip(tabs, queries)):
@@ -304,27 +256,38 @@ class ScreenshotService:
             if not page:
                 return {"content": "Error: Browser not available", "title": "Error", "url": url}
             
-            # New Tab with URL directly
-            tab = page.new_tab(url)
+            # Get from pool
+            tab = self._get_tab(url)
             
             # Wait logic - optimized for search pages
             is_search_page = any(s in url.lower() for s in ['search', 'bing.com', 'duckduckgo', 'google.com/search', 'searx'])
             if is_search_page:
-                # Optimized waiting for search engine results
-                try:
-                    # Google uses #search or #rso
-                    # DuckDuckGo uses #react-layout
-                    # Bing uses #b_results
-                    if 'google' in url.lower():
-                        # Wait for results container (fastest possible return)
-                        tab.ele('#search', timeout=timeout)
-                    elif 'bing' in url.lower():
-                        tab.ele('#b_results', timeout=timeout)
-                    else:
-                        # Generic search fallback
-                        tab.wait.doc_loaded(timeout=timeout)
-                except:
-                    pass
+                # Optimized waiting: Rapidly poll for ACTUAL results > 0
+                start_time = time.time()
+                while time.time() - start_time < timeout:
+                    found_results = False
+                    try:
+                        if 'google' in url.lower():
+                            # Check if we have any result items (.g, .MjjYud) or the main container (#search)
+                            # Using checks with minimal timeout to allow fast looping
+                            if tab.ele('.g', timeout=0.1) or tab.ele('.MjjYud', timeout=0.1) or tab.ele('#search', timeout=0.1):
+                                found_results = True
+                        elif 'bing' in url.lower():
+                            if tab.ele('.b_algo', timeout=0.1) or tab.ele('#b_results', timeout=0.1):
+                                found_results = True
+                        elif 'duckduckgo' in url.lower():
+                            if tab.ele('.result', timeout=0.1) or tab.ele('#react-layout', timeout=0.1):
+                                found_results = True
+                        else:
+                            # Generic fallback: wait for body to be populated
+                            if tab.ele('body', timeout=0.1):
+                                found_results = True
+                    except:
+                        pass
+                    
+                    if found_results:
+                        break
+                    time.sleep(0.2)  # Short sleep to prevent CPU spinning
             else:
                 # 1. Wait for document to settle (Fast Dynamic Wait)
                 try:
@@ -451,8 +414,7 @@ class ScreenshotService:
             return {"content": f"Error: fetch failed ({e})", "title": "Error", "url": url}
         finally:
             if tab:
-                try: tab.close()
-                except: pass
+               self._release_tab(tab)
 
     async def fetch_pages_batch(self, urls: List[str], timeout: float = 20.0, include_screenshot: bool = True) -> List[Dict[str, Any]]:
         """Fetch multiple pages concurrently."""

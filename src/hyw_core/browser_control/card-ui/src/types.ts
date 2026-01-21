@@ -15,6 +15,9 @@ export interface Stage {
     crawled_pages?: CrawledPage[]
     description?: string // Brief intro or thought for this stage
     tasks?: string[]
+    llm_time?: number   // Time spent in LLM processing
+    tool_time?: number  // Time spent in Tool execution
+    tool_calls?: number // Number of tool calls
 }
 
 export interface Reference {

@@ -103,6 +103,7 @@ async def render_refuse_answer(
     output_path: str,
     reason: str = "Instruct 专家分配此任务流程失败，请尝试提出其他问题~",
     theme_color: str = "#ef4444",
+    tab_id: str = None,
 ) -> bool:
     """
     Render a refuse-to-answer image using the provided reason.
@@ -112,6 +113,7 @@ async def render_refuse_answer(
         output_path: Path to save the output image
         reason: The refusal reason to display
         theme_color: Theme color for the card
+        tab_id: Optional tab ID for reusing a prepared browser tab
         
     Returns:
         True if render succeeded, False otherwise
@@ -131,6 +133,7 @@ async def render_refuse_answer(
         stages_used=[],
         image_timeout=1000,
         theme_color=theme_color,
+        tab_id=tab_id,
     )
 
 

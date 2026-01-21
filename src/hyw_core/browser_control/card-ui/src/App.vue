@@ -224,7 +224,8 @@ const instructStage = computed(() => {
   const first = stages[0]
   
   // Sum time, usage, and cost from all rounds
-  const totalTime = stages.reduce((sum, s) => sum + (s.time || 0), 0)
+  // Use llm_time if available, otherwise fallback to total time
+  const totalTime = stages.reduce((sum, s) => sum + (s.llm_time !== undefined ? s.llm_time : (s.time || 0)), 0)
   const totalInputTokens = stages.reduce((sum, s) => sum + (s.usage?.input_tokens || 0), 0)
   const totalOutputTokens = stages.reduce((sum, s) => sum + (s.usage?.output_tokens || 0), 0)
   const totalCost = stages.reduce((sum, s) => sum + (s.cost || 0), 0)
@@ -237,10 +238,29 @@ const instructStage = computed(() => {
   }
 })
 
+// Aggregated tools data
+const toolsStage = computed(() => {
+  const stages = instructStages.value
+  if (!stages.length) return null
+  
+  // Sum tool times
+  const totalToolTime = stages.reduce((sum, s) => sum + (s.tool_time || 0), 0)
+  const totalToolCalls = stages.reduce((sum, s) => sum + (s.tool_calls || 0), 0)
+  
+  if (totalToolTime <= 0.01 && totalToolCalls === 0) return null
+
+  return {
+    name: 'Tools',
+    icon: 'mdi:toolbox-outline',
+    time: totalToolTime,
+    count: totalToolCalls
+  }
+})
+
 const visionStage = computed(() => data.value?.stages?.find(s => s.name === 'Vision'))
 
 const summaryStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'summary' || s.name?.toLowerCase() === 'agent'))
-// searchStage removed - no longer needed for display
+const searchStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'search'))
 
 // Collect all extracted images from references
 const galleryImages = computed(() => {
@@ -523,7 +543,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
       Resulting Visual Width: 840px
     -->
     <div class="origin-top my-10" :style="{ zoom: 1.5 }">
-      <div id="main-container" class="w-[560px] min-h-[500px] px-8 py-10 space-y-6 bg-[#f2f2f2]" data-theme="light">
+      <div id="main-container" class="w-[560px] px-8 py-10 space-y-6 bg-[#f2f2f2]" data-theme="light">
         
         <!-- Title -->
         <header v-if="mainTitle" class="mb-6">
@@ -656,7 +676,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
         </div>
 
         <!-- Flow: Unified Stage Info Area -->
-        <div v-if="instructStage || summaryStage || visionStage" class="relative group/flow">
+        <div v-if="searchStage || instructStage || summaryStage || visionStage || toolsStage" class="relative group/flow">
             <!-- Corner Badge -->
             <div 
               class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
@@ -669,6 +689,28 @@ The system automatically handles citations like [1] and [2], reordering them dyn
             <!-- Flow Content (Timeline Style) -->
             <div class="shadow-sm shadow-black/5 bg-white pt-8 px-6 pb-8">
               <div class="space-y-8 relative">
+
+                <!-- Search Stage -->
+                <div v-if="searchStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Search Icon -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white" style="color: var(--theme-color)">
+                     <Icon icon="mdi:magnify" class="w-5 h-5" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Search</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
+                      <span class="truncate max-w-[180px]">{{ searchStage.description || 'Web Search' }}</span>
+                      
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div v-if="searchStage.time" class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ searchStage.time.toFixed(2) }}s</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
 
                 <!-- Vision Stage -->
                 <div v-if="visionStage" class="relative flex items-start gap-4 z-10 w-full">
@@ -721,6 +763,28 @@ The system automatically handles citations like [1] and [2], reordering them dyn
                             <span>${{ instructStage.cost.toFixed(5) }}</span>
                           </div>
                         </template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Tools Stage -->
+                <div v-if="toolsStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Icon -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white" style="color: var(--theme-color)">
+                     <Icon :icon="toolsStage.icon" class="w-5 h-5" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Tools</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
+                      <span class="truncate max-w-[180px]">System Execution</span>
+                      
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ (toolsStage.time || 0).toFixed(2) }}s</span>
+                        </div>
                       </div>
                     </div>
                   </div>

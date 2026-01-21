@@ -7,16 +7,15 @@ Simpler flow with self-correction/feedback loop.
 
 import asyncio
 import time
+import re
 from typing import Any, Dict, List, Optional, Callable, Awaitable
 
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .stage_base import StageContext
-from .stage_instruct import InstructStage
-from .stage_instruct_deepsearch import InstructDeepsearchStage
-from .stage_summary import SummaryStage
-from .stage_vision import VisionStage
+from .stages.base import StageContext, StageResult
+from .stages.instruct import InstructStage
+from .stages.summary import SummaryStage
 from .search import SearchService
 
 
@@ -38,14 +37,21 @@ class ModularPipeline:
         
         # Initialize stages
         self.instruct_stage = InstructStage(config, self.search_service, self.client, send_func=send_func)
-        self.instruct_deepsearch_stage = InstructDeepsearchStage(config, self.search_service, self.client)
         self.summary_stage = SummaryStage(config, self.search_service, self.client)
-        self.vision_stage = VisionStage(config, self.search_service, self.client)
     
-    def _has_vision_model(self) -> bool:
-        """Check if a vision model is configured."""
-        vision_cfg = self.config.get_model_config("vision")
-        return bool(vision_cfg.get("model_name"))
+    @property
+    def _send_func(self) -> Optional[Callable[[str], Awaitable[None]]]:
+        """Getter for _send_func (alias for send_func)."""
+        return self.send_func
+    
+    @_send_func.setter
+    def _send_func(self, value: Optional[Callable[[str], Awaitable[None]]]):
+        """Setter for _send_func - updates send_func and propagates to stages."""
+        self.send_func = value
+        # Propagate to instruct_stage
+        if hasattr(self, 'instruct_stage'):
+            self.instruct_stage.send_func = value
+    
     
     async def execute(
         self,
@@ -53,8 +59,6 @@ class ModularPipeline:
         conversation_history: List[Dict],
         model_name: str = None,
         images: List[str] = None,
-        vision_model_name: str = None,
-        selected_vision_model: str = None,
     ) -> Dict[str, Any]:
         """Execute the modular pipeline."""
         start_time = time.time()
@@ -63,7 +67,7 @@ class ModularPipeline:
         active_model = model_name or self.config.model_name
         if not active_model:
              # Fallback to instruct model for logging/context
-             active_model = self.config.get_model_config("instruct").get("model_name")
+             active_model = self.config.get_model_config("instruct").model_name
         
         context = StageContext(
             user_input=user_input,
@@ -89,59 +93,101 @@ class ModularPipeline:
         try:
             logger.info(f"Pipeline: Processing '{user_input[:30]}...'")
             
-            # === Stage 0: Vision (if images and vision model configured) ===
-            if images and self._has_vision_model():
-                logger.info("Pipeline: Stage 0 - Vision (generating image description)")
-                vision_result = await self.vision_stage.execute(context, images)
+            # === Image-First Logic ===
+            # When user provides images, skip search and go directly to Instruct
+            # Images will be passed through to both Instruct and Summary stages
+            has_user_images = bool(images)
+            if has_user_images:
+                logger.info(f"Pipeline: {len(images)} user image(s) detected. Skipping search -> Instruct.")
+            
+            # === Search-First Logic (only when no images) ===
+            # 1. URL Detection
+            url_pattern = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
+            found_urls = url_pattern.findall(user_input)
+            
+            hit_content = False
+            
+            # Skip URL fetch and search if user provided images or long query
+            is_long_query = len(user_input) > 20
+            if has_user_images:
+                hit_content = False  # Force into Instruct path
+            elif is_long_query:
+                logger.info(f"Pipeline: Long query ({len(user_input)} chars). Skipping direct search/fetch -> Instruct.")
+                hit_content = False
+            elif found_urls:
+                logger.info(f"Pipeline: Detected {len(found_urls)} URLs. Executing direct fetch...")
+                # Fetch pages (borrowing logic from InstructStage's batch fetch would be ideal, 
+                # but we'll use search_service directly and simulate what Instruct did for context)
                 
-                if vision_result.success and vision_result.data.get("description"):
-                    context.vision_description = vision_result.data["description"]
-                    logger.info(f"Pipeline: Vision description generated ({len(context.vision_description)} chars)")
-                    
-                    # Add vision trace
-                    trace["vision"] = vision_result.trace
-                    usage_totals["input_tokens"] += vision_result.usage.get("input_tokens", 0)
-                    usage_totals["output_tokens"] += vision_result.usage.get("output_tokens", 0)
-                    
-                    # Clear images since we have the description now
-                    # (don't pass raw images to later stages when using vision model)
-                    images = []
-            
-            # === Stage 1: Instruct (Initial Discovery) ===
-            logger.info("Pipeline: Stage 1 - Instruct")
-            instruct_result = await self.instruct_stage.execute(context)
-            
-            # Trace & Usage
-            instruct_result.trace["stage_name"] = "Instruct (Round 1)"
-            trace["instruct_rounds"].append(instruct_result.trace)
-            usage_totals["input_tokens"] += instruct_result.usage.get("input_tokens", 0)
-            usage_totals["output_tokens"] += instruct_result.usage.get("output_tokens", 0)
-            
-            # Check refuse
-            if context.should_refuse:
-                return self._build_refusal_response(context, conversation_history, active_model, stats)
+                # Fetch
+                fetch_results = await self.search_service.fetch_pages_batch(found_urls)
+                
+                # Pre-render screenshots if needed (similar to InstructStage logic)
+                # For brevity/cleanliness, assuming fetch_pages_batch returns what we need or we process it.
+                # Ideally we want screenshots for the UI. The serivce.fetch_page usually returns raw data.
+                # We need to render them if we want screenshots.
+                # To keep it simple for this file, we'll skip complex screenshot rendering here OR 
+                # we rely on the summary stage to just use the text. 
+                # But the user logic implies "Search/Fetch Hit -> Summary".
+                
+                # Let's populate context.web_results
+                for i, page_data in enumerate(fetch_results):
+                    if page_data.get("content"):
+                         hit_content = True
+                         context.web_results.append({
+                             "_id": context.next_id(),
+                             "_type": "page",
+                             "title": page_data.get("title", "Page"),
+                             "url": page_data.get("url", found_urls[i]),
+                             "content": page_data.get("content", ""),
+                             "images": page_data.get("images", []),
+                             # For now, no screenshot unless we call renderer. 
+                             # If critical, we can add it later.
+                         })
 
-            # === Stage 2: Deepsearch Loop (if mode is deepsearch) ===
-            if context.selected_mode == "deepsearch":
-                MAX_DEEPSEARCH_ITERATIONS = 3
-                logger.info(f"Pipeline: Mode is 'deepsearch', starting loop (max {MAX_DEEPSEARCH_ITERATIONS} iterations)")
+            # 2. Search (if no URLs or just always try search if simple query?)
+            # The prompt says: "judging result quantity > 0".
+            if not hit_content and not has_user_images and not is_long_query and user_input.strip():
+                logger.info("Pipeline: No URLs found or fetched. Executing direct search...")
+                search_start = time.time()
+                search_results = await self.search_service.search(user_input)
+                context.search_time = time.time() - search_start
                 
-                for i in range(MAX_DEEPSEARCH_ITERATIONS):
-                    logger.info(f"Pipeline: Stage 2 - Deepsearch Iteration {i + 1}")
-                    deepsearch_result = await self.instruct_deepsearch_stage.execute(context)
-                    
-                    # Trace & Usage
-                    deepsearch_result.trace["stage_name"] = f"Deepsearch (Iteration {i + 1})"
-                    trace["instruct_rounds"].append(deepsearch_result.trace)
-                    usage_totals["input_tokens"] += deepsearch_result.usage.get("input_tokens", 0)
-                    usage_totals["output_tokens"] += deepsearch_result.usage.get("output_tokens", 0)
-                    
-                    # Check if should stop
-                    if deepsearch_result.data.get("should_stop"):
-                        logger.info(f"Pipeline: Deepsearch loop ended at iteration {i + 1}")
-                        break
+                # Filter out the raw debug page
+                valid_results = [r for r in search_results if not r.get("_hidden")]
+                
+                if valid_results:
+                    logger.info(f"Pipeline: Search found {len(valid_results)} results in {context.search_time:.2f}s. Proceeding to Summary.")
+                    hit_content = True
+                    for item in search_results: # Add all, including hidden debug ones if needed by history
+                        item["_id"] = context.next_id()
+                        if "_type" not in item: item["_type"] = "search"
+                        item["query"] = user_input
+                        context.web_results.append(item)
+                else:
+                    logger.info("Pipeline: Search yielded 0 results.")
+
+            # === Branching ===
+            if hit_content and not has_user_images:
+                # -> Summary Stage (search/URL results available)
+                logger.info("Pipeline: Content found (URL/Search). Skipping Instruct -> Summary.")
             else:
-                logger.info("Pipeline: Mode is 'fast', skipping deepsearch stage")
+                # -> Instruct Stage (no content OR user provided images)
+                stage_label = "Image Analysis" if has_user_images else "Instruct (Fallback)"
+                logger.info(f"Pipeline: Entering {stage_label} stage.")
+                
+                # Pass images to Instruct stage via context
+                instruct_result = await self.instruct_stage.execute(context, images=images)
+                
+                # Trace & Usage
+                instruct_result.trace["stage_name"] = stage_label
+                trace["instruct_rounds"].append(instruct_result.trace)
+                usage_totals["input_tokens"] += instruct_result.usage.get("input_tokens", 0)
+                usage_totals["output_tokens"] += instruct_result.usage.get("output_tokens", 0)
+                
+                # Check refuse
+                if context.should_refuse:
+                    return self._build_refusal_response(context, conversation_history, active_model, stats)
             
             # === Parallel Execution: Summary Generation + Image Prefetching ===
             # We run image prefetching concurrently with Summary generation to save time.
@@ -169,6 +215,9 @@ class ModularPipeline:
                         if r.get("_type") == "page" and r.get("screenshot_b64"):
                             summary_input_images.append(r["screenshot_b64"])
                 
+                if context.should_refuse:
+                     return StageResult(success=True, data={"content": "Refused"}, usage={}, trace={}), 0.0
+
                 res = await self.summary_stage.execute(
                     context,
                     images=summary_input_images if summary_input_images else None
@@ -204,6 +253,10 @@ class ModularPipeline:
             summary_result, summary_time = await summary_task
             cached_map, prefetch_time = await prefetch_task
             
+            if context.should_refuse:
+                # Double check if summary triggered refusal
+                return self._build_refusal_response(context, conversation_history, active_model, stats)
+
             time_diff = abs(summary_time - prefetch_time)
             if summary_time > prefetch_time:
                 logger.info(f"Pipeline: Image Prefetch finished first ({prefetch_time:.2f}s). Summary took {summary_time:.2f}s. (Waited {time_diff:.2f}s for Summary)")
@@ -268,7 +321,8 @@ class ModularPipeline:
                 },
                 "stages_used": stages_used,
                 "web_results": context.web_results,
-                "vision_trace": trace.get("vision"),
+                "trace": trace,
+
                 "instruct_traces": trace.get("instruct_rounds", []),
             }
 
@@ -378,6 +432,8 @@ class ModularPipeline:
         # Sort: Fetched first
         search_refs.sort(key=lambda x: x["is_fetched"], reverse=True)
         
+        logger.debug(f"_build_stages_ui: Found {len(search_refs)} search refs from {len(context.web_results)} web_results")
+        
         if search_refs:
             stages.append({
                 "name": "Search",
@@ -385,30 +441,10 @@ class ModularPipeline:
                 "icon_config": "openai",
                 "provider": "Web",
                 "references": search_refs,
-                "description": f"Found {len(search_refs)} results."
+                "description": f"Found {len(search_refs)} results.",
+                "time": getattr(context, 'search_time', 0)
             })
         
-        # 2. Vision Stage (if used)
-        if trace.get("vision"):
-            v = trace["vision"]
-            if not v.get("skipped"):
-                usage = v.get("usage", {})
-                vision_cfg = self.config.get_model_config("vision")
-                input_price = vision_cfg.get("input_price") or 0
-                output_price = vision_cfg.get("output_price") or 0
-                cost = (usage.get("input_tokens", 0) * input_price + usage.get("output_tokens", 0) * output_price) / 1_000_000
-                
-                stages.append({
-                    "name": "Vision",
-                    "model": v.get("model"),
-                    "icon_config": "google",
-                    "provider": "Vision",
-                    "time": v.get("time", 0),
-                    "description": f"Analyzed {v.get('images_count', 0)} image(s).",
-                    "usage": usage,
-                    "cost": cost
-                })
-            
         # 2. Instruct Rounds
         for i, t in enumerate(trace.get("instruct_rounds", [])):
             stage_name = t.get("stage_name", f"Analysis {i+1}")
@@ -424,8 +460,8 @@ class ModularPipeline:
             # Calculate cost from config prices
             usage = t.get("usage", {})
             instruct_cfg = self.config.get_model_config("instruct")
-            input_price = instruct_cfg.get("input_price") or 0
-            output_price = instruct_cfg.get("output_price") or 0
+            input_price = instruct_cfg.input_price or 0
+            output_price = instruct_cfg.output_price or 0
             cost = (usage.get("input_tokens", 0) * input_price + usage.get("output_tokens", 0) * output_price) / 1_000_000
             
             stages.append({
@@ -444,8 +480,8 @@ class ModularPipeline:
             s = trace["summary"]
             usage = s.get("usage", {})
             main_cfg = self.config.get_model_config("main")
-            input_price = main_cfg.get("input_price") or 0
-            output_price = main_cfg.get("output_price") or 0
+            input_price = main_cfg.input_price or 0
+            output_price = main_cfg.output_price or 0
             cost = (usage.get("input_tokens", 0) * input_price + usage.get("output_tokens", 0) * output_price) / 1_000_000
             
             stages.append({

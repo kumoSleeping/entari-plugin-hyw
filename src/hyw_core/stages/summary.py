@@ -12,8 +12,8 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .stage_base import BaseStage, StageContext, StageResult
-from .definitions import SUMMARY_REPORT_SP
+from .base import BaseStage, StageContext, StageResult
+from ..definitions import SUMMARY_REPORT_SP, get_refuse_answer_tool
 
 
 class SummaryStage(BaseStage):
@@ -35,6 +35,9 @@ class SummaryStage(BaseStage):
         
         # Format context from web results
         web_content = self._format_web_content(context)
+        
+        # Tools
+        refuse_tool = get_refuse_answer_tool()
         full_context = f"{context.agent_context}\n\n{web_content}"
         
         # Select prompt
@@ -47,15 +50,13 @@ class SummaryStage(BaseStage):
         # Build Context Message
         context_message = f"## Web Search & Page Content\n\n```context\n{full_context}\n```"
         
-        # Add vision description if present (from VisionStage)
-        if context.vision_description:
-            vision_context = f"## 用户图片描述\n\n{context.vision_description}"
-            context_message = f"{vision_context}\n\n{context_message}"
         
         # Build user content
         user_text = context.user_input or "..."
         if images:
-            user_content: List[Dict[str, Any]] = [{"type": "text", "text": user_text}]
+            # Add image context message for multimodal input
+            image_context = f"[System: The user has provided {len(images)} image(s). Please analyze these images together with the text query to provide a comprehensive response.]"
+            user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"{image_context}\n\n{user_text}"}]
             for img_b64 in images:
                 url = f"data:image/jpeg;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
                 user_content.append({"type": "image_url", "image_url": {"url": url}})
@@ -72,18 +73,21 @@ class SummaryStage(BaseStage):
         model_cfg = self.config.get_model_config("main")
         
         client = self._client_for(
-            api_key=model_cfg.get("api_key"),
-            base_url=model_cfg.get("base_url")
+            api_key=model_cfg.api_key,
+            base_url=model_cfg.base_url
         )
         
-        model = model_cfg.get("model_name") or self.config.model_name
+        model = model_cfg.model_name or self.config.model_name
         
         try:
             response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 temperature=self.config.temperature,
+
                 extra_body=getattr(self.config, "summary_extra_body", None),
+                tools=[refuse_tool],
+                tool_choice="auto",
             )
         except Exception as e:
             logger.error(f"SummaryStage LLM error: {e}")
@@ -98,6 +102,25 @@ class SummaryStage(BaseStage):
             usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
             usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
         
+        # Handle Tool Calls (Refusal)
+        tool_calls = response.choices[0].message.tool_calls
+        if tool_calls:
+            for tc in tool_calls:
+                if tc.function.name == "refuse_answer":
+                    import json
+                    try:
+                        args = json.loads(tc.function.arguments)
+                        reason = args.get("reason", "Refused")
+                        context.should_refuse = True
+                        context.refuse_reason = reason
+                        return StageResult(
+                            success=True,
+                            data={"content": f"Refused: {reason}"},
+                            usage=usage,
+                            trace={"skipped": True, "reason": reason}
+                        )
+                    except: pass
+        
         content = (response.choices[0].message.content or "").strip()
         
         return StageResult(
@@ -106,7 +129,7 @@ class SummaryStage(BaseStage):
             usage=usage,
             trace={
                 "model": model,
-                "provider": model_cfg.get("model_provider") or "Unknown",
+                "provider": model_cfg.model_provider or "Unknown",
                 "usage": usage,
                 "system_prompt": system_prompt,
                 "context_message": context_message,  # Includes vision description + search results

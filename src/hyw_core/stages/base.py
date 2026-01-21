@@ -39,8 +39,8 @@ class StageContext:
     # Model capabilities
     image_input_supported: bool = True
     
-    # Vision description (from VisionStage)
-    vision_description: str = ""
+    # Search timing
+    search_time: float = 0.0
     
     def next_id(self) -> int:
         """Get next global ID."""

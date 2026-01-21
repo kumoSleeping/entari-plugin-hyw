@@ -14,7 +14,7 @@ class GoogleEngine(SearchEngine):
     
     def build_url(self, query: str, limit: int = 10) -> str:
         encoded_query = urllib.parse.quote(query)
-        return f"https://www.google.com/search?q={encoded_query}"
+        return f"https://www.google.com/search?q={encoded_query}&udm=14"
 
     def parse(self, content: str) -> List[Dict[str, Any]]:
         results = []

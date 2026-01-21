@@ -12,12 +12,11 @@ from typing import Any, Dict, List, Optional, Tuple, Callable, Awaitable
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .stage_base import BaseStage, StageContext, StageResult
-from .definitions import (
+from .base import BaseStage, StageContext, StageResult
+from ..definitions import (
     get_refuse_answer_tool,
     get_web_search_tool,
     get_crawl_page_tool,
-    get_set_mode_tool,
     INSTRUCT_SP
 )
 
@@ -33,36 +32,41 @@ class InstructStage(BaseStage):
         self.refuse_answer_tool = get_refuse_answer_tool()
         self.web_search_tool = get_web_search_tool()
         self.crawl_page_tool = get_crawl_page_tool()
-        self.set_mode_tool = get_set_mode_tool()
 
-    async def execute(self, context: StageContext) -> StageResult:
+
+    async def execute(self, context: StageContext, images: List[str] = None) -> StageResult:
         start_time = time.time()
         
         # --- Round 1: Initial Discovery ---
         logger.info("Instruct: Starting Round 1 (Initial Discovery)")
         
-        # Build Round 1 User Message
-        r1_user_content = self._build_user_message(context)
+        # Build Round 1 User Message (with images if provided)
+        r1_user_content = self._build_user_message(context, images)
         r1_messages = [
             {"role": "system", "content": INSTRUCT_SP},
             {"role": "user", "content": r1_user_content}
         ]
         
         # Execute Round 1 LLM
+        llm_start_time = time.time()
         r1_response, r1_usage, r1_tool_calls, r1_content = await self._call_llm(
             messages=r1_messages,
-            tools=[self.refuse_answer_tool, self.web_search_tool, self.crawl_page_tool, self.set_mode_tool],
+            tools=[self.refuse_answer_tool, self.web_search_tool, self.crawl_page_tool],
             tool_choice="auto"
         )
+        llm_duration = time.time() - llm_start_time
         
         if context.should_refuse:
              # If refused in Round 1, stop here
-             return self._build_result(start_time, r1_usage, r1_content, len(r1_tool_calls or []))
+             return self._build_result(start_time, llm_duration, 0, r1_usage, r1_content, len(r1_tool_calls or []))
 
         # Execute Round 1 Tools
         r1_tool_outputs = []
+        tool_duration = 0
         if r1_tool_calls:
+            tool_start_time = time.time()
             r1_tool_outputs = await self._process_tool_calls(context, r1_tool_calls)
+            tool_duration = time.time() - tool_start_time
         
         # --- Context Assembly for Round 2 ---
         
@@ -93,13 +97,15 @@ class InstructStage(BaseStage):
             "content": f"[Round 1 Thought]: {r1_content}\n[Round 1 Actions]: {len(r1_tool_outputs)} tools"
         })
         
-        return self._build_result(start_time, r1_usage, r1_content, len(r1_tool_calls or []))
+        return self._build_result(start_time, llm_duration, tool_duration, r1_usage, r1_content, len(r1_tool_calls or []))
 
-    def _build_user_message(self, context: StageContext) -> Any:
+    def _build_user_message(self, context: StageContext, images: List[str] = None) -> Any:
         text_prompt = f"User Query: {context.user_input}"
-        if context.images:
-            user_content: List[Dict[str, Any]] = [{"type": "text", "text": text_prompt}]
-            for img_b64 in context.images:
+        if images:
+            # Add image context message
+            image_context = f"[System: The user has provided {len(images)} image(s). Please analyze these images together with the text query to provide a comprehensive response.]"
+            user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"{image_context}\n\n{text_prompt}"}]
+            for img_b64 in images:
                 url = f"data:image/jpeg;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
                 user_content.append({"type": "image_url", "image_url": {"url": url}})
             return user_content
@@ -108,10 +114,10 @@ class InstructStage(BaseStage):
     async def _call_llm(self, messages, tools, tool_choice="auto"):
         model_cfg = self.config.get_model_config("instruct")
         client = self._client_for(
-            api_key=model_cfg.get("api_key"),
-            base_url=model_cfg.get("base_url")
+            api_key=model_cfg.api_key,
+            base_url=model_cfg.base_url
         )
-        model = model_cfg.get("model_name") or self.config.model_name
+        model = model_cfg.model_name or self.config.model_name
         
         try:
             logger.info(f"Instruct: Sending LLM request to {model}...")
@@ -121,7 +127,7 @@ class InstructStage(BaseStage):
                 tools=tools,
                 tool_choice=tool_choice,
                 temperature=self.config.temperature,
-                extra_body=model_cfg.get("extra_body"),
+                extra_body=model_cfg.extra_body,
             )
         except Exception as e:
             logger.error(f"InstructStage LLM Error: {e}")
@@ -183,25 +189,7 @@ class InstructStage(BaseStage):
                     logger.info(f"Instruct: Planned page crawl -> {url}")
                     pending_crawls.append((url, tc_id))
             
-            elif name == "set_mode":
-                mode = args.get("mode", "fast")
-                if mode in ("fast", "deepsearch"):
-                    context.selected_mode = mode
-                    logger.info(f"Instruct: Mode set to '{mode}'")
-                    
-                    # Notify immediately if deepsearch
-                    if mode == "deepsearch" and self.send_func:
-                        try:
-                            await self.send_func("🔍 正在进行深度研究，可能需要一些时间，请耐心等待...")
-                        except Exception as e:
-                            logger.warning(f"Instruct: Failed to send notification: {e}")
 
-                    results_for_context.append({
-                        "id": tc_id, "name": name, "content": f"Mode set to: {mode}"
-                    })
-                else:
-                    logger.warning(f"Instruct: Invalid mode '{mode}', defaulting to 'fast'")
-                    context.selected_mode = "fast"
         
         # Execute Batches
         
@@ -217,7 +205,7 @@ class InstructStage(BaseStage):
             is_image_mode = getattr(context, "image_input_supported", True)
             tab_ids = []
             if is_image_mode:
-                from .render_vue import get_content_renderer
+                from ..browser_control.renderer import get_content_renderer
                 renderer = await get_content_renderer()
                 loop = asyncio.get_running_loop()
                 tab_tasks = [
@@ -334,9 +322,9 @@ class InstructStage(BaseStage):
                 
         return results_for_context
 
-    def _build_result(self, start_time, usage, content, tool_calls_count):
+    def _build_result(self, start_time, llm_duration, tool_duration, usage, content, tool_calls_count):
         model_cfg = self.config.get_model_config("instruct")
-        model = model_cfg.get("model_name") or self.config.model_name
+        model = model_cfg.model_name or self.config.model_name
         
         trace = {
             "stage": "Instruct",
@@ -345,6 +333,8 @@ class InstructStage(BaseStage):
             "output": content,
             "tool_calls": tool_calls_count,
             "time": time.time() - start_time,
+            "llm_time": llm_duration,
+            "tool_time": tool_duration,
         }
         
         return StageResult(

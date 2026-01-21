@@ -235,10 +235,12 @@ const processedHtml = computed(() => {
     `
   })
   
-  // Convert [N] citations to small square badges with shadow
-  html = html.replace(/(\s*)\[(\d+)\]/g, (_, _space, n) => {
-    const num = parseInt(n)
-    return `<sup class="inline-flex items-center justify-center w-[15px] h-[15px] text-[10px] font-bold cursor-default select-none ml-0.5 mr-0 align-middle" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 2px 0 rgba(0,0,0,0.15)">${num}</sup>`
+  // Convert [N] or [N, M] citations to small square badges with shadow
+  html = html.replace(/(\s*)\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, _space, content) => {
+    return content.split(',').map((n: string) => {
+      const num = parseInt(n.trim())
+      return `<sup class="inline-flex items-center justify-center w-[15px] h-[15px] text-[10px] font-bold cursor-default select-none ml-0.5 mr-0 align-middle" style="background-color: var(--theme-color); color: var(--header-text-color); box-shadow: 0 1px 2px 0 rgba(0,0,0,0.15)">${num}</sup>`
+    }).join('')
   })
   
   // Style <u> underline tags with theme-colored solid underline

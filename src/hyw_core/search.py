@@ -5,12 +5,12 @@ import time
 from typing import List, Dict, Any, Optional
 from loguru import logger
 
-from .browser.service import get_screenshot_service
-# New engines
-from .browser.engines.bing import BingEngine
-from .browser.engines.duckduckgo import DuckDuckGoEngine
-from .browser.engines.google import GoogleEngine
-from .browser.engines.default import DefaultEngine
+from .browser_control.service import get_screenshot_service
+# Search engines from browser_control subpackage
+from .browser_control.engines.bing import BingEngine
+from .browser_control.engines.duckduckgo import DuckDuckGoEngine
+from .browser_control.engines.google import GoogleEngine
+from .browser_control.engines.default import DefaultEngine
 
 class SearchService:
     def __init__(self, config: Any):
