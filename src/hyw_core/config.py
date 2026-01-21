@@ -59,7 +59,7 @@ class HywCoreConfig:
     summary_extra_body: Optional[Dict[str, Any]] = None
     
     # Search Configuration
-    search_engine: str = "default"
+    search_engine: str = "duckduckgo"
     search_limit: int = 10
     blocked_domains: List[str] = field(default_factory=list)
     

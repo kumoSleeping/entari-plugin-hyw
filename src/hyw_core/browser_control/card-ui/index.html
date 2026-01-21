@@ -5,7 +5,29 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Card Renderer</title>
-  <script>window.RENDER_DATA = {}</script>
+  <script>
+    window.RENDER_DATA = {};
+    window.RENDER_FINISHED = false;
+    window.updateRenderData = (data) => {
+      window.RENDER_FINISHED = false;
+      window.RENDER_DATA = data;
+      window.dispatchEvent(new CustomEvent('render-data-updated', { detail: data }));
+
+      // Wait for rendering to settle
+      let start = Date.now();
+      const check = () => {
+        const imgs = document.querySelectorAll('img');
+        const allLoaded = Array.from(imgs).every(img => img.complete);
+        if (allLoaded || (Date.now() - start > 3000)) {
+          // Short additional delay for layout/paint
+          setTimeout(() => { window.RENDER_FINISHED = true; }, 100);
+        } else {
+          setTimeout(check, 50);
+        }
+      };
+      check();
+    };
+  </script>
 </head>
 
 <body>

@@ -30,7 +30,7 @@ Usage:
     })
 """
 
-__version__ = "1.0.0-alpha.1"
+__version__ = "4.0.0-rc8"
 
 # Core classes
 from .core import HywCore, QueryRequest, QueryResponse
@@ -47,17 +47,14 @@ from .stages import (
     BaseStage,
     StageContext,
     StageResult,
-    InstructStage,
+
     SummaryStage,
 )
 
 # Definitions
 from .definitions import (
-    INSTRUCT_SP,
     SUMMARY_REPORT_SP,
     get_refuse_answer_tool,
-    get_web_search_tool,
-    get_crawl_page_tool,
 )
 
 # Browser control is available as subpackage
@@ -84,15 +81,13 @@ __all__ = [
     "BaseStage",
     "StageContext",
     "StageResult",
-    "InstructStage",
+
     "SummaryStage",
     
     # Definitions
-    "INSTRUCT_SP",
     "SUMMARY_REPORT_SP",
     "get_refuse_answer_tool",
-    "get_web_search_tool",
-    "get_crawl_page_tool",
+
     
     # Subpackage
     "browser_control",

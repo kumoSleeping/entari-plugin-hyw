@@ -10,13 +10,12 @@ This subpackage provides the pipeline stage implementations:
 """
 
 from .base import BaseStage, StageContext, StageResult
-from .instruct import InstructStage
+
 from .summary import SummaryStage
 
 __all__ = [
     "BaseStage",
     "StageContext", 
     "StageResult",
-    "InstructStage",
     "SummaryStage",
 ]

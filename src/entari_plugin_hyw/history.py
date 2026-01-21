@@ -83,24 +83,30 @@ class HistoryManager:
         import shutil
         import json
         
-        if key not in self._history:
+        if key not in self._history and not web_results:
             return
 
         try:
             # Extract user's first message (question) for folder name
-            user_question = ""
-            for msg in self._history[key]:
-                if msg.get("role") == "user":
-                    content = msg.get("content", "")
-                    if isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get("type") == "text":
-                                user_question = item.get("text", "")
-                                break
-                    else:
-                        user_question = str(content)
-                    break
+            user_question = "unknown_query"
+            if key in self._history:
+                for msg in self._history[key]:
+                    if msg.get("role") == "user":
+                        content = msg.get("content", "")
+                        if isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get("type") == "text":
+                                    user_question = item.get("text", "")
+                                    break
+                        else:
+                            user_question = str(content)
+                        break
             
+            # Use raw query from first web result if available and no history (for pure search debug)
+            if user_question == "unknown_query" and web_results and len(web_results) > 0:
+                 q = web_results[0].get("query", "")
+                 if q: user_question = q
+
             # Clean and truncate question
             question_part = re.sub(r'[\\/:*?"<>|\n\r\t]', '', user_question)[:20].strip()
             if not question_part:
@@ -109,6 +115,13 @@ class HistoryManager:
             # Create folder: YYYYMMDD_HHMMSS_question
             time_str = time.strftime("%Y%m%d_%H%M%S", time.localtime())
             folder_name = f"{time_str}_{question_part}"
+            
+            # Auto-resolve relative paths to absolute if needed
+            if not os.path.isabs(save_root):
+                 # Try to save next to the project root (assuming we are in src/...)
+                 # But safer to just use CWD
+                 save_root = os.path.abspath(save_root)
+            
             folder_path = os.path.join(save_root, folder_name)
             
             os.makedirs(folder_path, exist_ok=True)

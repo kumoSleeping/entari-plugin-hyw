@@ -54,6 +54,11 @@ class QueryResponse:
     error: Optional[str] = None
     should_refuse: bool = False
     refuse_reason: str = ""
+    
+    # Debug/Save
+    web_results: List[Dict[str, Any]] = field(default_factory=list)
+    stages_used: List[Dict[str, Any]] = field(default_factory=list)
+
 
 
 class HywCore:
@@ -102,6 +107,7 @@ class HywCore:
         # Create pipeline
         self._pipeline = ModularPipeline(
             config=config,
+            search_service=self._search_service,
             send_func=send_func
         )
         
@@ -192,7 +198,9 @@ class HywCore:
                 references=structured.get("references", []),
                 page_references=structured.get("page_references", []),
                 image_references=structured.get("image_references", []),
-                stages_trace=result.get("trace", {})
+                stages_trace=result.get("trace", {}),
+                web_results=result.get("web_results", []),
+                stages_used=result.get("stages_used", [])
             )
             
             # Render image if output path provided
@@ -245,6 +253,21 @@ class HywCore:
         """
         # TODO: Support engine override per-call
         return await self._search_service.search_batch(queries)
+
+    async def screenshot(self, url: str) -> Optional[str]:
+        """
+        Capture full page screenshot of a URL.
+        Returns: base64 string or None
+        """
+        # Default to full_page=True as requested for /w command
+        return await self._search_service.screenshot_url(url, full_page=True)
+    
+    async def screenshot_batch(self, urls: List[str]) -> List[Optional[str]]:
+        """
+        Capture full page screenshots of multiple URLs concurrently.
+        Returns: list of base64 strings (None for failed ones)
+        """
+        return await self._search_service.screenshot_urls_batch(urls, full_page=True)
     
     async def fetch_pages(
         self,
@@ -287,7 +310,7 @@ class HywCore:
         return await self._renderer.render(
             markdown_content=markdown_content,
             output_path=output_path,
-            theme_color=kwargs.get("theme_color", self.config.theme_color),
+            theme_color=kwargs.pop("theme_color", self.config.theme_color),
             **kwargs
         )
     

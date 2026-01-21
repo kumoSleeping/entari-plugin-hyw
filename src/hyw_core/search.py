@@ -7,7 +7,6 @@ from loguru import logger
 
 from .browser_control.service import get_screenshot_service
 # Search engines from browser_control subpackage
-from .browser_control.engines.bing import BingEngine
 from .browser_control.engines.duckduckgo import DuckDuckGoEngine
 from .browser_control.engines.google import GoogleEngine
 from .browser_control.engines.default import DefaultEngine
@@ -27,16 +26,14 @@ class SearchService:
         if self._engine_name:
             self._engine_name = self._engine_name.lower()
         
-        if self._engine_name == "bing":
-            self._engine = BingEngine()
-        elif self._engine_name == "google":
+        if self._engine_name == "google":
             self._engine = GoogleEngine()
-        elif self._engine_name == "duckduckgo":
-            self._engine = DuckDuckGoEngine()
+        elif self._engine_name == "default_address_bar": # Explicitly requested address bar capability if needed
+             self._engine = DefaultEngine()
         else:
-            # Default: use browser address bar search (Google-based)
-            self._engine = DefaultEngine()
-            self._engine_name = "default"
+            # Default: use DuckDuckGo
+            self._engine = DuckDuckGoEngine()
+            self._engine_name = "duckduckgo"
         
         logger.info(f"SearchService initialized with engine: {self._engine_name}")
 
@@ -156,3 +153,11 @@ class SearchService:
             timeout = self._fetch_timeout
         service = get_screenshot_service(headless=self._headless)
         return await service.fetch_page(url, timeout=timeout, include_screenshot=include_screenshot)
+
+    async def screenshot_url(self, url: str, full_page: bool = True) -> Optional[str]:
+        """
+        Capture a screenshot of a URL.
+        Delegates to screenshot service.
+        """
+        service = get_screenshot_service(headless=self._headless)
+        return await service.screenshot_url(url, full_page=full_page)

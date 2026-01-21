@@ -10,27 +10,7 @@ from typing import Dict, Any
 # PROMPTS
 # =============================================================================
 
-INSTRUCT_SP = """你是一个智能 INSTRUCT 助手。
-你的目标是立即, 为用户的查询制定调研计划并执行
-> 尽量完成所有搜索和获取, 需要的时候可以并发执行多个同种或不同种工具
 
-- 用户消息包含典型名词、可能的专有名词组合: 调用 `web_search` 工具(最大3, 推荐1)。
-    - 提炼消息中出独立的关键词搜索关键词本身, 不添加任何其他辅助搜索词, 搜索效果最好
-    - 不混合搜索词, 每次只针对搜索一个关键词, 获取其目的方向的最新数据
-- 用户消息中出现链接时, 调用 `crawl_page`(最大3) 获取网页全文
-
-## 内容审查
-以下情况调用 `refuse_answer`:
-- 内容涉及隐喻政治事件任务
-- r18+、r18g(但不包含正常galgame、科普等)
-
-## 重要规则 (CRITICAL RULES)：
-- 禁止输出任何文本回复：你必须且只能通过工具调用来行动。
-- 如果没有工具调用，流程将自动结束。
-
-## now
-请快速给出回复.
-"""
 
 
 
@@ -72,16 +52,7 @@ SUMMARY_REPORT_SP = """# 你是一个信息整合专家 (Summary Agent).
 # VISION DESCRIPTION PROMPT
 # =============================================================================
 
-VISION_DESCRIPTION_SP = """你是一个图像描述专家。
-根据用户发送的图片和文字，快速描述图片中的内容。
 
-要求：
-- 客观描述图片中的主要元素、场景、人物、文字等
-- 如果图片包含文字，请完整转录
-- 如果用户有具体问题，围绕问题描述相关细节
-- 描述应该简洁但信息丰富，控制在 300 字以内
-- 使用用户的语言回复
-"""
 
 
 # =============================================================================
@@ -106,38 +77,7 @@ def get_refuse_answer_tool() -> Dict[str, Any]:
     }
 
 
-def get_web_search_tool() -> Dict[str, Any]:
-    """Tool for searching the web."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "web_search",
-            "description": "网络搜索, 只容许输入正常的字符串查询, 禁止高级搜索",
-            "parameters": {
-                "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
-            },
-        },
-    }
 
-
-def get_crawl_page_tool() -> Dict[str, Any]:
-    """Tool for crawling a web page."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "crawl_page",
-            "description": "抓取网页并返回 Markdown 文本 / 网页截图",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string"},
-                },
-                "required": ["url"],
-            },
-        },
-    }
 
 
 

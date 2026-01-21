@@ -42,11 +42,79 @@ from .misc import (
     render_refuse_answer, 
     render_image_unsupported,
 )
+from .search_cache import SearchResultCache, parse_single_index, parse_multi_indices
+
+
+def parse_filter_syntax(query: str, max_count: int = 3):
+    """
+    Parse enhanced filter syntax supporting:
+    - Chinese/English colons (: ：) and commas (, ，)
+    - Multiple filters: "mcmod=2, github=1 : xxx" 
+    - Index lists: "1, 2, 3 : xxx"
+    - Max total selections
+    
+    Returns:
+        (filters, search_query, error_msg)
+        filters: list of (filter_type, filter_value, count) tuples
+                 filter_type: 'index' or 'link'
+                 count: how many to get (default 1)
+        search_query: the actual search query
+        error_msg: error message if exceeded max
+    """
+    if not query:
+        return [], query, None
+    
+    # Normalize Chinese punctuation to English
+    normalized = query.replace('：', ':').replace('，', ',').replace('、', ',')
+    
+    # Handle escaped colons: \: or /: -> placeholder
+    normalized = re.sub(r'[/\\]:', '\x00COLON\x00', normalized)
+    
+    # Split by colon - last part is the search query
+    parts = normalized.split(':')
+    if len(parts) < 2:
+        # No colon found, restore escaped colons and return as-is
+        return [], query.replace('\\:', ':').replace('/:', ':'), None
+    
+    # Everything after the last colon is the search query
+    search_query = parts[-1].strip().replace('\x00COLON\x00', ':')
+    
+    # Everything before is the filter specification
+    filter_spec = ':'.join(parts[:-1]).strip().replace('\x00COLON\x00', ':')
+    
+    if not filter_spec or not search_query:
+        return [], query.replace('\\:', ':').replace('/:', ':'), None
+    
+    # Parse filter specifications (comma-separated)
+    filter_items = [f.strip() for f in filter_spec.split(',') if f.strip()]
+    
+    filters = []
+    for item in filter_items:
+        # Check for "filter=count" pattern (e.g., "mcmod=2")
+        eq_match = re.match(r'^(\w+)\s*=\s*(\d+)$', item)
+        if eq_match:
+            filter_name = eq_match.group(1).lower()
+            count = int(eq_match.group(2))
+            filters.append(('link', filter_name, count))
+        elif item.isdigit():
+            # Pure index
+            filters.append(('index', int(item), 1))
+        else:
+            # Filter name without count (default count=1)
+            filters.append(('link', item.lower(), 1))
+    
+    # Calculate total count
+    total = sum(f[2] for f in filters)
+    if total > max_count:
+        return [], search_query, f"最多选择{max_count}个结果 (当前选择了{total}个)"
+    
+    return filters, search_query, None
+
 
 try:
     __version__ = get_version("entari_plugin_hyw")
 except Exception:
-    __version__ = "5.0.0-alpha.1"
+    __version__ = "4.0.0-rc8"
 
 
 def parse_color(color: str) -> str:
@@ -159,6 +227,7 @@ conf = plugin_config(HywConfig)
 history_manager = HistoryManager()
 renderer = ContentRenderer(headless=conf.headless)
 set_global_renderer(renderer)
+search_cache = SearchResultCache(ttl_seconds=600.0)  # 10 minutes
 
 _hyw_core: Optional[HywCore] = None
 
@@ -268,8 +337,11 @@ async def process_request(
             output_path = tf.name
         
         core = get_hyw_core()
-        response = await core.query(request, output_path=output_path)
+        # 1. Query ONLY (no render path provided)
+        # Pass output_path=None so it returns raw response without internal rendering
+        response = await core.query(request, output_path=None)
         
+        # 2. Get the warmed-up tab
         try:
             tab_id = await render_tab_task
         except Exception:
@@ -289,7 +361,19 @@ async def process_request(
             await session.send(f"Error: {response.error}")
             return
         else:
-            render_ok = response.image_path is not None
+            # 3. Explicit External Render using the Parallel Tab
+            render_ok = await core.render(
+                markdown_content=response.content,
+                output_path=output_path,
+                stats={"total_time": response.total_time},
+                references=response.references,
+                page_references=response.page_references,
+                image_references=response.image_references,
+                stages_used=response.stages_used,
+                tab_id=tab_id
+            )
+            if render_ok:
+                response.image_path = output_path
         
         if render_ok:
             with open(output_path, "rb") as f:
@@ -309,10 +393,28 @@ async def process_request(
                 {"role": "assistant", "content": response.content}
             ]
             
+            # Save to Memory
             history_manager.remember(
                 sent_id, updated_history, [msg_id],
                 {"model": model}, context_id, code=display_session_id,
             )
+            
+            # Save to Disk (Debug/Logging)
+            if conf.save_conversation:
+                # Extract traces from response
+                trace = response.stages_trace
+                instruct_traces = trace.get("instruct_rounds") if trace else None
+                
+                # Check for web_results in response (needs Core update)
+                web_results = getattr(response, "web_results", [])
+                
+                history_manager.save_to_disk(
+                    key=sent_id, 
+                    image_path=output_path,
+                    web_results=web_results,
+                    instruct_traces=instruct_traces,
+                    vision_trace=None # Vision integrated into Instruct now
+                )
         
         if os.path.exists(output_path):
             os.remove(output_path)
@@ -320,6 +422,7 @@ async def process_request(
     except Exception as e:
         logger.exception(f"Error: {e}")
         await session.send(f"Error: {e}")
+
 
 
 alc = Alconna(conf.question_command, Args["all_param;?", AllParam])
@@ -335,7 +438,486 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
         pass
     
     args = result.all_matched_args
-    await process_request(session, args.get("all_param"))
+    all_param = args.get("all_param")
+    
+    # Extract query text
+    if all_param:
+        if isinstance(all_param, MessageChain):
+            query_text = str(all_param.get(Text)).strip()
+        else:
+            query_text = str(all_param).strip()
+    else:
+        query_text = ""
+    
+    # Check if replying to a cached search result
+    reply_msg_id = None
+    if session.reply and hasattr(session.reply.origin, 'id'):
+        reply_msg_id = str(session.reply.origin.id)
+    
+    # Quote mode: Use cached search results
+    if reply_msg_id:
+        cached = search_cache.get(reply_msg_id)
+        if cached:
+            # Parse indices if provided
+            indices = parse_multi_indices(query_text, max_count=3) if query_text else None
+            
+            # Check if too many indices requested (parse_multi_indices returns None if > max_count)
+            if query_text and indices is None:
+                # Check if it looks like indices but exceeded limit
+                import re
+                if re.match(r'^[\d,、\s\-–]+$', query_text):
+                    await session.send("最多选择3个结果进行总结")
+                    search_cache.cleanup()
+                    return
+            
+            if conf.reaction:
+                asyncio.create_task(react(session, "✨"))
+            
+            core = get_hyw_core()
+            local_renderer = await get_content_renderer()
+            tab_task = asyncio.create_task(local_renderer.prepare_tab())
+            
+            # Collect screenshots for selected pages
+            screenshots = []
+            if indices:
+                # Screenshot mode: capture pages for selected indices
+                for idx in indices:
+                    if idx < len(cached.results):
+                        url = cached.results[idx].get("url", "")
+                        if url:
+                            b64_img = await core.screenshot(url)
+                            if b64_img:
+                                screenshots.append(b64_img)
+                
+                if not screenshots:
+                    try: await tab_task
+                    except: pass
+                    await session.send("无法截图所选页面")
+                    search_cache.cleanup()
+                    return
+                
+                user_query = f"总结关于 \"{cached.query}\" 的内容"
+            else:
+                # No indices - summarize based on cached snippets (no screenshots)
+                context_parts = []
+                for i, res in enumerate(cached.results[:10]):
+                    title = res.get("title", f"Result {i+1}")
+                    snippet = res.get("content", "") or res.get("snippet", "")
+                    context_parts.append(f"## {title}\n{snippet}")
+                
+                context_message = f"基于搜索 \"{cached.query}\" 的结果摘要回答用户问题:\n\n" + "\n\n".join(context_parts)
+                user_query = query_text if query_text else f"总结关于 \"{cached.query}\" 的搜索结果"
+            
+            # Build request with screenshots (if any)
+            if screenshots:
+                request = QueryRequest(
+                    user_input=user_query,
+                    images=screenshots,
+                    conversation_history=[],
+                    model_name=None,
+                )
+            else:
+                request = QueryRequest(
+                    user_input=f"{context_message}\n\n用户问题: {user_query}",
+                    images=[],
+                    conversation_history=[],
+                    model_name=None,
+                )
+            
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                output_path = tf.name
+            
+            response = await core.query(request, output_path=None)
+            
+            try:
+                tab_id = await tab_task
+            except Exception:
+                tab_id = None
+            
+            if response.success and response.content:
+                render_ok = await core.render(
+                    markdown_content=response.content,
+                    output_path=output_path,
+                    stats={"total_time": response.total_time},
+                    references=[],
+                    page_references=[],
+                    tab_id=tab_id
+                )
+                
+                if render_ok and os.path.exists(output_path):
+                    with open(output_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode()
+                    
+                    msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+                    if conf.quote:
+                        msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                    
+                    await session.send(msg_chain)
+                    os.remove(output_path)
+                else:
+                    await session.send(response.content[:500])
+            else:
+                await session.send(f"总结失败: {response.error or 'Unknown error'}")
+            
+            search_cache.cleanup()
+            return
+    
+    # === Filter Mode: Search + Find matching links + Summarize ===
+    filters, search_query, filter_error = parse_filter_syntax(query_text, max_count=3)
+    
+    if filter_error:
+        await session.send(filter_error)
+        return
+    
+    if filters:
+        if conf.reaction:
+            asyncio.create_task(react(session, "✨"))
+        
+        core = get_hyw_core()
+        local_renderer = await get_content_renderer()
+        
+        # Run search and prepare tab in parallel
+        search_task = asyncio.create_task(core.search([search_query]))
+        tab_task = asyncio.create_task(local_renderer.prepare_tab())
+        
+        results = await search_task
+        flat_results = results[0] if results else []
+        
+        if not flat_results:
+            try: await tab_task
+            except: pass
+            await session.send("Search returned no results.")
+            return
+        
+        visible = [r for r in flat_results if not r.get("_hidden", False)]
+        
+        # Collect URLs to screenshot
+        urls_to_screenshot = []
+        for filter_type, filter_value, count in filters:
+            if filter_type == 'index':
+                idx = filter_value - 1
+                if 0 <= idx < len(visible):
+                    url = visible[idx].get("url", "")
+                    if url and url not in urls_to_screenshot:
+                        urls_to_screenshot.append(url)
+                else:
+                    try: await tab_task
+                    except: pass
+                    await session.send(f"序号 {filter_value} 超出范围 (1-{len(visible)})")
+                    return
+            else:
+                found_count = 0
+                for res in visible:
+                    url = res.get("url", "")
+                    if filter_value in url.lower() and url not in urls_to_screenshot:
+                        urls_to_screenshot.append(url)
+                        found_count += 1
+                        if found_count >= count:
+                            break
+                
+                if found_count == 0:
+                    try: await tab_task
+                    except: pass
+                    await session.send(f"未找到包含 \"{filter_value}\" 的链接")
+                    return
+        
+        if not urls_to_screenshot:
+            try: await tab_task
+            except: pass
+            await session.send("未找到匹配的链接")
+            return
+        
+        # Take screenshots concurrently
+        screenshot_tasks = [core.screenshot(url) for url in urls_to_screenshot]
+        screenshot_results = await asyncio.gather(*screenshot_tasks)
+        screenshots = [b64 for b64 in screenshot_results if b64]
+        
+        if not screenshots:
+            try: await tab_task
+            except: pass
+            await session.send("无法截图页面")
+            return
+        
+        # Pass screenshots to LLM for summarization
+        user_query = f"总结关于 \"{search_query}\" 的内容"
+        
+        request = QueryRequest(
+            user_input=user_query,
+            images=screenshots,
+            conversation_history=[],
+            model_name=None,
+        )
+        
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+            output_path = tf.name
+        
+        response = await core.query(request, output_path=None)
+        
+        try:
+            tab_id = await tab_task
+        except Exception:
+            tab_id = None
+        
+        if response.success and response.content:
+            render_ok = await core.render(
+                markdown_content=response.content,
+                output_path=output_path,
+                stats={"total_time": response.total_time},
+                references=[],
+                page_references=[],
+                tab_id=tab_id
+            )
+            
+            if render_ok and os.path.exists(output_path):
+                with open(output_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode()
+                
+                msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+                if conf.quote:
+                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                
+                await session.send(msg_chain)
+                os.remove(output_path)
+            else:
+                await session.send(response.content[:500])
+        else:
+            await session.send(f"总结失败: {response.error or 'Unknown error'}")
+        
+        return
+    
+    # Normal query mode (no cache context)
+    await process_request(session, all_param)
+
+
+# Search/Web Command (/w)
+alc_search = Alconna("/w", Args["query;?", AllParam])
+
+@command.on(alc_search)
+async def handle_web_command(session: Session[MessageCreatedEvent], result: Arparma):
+    """
+    Handle web command /w:
+    - If query is index + Quote -> Screenshot cached result
+    - If query is URL -> Screenshot
+    - If query is text -> Search
+    """
+    query = result.all_matched_args.get("query")
+    
+    # Extract query text
+    if query:
+        if isinstance(query, MessageChain):
+            query = str(query.get(Text)).strip()
+        query = str(query).strip()
+    else:
+        query = ""
+    
+    # Check if replying to a cached search result
+    reply_msg_id = None
+    if session.reply and hasattr(session.reply.origin, 'id'):
+        reply_msg_id = str(session.reply.origin.id)
+    
+    # Quote + Index mode: Screenshot specific cached result
+    if reply_msg_id:
+        cached = search_cache.get(reply_msg_id)
+        if cached:
+            # Parse index from query
+            idx = parse_single_index(query)
+            if idx is None:
+                # No valid index - show prompt
+                await session.send("请指定序号 (1-10)")
+                search_cache.cleanup()  # Lazy cleanup
+                return
+            
+            if idx >= len(cached.results):
+                await session.send(f"序号超出范围 (1-{len(cached.results)})")
+                search_cache.cleanup()
+                return
+            
+            # Screenshot the cached URL
+            target_result = cached.results[idx]
+            target_url = target_result.get("url", "")
+            if not target_url:
+                await session.send("该结果无有效URL")
+                search_cache.cleanup()
+                return
+            
+            if conf.reaction:
+                asyncio.create_task(react(session, "📸"))
+            
+            core = get_hyw_core()
+            b64_img = await core.screenshot(target_url)
+            
+            if b64_img:
+                msg_chain = MessageChain(Image(src=f'data:image/jpeg;base64,{b64_img}'))
+                if conf.quote:
+                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                await session.send(msg_chain)
+            else:
+                await session.send(f"截图失败: {target_url}")
+            
+            search_cache.cleanup()
+            return
+    
+    # No query and no cache context - nothing to do
+    if not query:
+        return
+
+    try:
+        core = get_hyw_core()
+        
+        # 1. URL Detection
+        url_pattern = re.compile(r'^https?://(?:[-\w./?=&%#]+)')
+        if url_pattern.match(query):
+            # === URL Screenshot Mode ===
+            if conf.reaction: asyncio.create_task(react(session, "📸"))
+            
+            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                output_path = tf.name
+
+            b64_img = await core.screenshot(query)
+            
+            if b64_img:
+                with open(output_path, "wb") as f:
+                    f.write(base64.b64decode(b64_img))
+                    
+                msg_chain = MessageChain(Image(src=f'data:image/jpeg;base64,{b64_img}'))
+                if conf.quote:
+                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                
+                await session.send(msg_chain)
+                
+                if conf.save_conversation:
+                    mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
+                    context_id = f"guild_{session.guild.id}" if session.guild else "user"
+                    history_manager.remember(mid, [{"role": "user", "content": f"/w {query}"}], [], {}, context_id=context_id)
+                    history_manager.save_to_disk(mid, image_path=output_path, web_results=[{"url": query, "title": "Screenshot", "_type": "screenshot"}])
+
+                os.remove(output_path)
+            else:
+                await session.send(f"Failed to screenshot URL: {query}")
+            return
+
+        # 2. Search Mode (Fallthrough)
+        
+        # Parse enhanced filter syntax
+        filters, search_query, filter_error = parse_filter_syntax(query, max_count=3)
+        
+        if filter_error:
+            await session.send(filter_error)
+            return
+        
+        # Search first
+        search_task = asyncio.create_task(core.search([search_query]))
+        
+        if conf.reaction: 
+            asyncio.create_task(react(session, "🔍"))
+        
+        results = await search_task
+        flat_results = results[0] if results else []
+        
+        if not flat_results:
+            await session.send("Search returned no results.")
+            return
+
+        visible = [r for r in flat_results if not r.get("_hidden", False)]
+        
+        if not visible:
+            await session.send("Search returned no visible results.")
+            return
+        
+        # === Filter Mode: Screenshot matching links ===
+        if filters:
+            urls_to_screenshot = []
+            
+            for filter_type, filter_value, count in filters:
+                if filter_type == 'index':
+                    # Index-based (1-based)
+                    idx = filter_value - 1
+                    if 0 <= idx < len(visible):
+                        url = visible[idx].get("url", "")
+                        if url and url not in urls_to_screenshot:
+                            urls_to_screenshot.append(url)
+                    else:
+                        await session.send(f"序号 {filter_value} 超出范围 (1-{len(visible)})")
+                        return
+                else:
+                    # Link filter: find URLs containing filter term
+                    found_count = 0
+                    for res in visible:
+                        url = res.get("url", "")
+                        if filter_value in url.lower() and url not in urls_to_screenshot:
+                            urls_to_screenshot.append(url)
+                            found_count += 1
+                            if found_count >= count:
+                                break
+                    
+                    if found_count == 0:
+                        await session.send(f"未找到包含 \"{filter_value}\" 的链接")
+                        return
+            
+            if not urls_to_screenshot:
+                await session.send("未找到匹配的链接")
+                return
+            
+            if conf.reaction:
+                asyncio.create_task(react(session, "📸"))
+            
+            # Take screenshots concurrently
+            screenshot_tasks = [core.screenshot(url) for url in urls_to_screenshot]
+            screenshot_results = await asyncio.gather(*screenshot_tasks)
+            
+            images = [Image(src=f'data:image/jpeg;base64,{b64}') for b64 in screenshot_results if b64]
+            
+            if images:
+                msg_chain = MessageChain(images)
+                if conf.quote:
+                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                await session.send(msg_chain)
+                
+                if conf.save_conversation:
+                    mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
+                    context_id = f"guild_{session.guild.id}" if session.guild else "user"
+                    history_manager.remember(mid, [{"role": "user", "content": f"/w {query}"}], [], {}, context_id=context_id)
+            else:
+                await session.send("截图失败")
+            return
+             
+        # === Normal Search Mode: Screenshot search results page ===
+        search_service = core._search_service
+        search_url = search_service._build_search_url(search_query)
+        
+        # Handle address bar search marker
+        if search_url.startswith("__ADDRESS_BAR_SEARCH__:"):
+            import urllib.parse
+            encoded_query = urllib.parse.quote_plus(search_query)
+            search_url = f"https://www.google.com/search?q={encoded_query}"
+        
+        b64_img = await core.screenshot(search_url)
+        
+        if b64_img:
+            msg_chain = MessageChain(Image(src=f'data:image/jpeg;base64,{b64_img}'))
+            if conf.quote:
+                msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+            
+            sent = await session.send(msg_chain)
+            
+            # Store in cache for future /w and /q lookups
+            sent_id = next((str(e.id) for e in sent if hasattr(e, 'id')), None) if sent else None
+            if sent_id:
+                search_cache.store(sent_id, visible[:10], search_query)
+            
+            if conf.save_conversation:
+                mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
+                context_id = f"guild_{session.guild.id}" if session.guild else "user"
+                history_manager.remember(mid, [{"role": "user", "content": f"/w {query}"}], [], {}, context_id=context_id)
+        else:
+            await session.send(f"截图搜索页面失败: {search_url}")
+        
+        search_cache.cleanup()  # Lazy cleanup
+
+    except Exception as e:
+        logger.error(f"Search command failed: {e}")
+        await session.send(f"Search error: {e}")
+
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version=__version__, config=HywConfig)
 

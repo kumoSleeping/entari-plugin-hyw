@@ -28,7 +28,6 @@ from .renderer import (
 )
 
 from .engines.base import SearchEngine
-from .engines.bing import BingEngine
 from .engines.google import GoogleEngine
 from .engines.duckduckgo import DuckDuckGoEngine
 from .engines.default import DefaultEngine
@@ -60,7 +59,6 @@ __all__ = [
     
     # Search Engines
     "SearchEngine",
-    "BingEngine",
     "GoogleEngine",
     "DuckDuckGoEngine",
     "DefaultEngine",

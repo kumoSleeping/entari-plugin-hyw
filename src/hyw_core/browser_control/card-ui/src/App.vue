@@ -1,8 +1,16 @@
 <script setup lang="ts">
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, nextTick } from 'vue'
 import { Icon } from '@iconify/vue'
 
 import type { RenderData, Reference } from './types'
+
+declare global {
+  interface Window {
+    RENDER_DATA: RenderData
+    RENDER_FINISHED: boolean
+    updateRenderData: (data: RenderData) => void
+  }
+}
 import MarkdownContent from './components/MarkdownContent.vue'
 
 // Import icons for Flow area
@@ -54,8 +62,30 @@ declare global {
 const data = ref<RenderData | null>(null)
 
 // Expose update method for Python to call
+// Expose update method for Python to call
 window.updateRenderData = (newData: RenderData) => {
+  window.RENDER_FINISHED = false
   data.value = newData
+  
+  // Wait for rendering to settle (same logic as in index.html, but now in Vue context)
+  nextTick(() => {
+    let start = Date.now()
+    const check = () => {
+      const imgs = document.querySelectorAll('img')
+      const allLoaded = Array.from(imgs).every((img: HTMLImageElement) => img.complete)
+      
+      // If all images loaded OR timeout (3s)
+      if (allLoaded || (Date.now() - start > 3000)) {
+        // Small delay for layout paint
+        setTimeout(() => { 
+          window.RENDER_FINISHED = true 
+        }, 100)
+      } else {
+        setTimeout(check, 50)
+      }
+    }
+    check()
+  })
 }
 
 const numSearchRefs = computed(() => data.value?.references?.length || 0)

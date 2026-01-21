@@ -14,7 +14,7 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from .stages.base import StageContext, StageResult
-from .stages.instruct import InstructStage
+from .stages.base import StageContext, StageResult, BaseStage
 from .stages.summary import SummaryStage
 from .search import SearchService
 
@@ -24,19 +24,19 @@ class ModularPipeline:
     Modular Pipeline.
     
     Flow:
-    1. Instruct: Initial Discovery + Mode Decision (fast/deepsearch).
-    2. [Deepsearch only] Instruct Deepsearch Loop: Supplement info (max 3 iterations).
-    3. Summary: Generate final response.
+    1. Input Analysis:
+       - If Images -> Skip Search -> Summary
+       - If Text -> Execute Search (or URL fetch) -> Summary
+    2. Summary: Generate final response.
     """
     
-    def __init__(self, config: Any, send_func: Optional[Callable[[str], Awaitable[None]]] = None):
+    def __init__(self, config: Any, search_service: SearchService, send_func: Optional[Callable[[str], Awaitable[None]]] = None):
         self.config = config
         self.send_func = send_func
-        self.search_service = SearchService(config)
+        self.search_service = search_service
         self.client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
         
         # Initialize stages
-        self.instruct_stage = InstructStage(config, self.search_service, self.client, send_func=send_func)
         self.summary_stage = SummaryStage(config, self.search_service, self.client)
     
     @property
@@ -48,9 +48,6 @@ class ModularPipeline:
     def _send_func(self, value: Optional[Callable[[str], Awaitable[None]]]):
         """Setter for _send_func - updates send_func and propagates to stages."""
         self.send_func = value
-        # Propagate to instruct_stage
-        if hasattr(self, 'instruct_stage'):
-            self.instruct_stage.send_func = value
     
     
     async def execute(
@@ -102,7 +99,8 @@ class ModularPipeline:
             
             # === Search-First Logic (only when no images) ===
             # 1. URL Detection
-            url_pattern = re.compile(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+')
+            # Updated to capture full URLs including queries and paths
+            url_pattern = re.compile(r'https?://(?:[-\w./?=&%#]+)')
             found_urls = url_pattern.findall(user_input)
             
             hit_content = False
@@ -170,24 +168,14 @@ class ModularPipeline:
             # === Branching ===
             if hit_content and not has_user_images:
                 # -> Summary Stage (search/URL results available)
-                logger.info("Pipeline: Content found (URL/Search). Skipping Instruct -> Summary.")
-            else:
-                # -> Instruct Stage (no content OR user provided images)
-                stage_label = "Image Analysis" if has_user_images else "Instruct (Fallback)"
-                logger.info(f"Pipeline: Entering {stage_label} stage.")
-                
-                # Pass images to Instruct stage via context
-                instruct_result = await self.instruct_stage.execute(context, images=images)
-                
-                # Trace & Usage
-                instruct_result.trace["stage_name"] = stage_label
-                trace["instruct_rounds"].append(instruct_result.trace)
-                usage_totals["input_tokens"] += instruct_result.usage.get("input_tokens", 0)
-                usage_totals["output_tokens"] += instruct_result.usage.get("output_tokens", 0)
-                
-                # Check refuse
-                if context.should_refuse:
-                    return self._build_refusal_response(context, conversation_history, active_model, stats)
+                logger.info("Pipeline: Content found (URL/Search). Proceeding to Summary.")
+            
+            # If no content was found and no images, we still proceed to Summary but with empty context (Direct Chat)
+            # If images, we proceed to Summary with images.
+            
+            # Refusal check from search results? (Unlikely, but good to keep in mind)
+            pass
+            
             
             # === Parallel Execution: Summary Generation + Image Prefetching ===
             # We run image prefetching concurrently with Summary generation to save time.

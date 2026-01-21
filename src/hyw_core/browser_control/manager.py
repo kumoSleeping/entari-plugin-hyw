@@ -65,7 +65,7 @@ class SharedBrowserManager:
             # Hide scrollbars globally
             co.set_argument('--hide-scrollbars')
             # 十万的原因是滚动条屏蔽(大概吧)
-            co.set_argument('--window-size=1280,9000')
+            co.set_argument('--window-size=1280,800')
             self._page = ChromiumPage(addr_or_opts=co)
             
             # Show Landing Page
@@ -94,13 +94,20 @@ class SharedBrowserManager:
             self.start()
         return self._page
 
-    def new_tab(self, url: str) -> Any:
-        """Thread-safe tab creation."""
-        with self._tab_lock:
-            page = self.page
-            if not page:
-                raise RuntimeError("Browser not available")
-            return page.new_tab(url)
+    def new_tab(self, url: str = None) -> Any:
+        """
+        Thread-safe tab creation.
+        DrissionPage is thread-safe for tab creation, so we call it directly
+        to allow atomic creation+navigation (Target.createTarget with url)
+        without blocking other threads.
+        """
+        page = self.page
+        if not page:
+             raise RuntimeError("Browser not available")
+        
+        # Direct call allows Chrome to handle creation and navigation atomically and concurrently
+        return page.new_tab(url)
+
     
     def close(self):
         """Shutdown the browser."""

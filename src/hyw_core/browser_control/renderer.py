@@ -23,7 +23,8 @@ class ContentRenderer:
         
         if template_path is None:
             current_dir = Path(__file__).parent
-            template_path = current_dir / "assets" / "index.html"
+            # Use card-dist which has properly inlined JS (viteSingleFile)
+            template_path = current_dir / "assets" / "card-dist" / "index.html"
         
         self.template_path = Path(template_path)
         if not self.template_path.exists():
@@ -54,6 +55,18 @@ class ContentRenderer:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, self._prepare_tab_sync)
 
+    def _wait_for_render_finished(self, tab, timeout: float = 3.0):
+        """Wait for window.RENDER_FINISHED to be true in the tab."""
+        import time as pytime
+        start = pytime.time()
+        while pytime.time() - start < timeout:
+            is_finished = tab.run_js("return window.RENDER_FINISHED")
+            if is_finished:
+                return True
+            pytime.sleep(0.05) # Fast polling
+        logger.warning(f"ContentRenderer: Wait for RENDER_FINISHED timed out after {timeout}s")
+        return False
+
     def _prepare_tab_sync(self) -> str:
         """Create and warm up a new tab, return its ID."""
         import time as pytimeout
@@ -63,10 +76,10 @@ class ContentRenderer:
             tab = self._manager.new_tab(self.template_path.as_uri())
             tab_id = tab.tab_id
             
-            # Basic wait
-            tab.wait(1)
+            # Wait for app to mount instead of fixed 1s
+            tab.ele('#app', timeout=5)
             
-            # Pre-warm
+            # Pre-warm with data to trigger Vue render
             warmup_data = {
                 "markdown": "# Ready",
                 "total_time": 0,
@@ -76,8 +89,11 @@ class ContentRenderer:
                 "theme_color": "#ef4444",
             }
             
-            if tab.ele('#app', timeout=5):
-                tab.run_js(f"window.updateRenderData({json.dumps(warmup_data)})")
+            tab.run_js(f"window.updateRenderData({json.dumps(warmup_data)})")
+            self._wait_for_render_finished(tab, timeout=5.0)
+            
+            # Wait for main-container after warmup (Vue needs to render it)
+            tab.ele('#main-container', timeout=3)
             
             elapsed = pytimeout.time() - start
             logger.info(f"ContentRenderer: Prepared tab {tab_id} in {elapsed:.2f}s")
@@ -185,9 +201,9 @@ class ContentRenderer:
                 "theme_color": theme_color,
             }
             
-            # 1. Update Data & Settle
+            # 1. Update Data & Wait for Finished flag
             tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
-            tab.wait(0.5) # Since images are Base64, decoding is nearly instant once injected
+            self._wait_for_render_finished(tab)
 
             # 2. Dynamic Resize
             # Get actual content height to prevent clipping
@@ -195,7 +211,7 @@ class ContentRenderer:
             viewport_height = int(scroll_height) + 200
             
             tab.run_cdp('Emulation.setDeviceMetricsOverride', 
-                width=1920, height=viewport_height, deviceScaleFactor=1, mobile=False
+                width=1440, height=viewport_height, deviceScaleFactor=1, mobile=False
             )
             
             # 3. Hide Scrollbars (Now that viewport is large enough, overflow:hidden won't clip)
@@ -296,7 +312,7 @@ class ContentRenderer:
             if not tab:
                 logger.warning("ContentRenderer: Pre-warmed tab not found, creating new.")
                 tab = page.new_tab(self.template_path.as_uri())
-                tab.wait(0.5)
+                tab.ele('#app', timeout=5)
             
             resolved_output_path = Path(output_path).resolve()
             resolved_output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -316,15 +332,15 @@ class ContentRenderer:
             
             tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
 
-            # Brief settle wait for masonry/images
-            tab.wait(0.6)
+            # Wait for event-driven finish
+            self._wait_for_render_finished(tab, timeout=5.0)
             
             # Dynamic Resize
             scroll_height = tab.run_js('return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);')
             viewport_height = int(scroll_height) + 200
             
             tab.run_cdp('Emulation.setDeviceMetricsOverride', 
-                width=1920, height=viewport_height, deviceScaleFactor=1, mobile=False
+                width=1440, height=viewport_height, deviceScaleFactor=1, mobile=False
             )
             
             # Hide scrollbars

@@ -108,7 +108,8 @@ class ScreenshotService:
                 
                 logger.debug(f"Search[{index}]: Waiting for search results...")
                 tab.wait.doc_loaded(timeout=10)
-                time.sleep(0.5)
+                # Reduced settle wait for extraction
+                time.sleep(0.1)
                 
                 logger.debug(f"Search[{index}]: Extracting content...")
                 html = tab.html
@@ -200,7 +201,7 @@ class ScreenshotService:
             
             # Small delay for address bar to focus
             import time as _time
-            _time.sleep(0.1)
+            _time.sleep(0.05)
             
             # Type the query
             tab.actions.type(query)
@@ -211,8 +212,8 @@ class ScreenshotService:
             # Wait for page to load
             try:
                 tab.wait.doc_loaded(timeout=timeout)
-                # Additional wait for search results
-                _time.sleep(1)
+                # Reduced wait for initial results
+                _time.sleep(0.2)
             except:
                 pass
             
@@ -244,6 +245,89 @@ class ScreenshotService:
                 try: tab.close()
                 except: pass
 
+    def _scroll_to_bottom(self, tab, step: int = 800, delay: float = 2.0, timeout: float = 10.0):
+        """
+        Scroll down gradually to trigger lazy loading.
+        
+        Args:
+            delay: Max wait time per scroll step (seconds) if images aren't loading.
+        """
+        import time
+        start = time.time()
+        current_pos = 0
+        try:
+            while time.time() - start < timeout:
+                # Scroll down
+                current_pos += step
+                tab.run_js(f"window.scrollTo(0, {current_pos});")
+                
+                # Active Wait: Check if images in viewport are loaded
+                # Poll every 100ms, up to 'delay' seconds
+                wait_start = time.time()
+                while time.time() - wait_start < delay:
+                    all_loaded = tab.run_js("""
+                        return (async () => {
+                            const imgs = Array.from(document.querySelectorAll('img'));
+                            const viewportHeight = window.innerHeight;
+                            
+                            // 1. Identify images currently in viewport
+                            const visibleImgs = imgs.filter(img => {
+                                const rect = img.getBoundingClientRect();
+                                return (rect.top < viewportHeight && rect.bottom > 0) && (rect.width > 0 && rect.height > 0);
+                            });
+                            
+                            if (visibleImgs.length === 0) return true;
+
+                            // 2. Check loading status using decode() AND heuristic for placeholders
+                            // Some sites load a tiny blurred placeholder first. 
+                            const checks = visibleImgs.map(img => {
+                                // HEURISTIC: content is likely not ready if:
+                                // - img has 'data-src' but src is different (or src is empty)
+                                // - img has 'loading="lazy"' and is not complete
+                                // - naturalWidth is very small (placeholder) compared to display width
+                                
+                                const isPlaceholder = (
+                                    (img.getAttribute('data-src') && img.src !== img.getAttribute('data-src')) ||
+                                    (img.naturalWidth < 50 && img.clientWidth > 100) 
+                                );
+                                
+                                if (isPlaceholder) {
+                                    // If it looks like a placeholder, we return false (not loaded)
+                                    // unless it stays like this for too long (handled by outer timeout)
+                                    return Promise.resolve(false);
+                                }
+
+                                if (img.complete && img.naturalHeight > 0) return Promise.resolve(true); 
+                                
+                                return img.decode().then(() => true).catch(() => false); 
+                            });
+                            
+                            // Race against a small timeout to avoid hanging on one broken image
+                            const allDecoded = Promise.all(checks);
+                            const timeout = new Promise(resolve => setTimeout(() => resolve(false), 500));
+                            
+                            // If any check returned false (meaning placeholder or not decoded), result is false
+                            return Promise.race([allDecoded, timeout]).then(results => {
+                                if (!Array.isArray(results)) return results === true;
+                                return results.every(res => res === true);
+                            }); 
+                        })();
+                    """)
+                    if all_loaded:
+                        break
+                    time.sleep(0.1)
+
+                # Check if reached bottom
+                height = tab.run_js("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);")
+                if current_pos >= height:
+                    break
+            
+            # Ensure final layout settle
+            time.sleep(0.2)
+            
+        except Exception as e:
+            logger.warning(f"ScreenshotService: Scroll failed: {e}")
+
     def _fetch_page_sync(self, url: str, timeout: float, include_screenshot: bool) -> Dict[str, Any]:
         """Synchronous fetch logic."""
         if not url:
@@ -264,30 +348,40 @@ class ScreenshotService:
             if is_search_page:
                 # Optimized waiting: Rapidly poll for ACTUAL results > 0
                 start_time = time.time()
-                while time.time() - start_time < timeout:
-                    found_results = False
-                    try:
-                        if 'google' in url.lower():
-                            # Check if we have any result items (.g, .MjjYud) or the main container (#search)
-                            # Using checks with minimal timeout to allow fast looping
-                            if tab.ele('.g', timeout=0.1) or tab.ele('.MjjYud', timeout=0.1) or tab.ele('#search', timeout=0.1):
-                                found_results = True
-                        elif 'bing' in url.lower():
-                            if tab.ele('.b_algo', timeout=0.1) or tab.ele('#b_results', timeout=0.1):
-                                found_results = True
-                        elif 'duckduckgo' in url.lower():
-                            if tab.ele('.result', timeout=0.1) or tab.ele('#react-layout', timeout=0.1):
-                                found_results = True
-                        else:
-                            # Generic fallback: wait for body to be populated
-                            if tab.ele('body', timeout=0.1):
-                                found_results = True
-                    except:
-                        pass
-                    
-                    if found_results:
-                        break
-                    time.sleep(0.2)  # Short sleep to prevent CPU spinning
+                
+                # Special fast-path for DDG Lite (HTML only, no JS rendering needed)
+                if 'lite.duckduckgo' in url:
+                    # just wait for body, it's static HTML
+                     try:
+                         tab.wait.doc_loaded(timeout=timeout)
+                     except: pass
+                     # Sleep tiny bit to ensure render
+                     time.sleep(0.5)
+                else:
+                    while time.time() - start_time < timeout:
+                        found_results = False
+                        try:
+                            if 'google' in url.lower():
+                                # Check if we have any result items (.g, .MjjYud) or the main container (#search)
+                                # Using checks with minimal timeout to allow fast looping
+                                if tab.ele('.g', timeout=0.1) or tab.ele('.MjjYud', timeout=0.1) or tab.ele('#search', timeout=0.1):
+                                    found_results = True
+                            elif 'bing' in url.lower():
+                                if tab.ele('.b_algo', timeout=0.1) or tab.ele('#b_results', timeout=0.1):
+                                    found_results = True
+                            elif 'duckduckgo' in url.lower():
+                                if tab.ele('.result', timeout=0.1) or tab.ele('#react-layout', timeout=0.1):
+                                    found_results = True
+                            else:
+                                # Generic fallback: wait for body to be populated
+                                if tab.ele('body', timeout=0.1):
+                                    found_results = True
+                        except:
+                            pass
+                        
+                        if found_results:
+                            break
+                        time.sleep(0.05)  # Faster polling (50ms) as requested
             else:
                 # 1. Wait for document to settle (Fast Dynamic Wait)
                 try:
@@ -423,6 +517,13 @@ class ScreenshotService:
         tasks = [self.fetch_page(url, timeout, include_screenshot) for url in urls]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
+    async def screenshot_urls_batch(self, urls: List[str], timeout: float = 15.0, full_page: bool = True) -> List[Optional[str]]:
+        """Take screenshots of multiple URLs concurrently."""
+        if not urls: return []
+        logger.info(f"ScreenshotService: Batch screenshot {len(urls)} URLs")
+        tasks = [self.screenshot_url(url, timeout=timeout, full_page=full_page) for url in urls]
+        return await asyncio.gather(*tasks, return_exceptions=True)
+
     async def screenshot_url(self, url: str, wait_load: bool = True, timeout: float = 15.0, full_page: bool = False, quality: int = 80) -> Optional[str]:
         """Screenshot URL (Async wrapper for sync)."""
         loop = asyncio.get_running_loop()
@@ -443,35 +544,147 @@ class ScreenshotService:
             
             tab = page.new_tab(url)
             try:
-                if wait_load:
-                    tab.wait.load_complete(timeout=timeout)
-                else:
-                    tab.wait.doc_loaded(timeout=timeout)
-            except: pass
+                # Wait for full page load (including JS execution)
+                tab.wait.load_complete(timeout=timeout)
+                
+                # Wait for actual content to appear (for CDN verification pages)
+                # Smart Wait Logic (Final Robust):
+                # 1. FORCED WAIT: 1.5s to allow initial redirects/rendering to start.
+                # 2. Browser ReadyState Complete
+                # 3. Height Stable for 2.0 seconds (20 checks)
+                # 4. Text > 100 chars (Crucial: Distinguishes stable content from stable spinners)
+                # 5. No Blacklist phrases
+                
+                time.sleep(1.5)  # user request: force wait 1.5s before detection
+                
+                last_h = 0
+                stable_count = 0
+                
+                for i in range(200):  # Max 200 iterations (~20s)
+                    try:
+                        state = tab.run_js('''
+                            return {
+                                ready: document.readyState === 'complete',
+                                title: document.title,
+                                height: Math.max(
+                                    document.body.scrollHeight || 0,
+                                    document.documentElement.scrollHeight || 0
+                                ),
+                                text: document.body.innerText.substring(0, 1000) || "",
+                                html: document.body.innerHTML.substring(0, 500) // Debug intro
+                            };
+                        ''') or {'ready': False, 'title': "", 'height': 0, 'text': ""}
+                        
+                        is_ready = state.get('ready', False)
+                        title = state.get('title', "").lower()
+                        current_h = int(state.get('height', 0))
+                        text_content = state.get('text', "")
+                        text_len = len(text_content)
+                        text_lower = text_content.lower()
+                        
+                        # Blacklist check
+                        is_verification = "checking your browser" in text_lower or \
+                                        "just a moment" in text_lower or \
+                                        "please wait" in text_lower or \
+                                        "security check" in title or \
+                                        "just a moment" in title
+                        
+                        # Stability check
+                        if current_h == last_h:
+                            stable_count += 1
+                        else:
+                            stable_count = 0
+                        
+                        # Conditions
+                        has_content = text_len > 100 # At least 100 real chars
+                        is_stable = stable_count >= 20  # Always require 2s stability
+                        
+                        # Pass if all conditions met
+                        if is_ready and not is_verification and has_content and is_stable:
+                            break
+                            
+                        last_h = current_h
+                        
+                        # Wait timing
+                        try: tab.wait.eles_loaded(timeout=0.1)
+                        except: pass
+                        
+                    except Exception:
+                        stable_count = 0
+                        try: time.sleep(0.1)
+                        except: pass
+                        continue
+                
+                # DEBUG: Save HTML to inspect what happened (in data dir)
+                try:
+                    import os
+                    log_path = os.path.join(os.getcwd(), "data", "browser.log.html")
+                    with open(log_path, "w", encoding="utf-8") as f:
+                        f.write(f"<!-- URL: {url} -->\n")
+                        f.write(tab.html)
+                except: pass
+                
+                # Use faster scroll step (800) to ensure lazy loaded images appear
+                self._scroll_to_bottom(tab, step=800, delay=2.0, timeout=min(timeout, 10))
+                
+            except:
+                pass
             
-            # Wait for main element
-            if tab.ele("#main-container"):
-                pass 
+            # Refine calculation: Set viewport width to 1024
+            capture_width = 1024
             
+            # Calculate actual content height after lazy loading
+            try:
+                # Use a robust height calculation
+                content_height = tab.run_js('''
+                    return Math.max(
+                        document.body.scrollHeight || 0,
+                        document.documentElement.scrollHeight || 0,
+                        document.body.offsetHeight || 0,
+                        document.documentElement.offsetHeight || 0,
+                        document.documentElement.clientHeight || 0
+                    );
+                ''')
+                # Add a small buffer and cap at 15000px to prevent memory issues
+                h = min(int(content_height) + 50, 15000)
+            except:
+                h = 1000  # Fallback
+            
+            # Set viewport to full content size for single-shot capture
+            try:
+                tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                            width=capture_width, height=h, deviceScaleFactor=1, mobile=False)
+            except:
+                pass
+
             # Scrollbar Hiding
             from .manager import SharedBrowserManager
             SharedBrowserManager.hide_scrollbars(tab)
-            tab.run_js("""
-                const style = document.createElement('style');
-                style.textContent = `
-                    ::-webkit-scrollbar { display: none !important; }
-                    html, body { -ms-overflow-style: none !important; scrollbar-width: none !important; }
-                `;
-                document.head.appendChild(style);
-                document.documentElement.style.overflow = 'hidden';
-                document.body.style.overflow = 'hidden';
-            """)
             
-            ele = tab.ele("#main-container")
-            if ele:
-                return ele.get_screenshot(as_base64='jpg', quality=quality)
-            else:
-                return tab.get_screenshot(as_base64='jpg', full_page=full_page, quality=quality)
+            # Scroll back to top before screenshot
+            tab.run_js("window.scrollTo(0, 0);")
+            
+            # Content is already loaded by _scroll_to_bottom which waits for images
+            # Just recalculate final height (content may have grown during scrolling)
+            try:
+                final_height = tab.run_js('''
+                    return Math.max(
+                        document.body.scrollHeight || 0,
+                        document.documentElement.scrollHeight || 0,
+                        document.body.offsetHeight || 0,
+                        document.documentElement.offsetHeight || 0
+                    );
+                ''')
+                final_h = min(int(final_height) + 50, 15000)
+                if final_h != h:
+                    tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                                width=capture_width, height=final_h, deviceScaleFactor=1, mobile=False)
+            except:
+                pass
+            
+            # Use full_page=False because we manually set the viewport to the full height
+            # This avoids stitching artifacts and blank spaces
+            return tab.get_screenshot(as_base64='jpg', full_page=False)
                 
         except Exception as e:
             logger.error(f"ScreenshotService: Screenshot URL failed: {e}")

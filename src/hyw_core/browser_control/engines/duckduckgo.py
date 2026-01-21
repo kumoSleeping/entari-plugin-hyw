@@ -31,8 +31,10 @@ class DuckDuckGoEngine(SearchEngine):
         results = []
         seen_urls = set()
         
-        # Simple regex for DDG Lite / SearXNG HTML structure
-        link_regex = re.compile(r'<a[^>]+href=["\'](http[^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
+        # More robust regex: capture ANY href, not just http
+        # Matches: <a ... href="..." ...>(...)</a>
+        # We capture the full hook to extract title + url
+        link_regex = re.compile(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL)
         
         pos = 0
         while True:
@@ -40,7 +42,7 @@ class DuckDuckGoEngine(SearchEngine):
             if not match:
                 break
             
-            href = match.group(1)
+            raw_href = match.group(1)
             title_html = match.group(2)
             
             # Clean title
@@ -48,17 +50,49 @@ class DuckDuckGoEngine(SearchEngine):
             
             pos = match.end()
             
+            # 1. Resolve relative URLs (DDG Lite uses /l/?uddg=...)
+            if raw_href.startswith('/'):
+                href = "https://lite.duckduckgo.com" + raw_href
+            else:
+                href = raw_href
+                
+            # 2. Decode DDG redirect (uddg=...)
+            # e.g. /l/?uddg=http%3A%2F%2Fexample.com&rut=...
+            if "uddg=" in href:
+                try:
+                    parsed = urllib.parse.urlparse(href)
+                    qs = urllib.parse.parse_qs(parsed.query)
+                    if 'uddg' in qs:
+                        href = qs['uddg'][0]
+                except: pass
+            
             # Filter junk
+            if not href.startswith("http"): continue
             if "search" in href and "q=" in href: continue 
             if "google.com" in href or "bing.com" in href: continue
+            if "duckduckgo.com" in href: continue # Filter self links
             if href in seen_urls: continue
             
-            # Look ahead for snippet
-            snippet_chunk = content[pos:pos+1000]
-            snippet_match = re.search(r'(.*?)<a', snippet_chunk, re.DOTALL | re.IGNORECASE)
-            raw_snippet = snippet_match.group(1) if snippet_match else snippet_chunk
+            # Improved Snippet Extraction:
+            # The structure is consistently:
+            # <a ... class="result-link">...</a>
+            # ...
+            # <td class="result-snippet">...</td>
             
-            # Clean HTML tags from snippet
+            # Search for the snippet cell specifically associated with this result
+            # We search in a reasonable window after the title link
+            snippet_window = content[pos:pos+2000]
+            snippet_match = re.search(r'class=["\']result-snippet["\'][^>]*>(.*?)</td>', snippet_window, re.IGNORECASE | re.DOTALL)
+            
+            if snippet_match:
+                raw_snippet = snippet_match.group(1)
+            else:
+                # Fallback to old behavior if structural match fails (e.g. slight layout change)
+                # But stop at 'link-text' span or next anchor to avoid junk
+                fallback_match = re.search(r'(.*?)(?:<a|<span class=["\']link-text)', snippet_window, re.DOTALL | re.IGNORECASE)
+                raw_snippet = fallback_match.group(1) if fallback_match else ""
+
+            # Clean HTML tags
             snippet = re.sub(r'<[^>]+>', ' ', raw_snippet)
             snippet = re.sub(r'\s+', ' ', snippet).strip()
             
