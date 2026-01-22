@@ -285,14 +285,27 @@ class ScreenshotService:
                             // 2. Check loading status using decode() AND heuristic for placeholders
                             // Some sites load a tiny blurred placeholder first. 
                             const checks = visibleImgs.map(img => {
-                                // HEURISTIC: content is likely not ready if:
-                                // - img has 'data-src' but src is different (or src is empty)
-                                // - img has 'loading="lazy"' and is not complete
-                                // - naturalWidth is very small (placeholder) compared to display width
+                                // Enhanced placeholder detection (matching completeness.py)
+                                const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || 
+                                                img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || '';
+                                const className = (typeof img.className === 'string' ? img.className : '').toLowerCase();
+                                const loadingAttr = img.getAttribute('loading') || '';
+                                const src = img.src || '';
                                 
                                 const isPlaceholder = (
-                                    (img.getAttribute('data-src') && img.src !== img.getAttribute('data-src')) ||
-                                    (img.naturalWidth < 50 && img.clientWidth > 100) 
+                                    // data-src not yet loaded
+                                    (dataSrc && img.src !== dataSrc) ||
+                                    // Natural size much smaller than display (blurred placeholder)
+                                    (img.naturalWidth < 50 && img.clientWidth > 100) ||
+                                    (img.naturalWidth < 100 && img.clientWidth > 200 && img.naturalWidth * 4 < img.clientWidth) ||
+                                    // Lazy-loading class indicators
+                                    className.includes('lazy') ||
+                                    className.includes('lazyload') ||
+                                    className.includes('lozad') ||
+                                    // CSS blur filter applied
+                                    (window.getComputedStyle(img).filter || '').includes('blur') ||
+                                    // loading="lazy" + not complete
+                                    (loadingAttr === 'lazy' && !img.complete)
                                 );
                                 
                                 if (isPlaceholder) {
@@ -562,84 +575,50 @@ class ScreenshotService:
             # Now navigate to the URL - page will render at target width
             tab.get(url)
             
-            # Start monitoring network traffic
-            try:
-                # Listen for data packets (XHR/Fetch/POST)
-                # Targets: xhr, fetch. POST usually falls under these or Document.
-                tab.listen.start(targets=True) # Listen to everything for now to be safe
-            except Exception as e:
-                logger.warning(f"ScreenshotService: Failed to start network listener: {e}")
+            # Network monitoring removed - not needed for simplified wait logic
 
             # Initialize crawl config for completeness checking (defined outside try for scope)
             crawl_config = CrawlConfig(
                 scan_full_page=True,
                 scroll_step=800,
                 scroll_delay=0.5,
-                scroll_timeout=min(timeout, 10),
-                image_load_timeout=8.0,
+                scroll_timeout=20.0,  # Increased for lazy-loading pages
+                image_load_timeout=3.0,  # Image loading timeout: 3 seconds
                 image_stability_checks=3,
             )
 
+            # === Start scrolling immediately to trigger lazy loading ===
+            # Scroll first, then wait for DOM - this allows lazy loading to start in parallel
+            logger.info(f"ScreenshotService: Starting lazy load scroll for {url} (before DOM wait)")
+            trigger_lazy_load(tab, crawl_config)
+
+            # Now wait for DOM to be ready (after scroll has triggered lazy loading)
             try:
                 # Wait for full page load (including JS execution)
-                tab.wait.load_complete(timeout=timeout)
+                try:
+                    tab.wait.doc_loaded(timeout=timeout)
+                except:
+                    pass
                 
                 # Wait for actual content to appear (for CDN verification pages)
-                # Smart Wait Logic (Final Robust):
-                # 1. Network Idle: Wait for silence in XHR/POST
-                # 2. Stability: Wait for Height/Text/DOM stability
+                # Simplified wait logic for screenshot: just check basic readiness
                 
-                time.sleep(1.5)  # user request: force wait 1.5s before detection
-                
-                last_h = 0
-                last_text_len = 0
-                last_html_len = 0
-                stable_count = 0
-                
-                for i in range(200):  # Max 200 iterations (~20s)
+                for i in range(20):  # Max 20 iterations (~1s) - much faster
                     try:
-                        # 1. Check Network Activity
-                        has_recent_network = False
-                        try:
-                            # Iterate over any captured packets since last check
-                            for packet in tab.listen.steps(timeout=0.01):
-                                # Check if it's a significant request (POST or XHR/Fetch)
-                                method = packet.method.upper()
-                                r_type = packet.resourceType.upper() if getattr(packet, 'resourceType', None) else ""
-                                
-                                # Interested in: POST requests OR any XHR/Fetch response
-                                if method == 'POST' or 'XMLHTTPREQUEST' in r_type or 'FETCH' in r_type:
-                                    # Ignore some common noise? (Optional: analytics, tracking)
-                                    # For now, simplistic approach: any API traffic resets stability
-                                    has_recent_network = True
-                                    # logger.debug(f"Network Activity: {method} {packet.url[:50]}")
-                                    break
-                        except:
-                            pass
-
-                        # 2. Check DOM State
                         state = tab.run_js('''
                             return {
                                 ready: document.readyState === 'complete',
                                 title: document.title,
-                                height: Math.max(
-                                    document.body.scrollHeight || 0,
-                                    document.documentElement.scrollHeight || 0
-                                ),
-                                text: document.body.innerText.substring(0, 1000) || "",
-                                html_len: document.body.innerHTML.length || 0
+                                text: document.body.innerText.substring(0, 500) || ""
                             };
-                        ''') or {'ready': False, 'title': "", 'height': 0, 'text': "", 'html_len': 0}
+                        ''') or {'ready': False, 'title': "", 'text': ""}
                         
                         is_ready = state.get('ready', False)
                         title = state.get('title', "").lower()
-                        current_h = int(state.get('height', 0))
-                        text_content = state.get('text', "")
-                        text_len = len(text_content)
-                        html_len = int(state.get('html_len', 0))
-                        text_lower = text_content.lower()
+                        text_lower = state.get('text', "").lower()
+                        text_len = len(text_lower)
                         
-                        # Blacklist check (Loading indicators)
+                        # Check for verification pages
                         is_verification = "checking your browser" in text_lower or \
                                         "just a moment" in text_lower or \
                                         "please wait" in text_lower or \
@@ -647,53 +626,18 @@ class ScreenshotService:
                                         "just a moment" in title or \
                                         "loading..." in title
                         
-                        # Stability check (Multi-metric + Network)
-                        # We require STABILITY across Height, Text Length, DOM Size AND Network Silence
-                        is_height_stable = current_h == last_h
-                        is_text_stable = abs(text_len - last_text_len) < 5  # Allow minor fluctuations
-                        is_dom_stable = abs(html_len - last_html_len) < 20 # Allow minor fluctuations (ads/tracking)
-
-                        if is_height_stable and is_text_stable and is_dom_stable and not has_recent_network:
-                            stable_count += 1
-                        else:
-                            # Reset if ANY metric changed or NETWORK active
-                            stable_count = 0
-                            # if has_recent_network: logger.debug("Stability reset: Network Activity")
+                        # Basic content check
+                        has_content = text_len > 100
                         
-                        # Conditions
-                        has_content = text_len > 100 # At least 100 real chars
-                        
-                        # Dynamic Stability Requirement:
-                        # If page looks like it's loading (small content), require longer stability
-                        if has_recent_network:
-                             # If we just saw network, enforce at least 1s (10 ticks) clean silence even for large pages
-                             required_stability = max(10, 40 if text_len < 500 else 25)
-                        else:
-                             required_stability = 40 if text_len < 500 else 25  # 4.0s or 2.5s
-                        
-                        is_stable = stable_count >= required_stability
-                        
-                        # Pass if all conditions met
-                        if is_ready and not is_verification and has_content and is_stable:
+                        # Pass if ready, not verification, and has content
+                        if is_ready and not is_verification and has_content:
+                            logger.debug(f"ScreenshotService: Page ready after {i * 0.05:.2f}s")
                             break
-                            
-                        last_h = current_h
-                        last_text_len = text_len
-                        last_html_len = html_len
                         
-                        # Wait timing within loop (tab.listen.steps consumed some time, so sleep less)
-                        try: time.sleep(0.05)
-                        except: pass
-                        
+                        time.sleep(0.05)
                     except Exception:
-                        stable_count = 0
-                        try: time.sleep(0.1)
-                        except: pass
+                        time.sleep(0.05)
                         continue
-                
-                # Cleanup listener
-                try: tab.listen.stop()
-                except: pass
                 
                 # DEBUG: Save HTML to inspect what happened (in data dir)
                 try:
@@ -703,12 +647,9 @@ class ScreenshotService:
                         f.write(f"<!-- URL: {url} -->\n")
                         f.write(tab.html)
                 except: pass
-                
-                # Use crawling module for lazy loading trigger (config defined above)
-                trigger_lazy_load(tab, crawl_config)
-                
-            except:
-                pass
+
+            except Exception as e:
+                logger.warning(f"ScreenshotService: Page readiness check failed: {e}")
             
             # Scrollbar Hiding first (before any height calculation)
             from .manager import SharedBrowserManager
@@ -717,17 +658,165 @@ class ScreenshotService:
             # Scroll back to top
             tab.run_js("window.scrollTo(0, 0);")
             
-            # Use CompletenessChecker to verify all images are loaded
-            checker = CompletenessChecker(crawl_config)
-            completeness = checker.wait_for_complete(tab, timeout=crawl_config.image_load_timeout)
-            
-            logger.info(
-                f"ScreenshotService: Image completeness: "
-                f"{completeness.loaded_images}/{completeness.total_images} loaded, "
-                f"{completeness.failed_images} pending, "
-                f"{completeness.placeholder_images} placeholders, "
-                f"complete={completeness.is_complete}"
-            )
+            # Image loading monitoring with time tracking - DISABLED
+            # No longer waiting for images to load
+            # Initialize image tracking JavaScript
+            # image_tracking_js = """
+            # (() => {
+            #     if (!window._imageLoadTracker) {
+            #         window._imageLoadTracker = {
+            #             startTime: Date.now(),
+            #             images: new Map()
+            #         };
+            #         
+            #         const imgs = Array.from(document.querySelectorAll('img'));
+            #         const minSize = 50;
+            #         
+            #         imgs.forEach((img, idx) => {
+            #             if (img.clientWidth < minSize && img.clientHeight < minSize) return;
+            #             
+            #             const src = img.src || img.getAttribute('data-src') || '';
+            #             const key = `${idx}_${src.substring(0, 100)}`;
+            #             
+            #             if (img.complete && img.naturalWidth > 0 && img.naturalHeight > 0) {
+            #                 // Already loaded
+            #                 window._imageLoadTracker.images.set(key, {
+            #                     src: src.substring(0, 150),
+            #                     status: 'loaded',
+            #                     loadTime: 0,  // Already loaded before tracking
+            #                     naturalSize: [img.naturalWidth, img.naturalHeight],
+            #                     displaySize: [img.clientWidth, img.clientHeight]
+            #                 });
+            #             } else {
+            #                 // Track loading
+            #                 window._imageLoadTracker.images.set(key, {
+            #                     src: src.substring(0, 150),
+            #                     status: 'pending',
+            #                     startTime: Date.now(),
+            #                     naturalSize: [img.naturalWidth, img.naturalHeight],
+            #                     displaySize: [img.clientWidth, img.clientHeight]
+            #                 });
+            #                 
+            #                 // Add load event listener
+            #                 img.addEventListener('load', () => {
+            #                     const entry = window._imageLoadTracker.images.get(key);
+            #                     if (entry && entry.status === 'pending') {
+            #                         entry.status = 'loaded';
+            #                         entry.loadTime = Date.now() - entry.startTime;
+            #                     }
+            #                 });
+            #                 
+            #                 img.addEventListener('error', () => {
+            #                     const entry = window._imageLoadTracker.images.get(key);
+            #                     if (entry && entry.status === 'pending') {
+            #                         entry.status = 'failed';
+            #                         entry.loadTime = Date.now() - entry.startTime;
+            #                     }
+            #                 });
+            #             }
+            #         });
+            #     }
+            #     
+            #     // Return current status
+            #     const results = [];
+            #     window._imageLoadTracker.images.forEach((value, key) => {
+            #         const entry = {
+            #             src: value.src,
+            #             status: value.status,
+            #             loadTime: value.status === 'loaded' ? (value.loadTime || 0) : (Date.now() - value.startTime),
+            #             naturalSize: value.naturalSize,
+            #             displaySize: value.displaySize
+            #         };
+            #         results.push(entry);
+            #     });
+            #     
+            #     return {
+            #         total: results.length,
+            #         loaded: results.filter(r => r.status === 'loaded').length,
+            #         pending: results.filter(r => r.status === 'pending').length,
+            #         failed: results.filter(r => r.status === 'failed').length,
+            #         details: results
+            #     };
+            # })()
+            # """
+            # 
+            # # Initialize tracking
+            # tab.run_js(image_tracking_js)
+            # 
+            # # Monitor image loading with dynamic stop logic
+            # check_interval = 0.2  # Check every 200ms
+            # image_timeout = 3.0  # Image loading timeout: 3 seconds
+            # monitoring_start = time.time()
+            # loaded_times = []  # Track load times of completed images
+            # 
+            # logger.info(f"ScreenshotService: Starting image load monitoring (timeout={image_timeout}s)...")
+            # 
+            # while True:
+            #     elapsed = time.time() - monitoring_start
+            #     
+            #     # Check timeout first
+            #     if elapsed >= image_timeout:
+            #         logger.info(f"ScreenshotService: Image loading timeout ({image_timeout}s) reached")
+            #         break
+            #     
+            #     # Get current image status
+            #     status = tab.run_js(image_tracking_js, as_expr=True) or {
+            #         'total': 0, 'loaded': 0, 'pending': 0, 'failed': 0, 'details': []
+            #     }
+            #     
+            #     # Log each image's status and load time
+            #     for img_detail in status.get('details', []):
+            #         src_short = img_detail.get('src', '')[:80]
+            #         status_str = img_detail.get('status', 'unknown')
+            #         load_time = img_detail.get('loadTime', 0)
+            #         logger.info(
+            #             f"ScreenshotService: Image [{status_str}] "
+            #             f"loadTime={load_time:.0f}ms "
+            #             f"src={src_short}"
+            #         )
+            #     
+            #     # Collect load times of completed images
+            #     loaded_times = [
+            #         img.get('loadTime', 0) 
+            #         for img in status.get('details', []) 
+            #         if img.get('status') == 'loaded' and img.get('loadTime', 0) > 0
+            #     ]
+            #     
+            #     pending_count = status.get('pending', 0)
+            #     loaded_count = status.get('loaded', 0)
+            #     
+            #     # Check stop conditions
+            #     if pending_count == 0:
+            #         logger.info(f"ScreenshotService: All images loaded. Total: {status.get('total', 0)}, Loaded: {loaded_count}")
+            #         break
+            #     
+            #     # Check dynamic stop condition (if we have loaded images to calculate average)
+            #     if loaded_times:
+            #         avg_load_time = sum(loaded_times) / len(loaded_times)
+            #         max_wait_time = avg_load_time * 2
+            #         
+            #         # Check if any pending image has exceeded max wait time
+            #         pending_images = [
+            #             img for img in status.get('details', [])
+            #             if img.get('status') == 'pending'
+            #         ]
+            #         
+            #         should_stop = False
+            #         for pending_img in pending_images:
+            #             wait_time = pending_img.get('loadTime', 0)
+            #             if wait_time >= max_wait_time:
+            #                 should_stop = True
+            #                 logger.info(
+            #                     f"ScreenshotService: Stopping - pending image waited {wait_time:.0f}ms, "
+            #                     f"exceeds 2x avg load time ({max_wait_time:.0f}ms, avg={avg_load_time:.0f}ms)"
+            #                 )
+            #                 break
+            #         
+            #         if should_stop:
+            #             break
+            #     
+            #     # Wait before next check
+            #     time.sleep(check_interval)
             
             # Now calculate final height ONCE after all content loaded
             # CompletenessChecker already verified height stability

@@ -46,13 +46,39 @@ IMAGE_CHECK_JS = """
         results.total++;
         
         const src = img.src || img.getAttribute('data-src') || '';
+        const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || 
+                        img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || '';
+        const className = (typeof img.className === 'string' ? img.className : '').toLowerCase();
+        const loadingAttr = img.getAttribute('loading') || '';
+        
+        // Enhanced placeholder detection for blurred preview images (like mcmod.cn)
         const isPlaceholder = (
-            (img.getAttribute('data-src') && img.src !== img.getAttribute('data-src')) ||
+            // 1. data-src exists but not yet loaded into src
+            (dataSrc && img.src !== dataSrc) ||
+            // 2. Natural size much smaller than display size (blurred placeholder)
             (img.naturalWidth < 50 && img.clientWidth > 100) ||
+            (img.naturalWidth < 100 && img.clientWidth > 200 && img.naturalWidth * 4 < img.clientWidth) ||
+            // 3. Common placeholder keywords in src
             src.includes('placeholder') ||
             src.includes('loading') ||
+            src.includes('blank') ||
+            // 4. SVG placeholder or 1x1 tracking pixel
             src.startsWith('data:image/svg+xml') ||
-            (img.naturalWidth === 1 && img.naturalHeight === 1)
+            (img.naturalWidth === 1 && img.naturalHeight === 1) ||
+            // 5. Lazy-loading class indicators (common patterns)
+            className.includes('lazy') ||
+            className.includes('lazyload') ||
+            className.includes('lozad') ||
+            className.includes('b-lazy') ||
+            // 6. Blur indicators (common for LQIP - Low Quality Image Placeholder)
+            className.includes('blur') ||
+            src.includes('blur') ||
+            src.includes('thumb') ||
+            src.includes('thumbnail') ||
+            // 7. loading="lazy" + not complete (browser native lazy loading)
+            (loadingAttr === 'lazy' && !img.complete) ||
+            // 8. CSS blur filter applied (visual blurring)
+            (window.getComputedStyle(img).filter || '').includes('blur')
         );
         
         if (isPlaceholder) {
@@ -304,6 +330,8 @@ def trigger_lazy_load(tab: Any, config: Optional[CrawlConfig] = None) -> None:
     Scroll through page to trigger lazy-loaded images.
     
     Implements Crawl4AI's scan_full_page behavior.
+    Strategy: Fast scroll with minimal delay (0.2s) per step to trigger network requests,
+    then wait at the bottom for all images to settle.
     
     Args:
         tab: DrissionPage tab object
@@ -316,33 +344,94 @@ def trigger_lazy_load(tab: Any, config: Optional[CrawlConfig] = None) -> None:
     start = time.time()
     current_pos = 0
     
-    logger.debug("CompletenessChecker: Starting lazy load trigger scroll")
+    logger.info(f"CompletenessChecker: Starting lazy load scroll (fast scroll + final wait)")
     
     try:
-        while time.time() - start < config.scroll_timeout:
-            # Scroll down
+        max_scroll_steps = 100
+        step_count = 0
+        
+        # 1. Fast Scroll Phase
+        while step_count < max_scroll_steps:
+            step_count += 1
             current_pos += config.scroll_step
             tab.run_js(f"window.scrollTo(0, {current_pos});")
             
-            # Wait for lazy load triggers
-            time.sleep(config.scroll_delay)
+            # Simple fixed delay per step (0.2s) as requested
+            time.sleep(0.2)
             
             # Check if reached bottom
             height = tab.run_js("""
-                return Math.max(
+                Math.max(
                     document.body.scrollHeight || 0,
                     document.documentElement.scrollHeight || 0
-                );
+                )
             """, as_expr=True) or 0
             
             if current_pos >= height:
+                logger.debug(f"CompletenessChecker: Reached bottom at position {current_pos}")
                 break
+
+        # 2. Wait Phase at Bottom (Wait for images to settle - reduced timeout)
+        logger.debug("CompletenessChecker: Reached bottom, waiting for images to settle (max 2s)...")
+        wait_start = time.time()
+        max_wait_at_bottom = 2.0  # Reduced from 8s to 2s - scroll usually triggers loading quickly
+        
+        # Quick check: just verify images are not placeholders (simplified check)
+        check_all_images_js = """
+        (() => {
+            const imgs = Array.from(document.querySelectorAll('img'));
+            if (imgs.length === 0) return true;
+            
+            // Quick check: count non-placeholder images that are loaded
+            let loaded_count = 0;
+            let total_count = 0;
+            
+            for (const img of imgs) {
+                // Skip tiny images
+                if (img.clientWidth < 50 && img.clientHeight < 50) continue;
+                
+                total_count++;
+                const dataSrc = img.getAttribute('data-src') || img.getAttribute('data-original') || '';
+                const src = img.src || '';
+                
+                // Check if placeholder
+                const isPlaceholder = (
+                    (dataSrc && img.src !== dataSrc) ||
+                    (img.naturalWidth < 50 && img.clientWidth > 100) ||
+                    src.includes('placeholder') || src.includes('loading')
+                );
+                
+                // If not placeholder and loaded, count it
+                if (!isPlaceholder && img.complete && img.naturalWidth > 0) {
+                    loaded_count++;
+                }
+            }
+            
+            // If most images are loaded (80%+), consider it done
+            return total_count === 0 || (loaded_count / total_count) >= 0.8;
+        })()
+        """
+
+        # Quick check loop with shorter interval
+        check_count = 0
+        max_checks = 4  # 2s / 0.5s = 4 checks max
+        while check_count < max_checks:
+            try:
+                all_loaded = tab.run_js(check_all_images_js, as_expr=True)
+                if all_loaded:
+                    elapsed_wait = time.time() - wait_start
+                    logger.debug(f"CompletenessChecker: Images settled at bottom in {elapsed_wait:.1f}s")
+                    break
+            except:
+                pass
+            time.sleep(0.5)
+            check_count += 1
         
         # Scroll back to top
         tab.run_js("window.scrollTo(0, 0);")
         
         elapsed = time.time() - start
-        logger.debug(f"CompletenessChecker: Lazy load scroll complete in {elapsed:.1f}s")
+        logger.info(f"CompletenessChecker: Lazy load scroll complete - {step_count} steps in {elapsed:.1f}s")
         
     except Exception as e:
         logger.warning(f"CompletenessChecker: Lazy load scroll failed: {e}")

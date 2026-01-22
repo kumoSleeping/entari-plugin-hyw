@@ -108,6 +108,13 @@ def parse_filter_syntax(query: str, max_count: int = 3):
     if total > max_count:
         return [], search_query, f"最多选择{max_count}个结果 (当前选择了{total}个)"
     
+    # Append filter names to search query
+    # Extract filter names (only 'link' type, skip 'index' type)
+    filter_names = [f[1] for f in filters if f[0] == 'link']
+    if filter_names:
+        # Append filter names to search query: "search_query filter1 filter2"
+        search_query = f"{search_query} {' '.join(filter_names)}"
+    
     return filters, search_query, None
 
 
@@ -212,12 +219,11 @@ renderer = ContentRenderer(headless=conf.headless)
 set_global_renderer(renderer)
 search_cache = SearchResultCache(ttl_seconds=600.0)  # 10 minutes
 
-_hyw_core: Optional[HywCore] = None
+# Initialize HywCore immediately at plugin load time (not lazy)
+# This avoids the 2s delay on first user request caused by AsyncOpenAI client creation
+_hyw_core: HywCore = HywCore(conf.to_hyw_core_config())
 
 def get_hyw_core() -> HywCore:
-    global _hyw_core
-    if _hyw_core is None:
-        _hyw_core = HywCore(conf.to_hyw_core_config())
     return _hyw_core
 
 
@@ -799,10 +805,14 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
             await session.send(filter_error)
             return
         
-        # Start search and tab pre-warming in parallel
+        # Start search first
         local_renderer = await get_content_renderer()
         search_task = asyncio.create_task(core.search([search_query]))
-        tab_task = asyncio.create_task(local_renderer.prepare_tab())
+        
+        # Only pre-warm tab if NOT in filter mode (filter mode = screenshots only, no card render)
+        tab_task = None
+        if not filters:
+            tab_task = asyncio.create_task(local_renderer.prepare_tab())
         
         if conf.reaction: 
             asyncio.create_task(react(session, "🔍"))
@@ -811,24 +821,23 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
         flat_results = results[0] if results else []
         
         if not flat_results:
-            try: await tab_task
-            except: pass
+            if tab_task:
+                try: await tab_task
+                except: pass
             await session.send("Search returned no results.")
             return
 
         visible = [r for r in flat_results if not r.get("_hidden", False)]
         
         if not visible:
-            try: await tab_task
-            except: pass
+            if tab_task:
+                try: await tab_task
+                except: pass
             await session.send("Search returned no visible results.")
             return
         
-        # === Filter Mode: Screenshot matching links ===
+        # === Filter Mode: Screenshot matching links (NO tab needed) ===
         if filters:
-            # No need for tab in filter/screenshot mode, cancel it
-            try: await tab_task
-            except: pass
             
             urls_to_screenshot = []
             

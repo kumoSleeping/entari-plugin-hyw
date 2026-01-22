@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional, Callable, Awaitable
 
 from loguru import logger
-from openai import AsyncOpenAI
 
 from .config import HywCoreConfig, ModelConfig
 from .pipeline import ModularPipeline
@@ -94,12 +93,6 @@ class HywCore:
         """
         self.config = config
         self._send_func = send_func
-        
-        # Create OpenAI client
-        self._client = AsyncOpenAI(
-            api_key=config.api_key,
-            base_url=config.base_url if config.base_url else None
-        )
         
         # Create search service
         self._search_service = SearchService(config)
