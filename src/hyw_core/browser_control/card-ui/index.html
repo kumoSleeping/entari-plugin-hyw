@@ -14,18 +14,34 @@
       window.dispatchEvent(new CustomEvent('render-data-updated', { detail: data }));
 
       // Wait for rendering to settle
-      let start = Date.now();
-      const check = () => {
-        const imgs = document.querySelectorAll('img');
-        const allLoaded = Array.from(imgs).every(img => img.complete);
-        if (allLoaded || (Date.now() - start > 3000)) {
-          // Short additional delay for layout/paint
-          setTimeout(() => { window.RENDER_FINISHED = true; }, 100);
-        } else {
-          setTimeout(check, 50);
-        }
-      };
-      check();
+      // Start with a minimum delay to let Vue render
+      setTimeout(() => {
+        let start = Date.now();
+        const check = () => {
+          const container = document.getElementById('main-container');
+          // If no container yet, keep waiting
+          if (!container) {
+            if (Date.now() - start > 10000) {
+              window.RENDER_FINISHED = true;
+              return;
+            }
+            setTimeout(check, 100);
+            return;
+          }
+
+          const imgs = document.querySelectorAll('img');
+          // Check if all images are complete (loaded or errored)
+          const allLoaded = imgs.length === 0 || Array.from(imgs).every(img => img.complete);
+
+          if (allLoaded || (Date.now() - start > 10000)) {
+            // Extra delay for layout/paint (200ms)
+            setTimeout(() => { window.RENDER_FINISHED = true; }, 200);
+          } else {
+            setTimeout(check, 100);
+          }
+        };
+        check();
+      }, 300);  // Minimum 300ms for Vue to render
     };
   </script>
 </head>

@@ -5,7 +5,7 @@ This subpackage provides:
 - BrowserManager: Shared browser instance management
 - PageService: Page fetching and screenshot capabilities
 - RenderService: Vue-based card rendering
-- Search engines: Bing, Google, DuckDuckGo adapters
+- Search engines: DuckDuckGo adapter
 """
 
 from .manager import (
@@ -28,7 +28,6 @@ from .renderer import (
 )
 
 from .engines.base import SearchEngine
-from .engines.google import GoogleEngine
 from .engines.duckduckgo import DuckDuckGoEngine
 from .engines.default import DefaultEngine
 
@@ -59,7 +58,6 @@ __all__ = [
     
     # Search Engines
     "SearchEngine",
-    "GoogleEngine",
     "DuckDuckGoEngine",
     "DefaultEngine",
 ]

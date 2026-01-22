@@ -55,16 +55,43 @@ class ContentRenderer:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(self._executor, self._prepare_tab_sync)
 
-    def _wait_for_render_finished(self, tab, timeout: float = 3.0):
+    def _wait_for_render_finished(self, tab, timeout: float = 12.0, context: str = ""):
         """Wait for window.RENDER_FINISHED to be true in the tab."""
         import time as pytime
         start = pytime.time()
+        
+        # Check initial state
+        initial_state = tab.run_js("return window.RENDER_FINISHED")
+        logger.debug(f"ContentRenderer[{context}]: Starting wait, initial RENDER_FINISHED={initial_state}")
+        
+        # If already true, it's stale from previous render - need to wait for JS to reset it
+        if initial_state:
+            logger.debug(f"ContentRenderer[{context}]: RENDER_FINISHED was true, waiting for reset...")
+            # Wait for JS to reset it to false (updateRenderData sets it to false)
+            reset_start = pytime.time()
+            while pytime.time() - reset_start < 1.0:  # 1s max to wait for reset
+                is_reset = tab.run_js("return window.RENDER_FINISHED")
+                if not is_reset:
+                    logger.debug(f"ContentRenderer[{context}]: RENDER_FINISHED reset to false")
+                    break
+                pytime.sleep(0.05)
+            else:
+                logger.warning(f"ContentRenderer[{context}]: RENDER_FINISHED not reset, force resetting via JS")
+                tab.run_js("window.RENDER_FINISHED = false")
+        
+        # Now wait for it to become true
+        poll_count = 0
         while pytime.time() - start < timeout:
             is_finished = tab.run_js("return window.RENDER_FINISHED")
+            poll_count += 1
             if is_finished:
+                elapsed = pytime.time() - start
+                logger.debug(f"ContentRenderer[{context}]: RENDER_FINISHED=true after {elapsed:.2f}s ({poll_count} polls)")
                 return True
-            pytime.sleep(0.05) # Fast polling
-        logger.warning(f"ContentRenderer: Wait for RENDER_FINISHED timed out after {timeout}s")
+            pytime.sleep(0.1)  # Poll every 100ms
+        
+        elapsed = pytime.time() - start
+        logger.warning(f"ContentRenderer[{context}]: Wait for RENDER_FINISHED timed out after {elapsed:.2f}s ({poll_count} polls)")
         return False
 
     def _prepare_tab_sync(self) -> str:
@@ -89,8 +116,9 @@ class ContentRenderer:
                 "theme_color": "#ef4444",
             }
             
+            logger.debug(f"ContentRenderer: Calling warmup updateRenderData for tab {tab_id}")
             tab.run_js(f"window.updateRenderData({json.dumps(warmup_data)})")
-            self._wait_for_render_finished(tab, timeout=5.0)
+            self._wait_for_render_finished(tab, timeout=12.0, context=f"warmup:{tab_id}")
             
             # Wait for main-container after warmup (Vue needs to render it)
             tab.ele('#main-container', timeout=3)
@@ -203,7 +231,7 @@ class ContentRenderer:
             
             # 1. Update Data & Wait for Finished flag
             tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
-            self._wait_for_render_finished(tab)
+            self._wait_for_render_finished(tab, context=f"batch:{tab_id}")
 
             # 2. Dynamic Resize
             # Get actual content height to prevent clipping
@@ -330,10 +358,12 @@ class ContentRenderer:
                 "theme_color": theme_color,
             }
             
+            actual_tab_id = getattr(tab, 'tab_id', 'unknown')
+            logger.info(f"ContentRenderer: Calling updateRenderData for tab {actual_tab_id}, markdown length={len(markdown_content)}")
             tab.run_js(f"window.updateRenderData({json.dumps(render_data)})")
 
             # Wait for event-driven finish
-            self._wait_for_render_finished(tab, timeout=5.0)
+            self._wait_for_render_finished(tab, timeout=12.0, context=f"render:{actual_tab_id}")
             
             # Dynamic Resize
             scroll_height = tab.run_js('return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);')

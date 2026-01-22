@@ -162,6 +162,7 @@ class HywConfig(BasicConfModel):
     admins: List[str] = field(default_factory=list)
     models: List[Dict[str, Any]] = field(default_factory=list)
     question_command: str = "/q"
+    web_command: str = "/w"
     language: str = "Simplified Chinese"
     temperature: float = 0.4
     
@@ -169,7 +170,7 @@ class HywConfig(BasicConfModel):
     api_key: Optional[str] = None
     base_url: str = "https://openrouter.ai/api/v1"
     
-    search_engine: str = "google"
+    search_engine: str = "duckduckgo"
     
     headless: bool = False
     save_conversation: bool = False
@@ -177,19 +178,14 @@ class HywConfig(BasicConfModel):
     quote: bool = False
     theme_color: str = "#ff0000"
 
-    # Nested configurations
+    # Main model configuration (used for summary/main LLM calls)
     main: Optional[Dict[str, Any]] = None
-    instruct: Optional[Dict[str, Any]] = None
-    vision: Optional[Dict[str, Any]] = None
-    deepsearch_instruct: Optional[Dict[str, Any]] = None
-    deepsearch_agent: Optional[Dict[str, Any]] = None
     
     def __post_init__(self):
         self.theme_color = parse_color(self.theme_color)
     
     def to_hyw_core_config(self) -> HywCoreConfig:
         main_cfg = self.main or {}
-        instruct_cfg = self.instruct or {}
         
         return HywCoreConfig.from_dict({
             "models": self.models,
@@ -207,20 +203,7 @@ class HywConfig(BasicConfModel):
             "summary_api_key": main_cfg.get("api_key"),
             "summary_base_url": main_cfg.get("base_url"),
             "summary_extra_body": main_cfg.get("extra_body"),
-            
-            # Map nested 'instruct' config to instruct stage
-            "instruct_model": instruct_cfg.get("model_name"),
-            "instruct_api_key": instruct_cfg.get("api_key"),
-            "instruct_base_url": instruct_cfg.get("base_url"),
-            "instruct_extra_body": instruct_cfg.get("extra_body"),
         })
-    
-    def get_model_config(self, stage: str) -> Dict[str, Any]:
-        return {
-            "model_name": self.model_name,
-            "api_key": self.api_key,
-            "base_url": self.base_url,
-        }
 
 
 conf = plugin_config(HywConfig)
@@ -690,7 +673,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
 
 
 # Search/Web Command (/w)
-alc_search = Alconna("/w", Args["query;?", AllParam])
+alc_search = Alconna(conf.web_command, Args["query;?", AllParam])
 
 @command.on(alc_search)
 async def handle_web_command(session: Session[MessageCreatedEvent], result: Arparma):
@@ -756,6 +739,17 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
             
             search_cache.cleanup()
             return
+        else:
+            # Reply to a non-cached message: append reply content to query
+            try:
+                # session.reply.origin.message is a list, wrap it in MessageChain
+                reply_msg = MessageChain(session.reply.origin.message)
+                reply_content = str(reply_msg.get(Text)).strip()
+                if reply_content:
+                    query = f"{query} {reply_content}".strip() if query else reply_content
+                    logger.info(f"/w appended reply content, new query: '{query}'")
+            except Exception as e:
+                logger.warning(f"/w failed to extract reply content: {e}")
     
     # No query and no cache context - nothing to do
     if not query:
@@ -805,8 +799,10 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
             await session.send(filter_error)
             return
         
-        # Search first
+        # Start search and tab pre-warming in parallel
+        local_renderer = await get_content_renderer()
         search_task = asyncio.create_task(core.search([search_query]))
+        tab_task = asyncio.create_task(local_renderer.prepare_tab())
         
         if conf.reaction: 
             asyncio.create_task(react(session, "🔍"))
@@ -815,17 +811,25 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
         flat_results = results[0] if results else []
         
         if not flat_results:
+            try: await tab_task
+            except: pass
             await session.send("Search returned no results.")
             return
 
         visible = [r for r in flat_results if not r.get("_hidden", False)]
         
         if not visible:
+            try: await tab_task
+            except: pass
             await session.send("Search returned no visible results.")
             return
         
         # === Filter Mode: Screenshot matching links ===
         if filters:
+            # No need for tab in filter/screenshot mode, cancel it
+            try: await tab_task
+            except: pass
+            
             urls_to_screenshot = []
             
             for filter_type, filter_value, count in filters:
@@ -881,20 +885,42 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
                 await session.send("截图失败")
             return
              
-        # === Normal Search Mode: Screenshot search results page ===
-        search_service = core._search_service
-        search_url = search_service._build_search_url(search_query)
+        # === Normal Search Mode: Render search results as Sources card ===
         
-        # Handle address bar search marker
-        if search_url.startswith("__ADDRESS_BAR_SEARCH__:"):
-            import urllib.parse
-            encoded_query = urllib.parse.quote_plus(search_query)
-            search_url = f"https://www.google.com/search?q={encoded_query}"
+        # Build references from search results for Sources card
+        references = []
+        for i, res in enumerate(visible[:10]):
+            references.append({
+                "title": res.get("title", f"Result {i+1}"),
+                "url": res.get("url", ""),
+                "snippet": res.get("content", "") or res.get("snippet", ""),
+                "original_idx": i + 1,
+            })
         
-        b64_img = await core.screenshot(search_url)
+        try:
+            tab_id = await tab_task
+        except Exception:
+            tab_id = None
         
-        if b64_img:
-            msg_chain = MessageChain(Image(src=f'data:image/jpeg;base64,{b64_img}'))
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+            output_path = tf.name
+        
+        # Render Sources card with search results (no markdown content, just references)
+        render_ok = await core.render(
+            markdown_content=f"# 搜索结果: {search_query}",
+            output_path=output_path,
+            stats={"total_time": 0},
+            references=references,
+            page_references=[],
+            stages_used=[{"name": "search", "description": f"搜索 \"{search_query}\"", "time": 0}],
+            tab_id=tab_id
+        )
+        
+        if render_ok and os.path.exists(output_path):
+            with open(output_path, "rb") as f:
+                img_data = base64.b64encode(f.read()).decode()
+            
+            msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
             if conf.quote:
                 msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
             
@@ -909,8 +935,10 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
                 mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
                 context_id = f"guild_{session.guild.id}" if session.guild else "user"
                 history_manager.remember(mid, [{"role": "user", "content": f"/w {query}"}], [], {}, context_id=context_id)
+            
+            os.remove(output_path)
         else:
-            await session.send(f"截图搜索页面失败: {search_url}")
+            await session.send("渲染搜索结果失败")
         
         search_cache.cleanup()  # Lazy cleanup
 

@@ -67,24 +67,41 @@ window.updateRenderData = (newData: RenderData) => {
   window.RENDER_FINISHED = false
   data.value = newData
   
-  // Wait for rendering to settle (same logic as in index.html, but now in Vue context)
+  // Wait for rendering to settle
+  // Use double nextTick + requestAnimationFrame to ensure Vue has fully rendered
   nextTick(() => {
-    let start = Date.now()
-    const check = () => {
-      const imgs = document.querySelectorAll('img')
-      const allLoaded = Array.from(imgs).every((img: HTMLImageElement) => img.complete)
-      
-      // If all images loaded OR timeout (3s)
-      if (allLoaded || (Date.now() - start > 3000)) {
-        // Small delay for layout paint
-        setTimeout(() => { 
-          window.RENDER_FINISHED = true 
-        }, 100)
-      } else {
-        setTimeout(check, 50)
-      }
-    }
-    check()
+    nextTick(() => {
+      requestAnimationFrame(() => {
+        let start = Date.now()
+        const check = () => {
+          const container = document.getElementById('main-container')
+          // If no container yet, keep waiting
+          if (!container) {
+            if (Date.now() - start > 10000) {
+              window.RENDER_FINISHED = true
+              return
+            }
+            setTimeout(check, 100)
+            return
+          }
+          
+          const imgs = document.querySelectorAll('img')
+          // Check if all images are complete (loaded or errored)
+          const allLoaded = imgs.length === 0 || Array.from(imgs).every((img: HTMLImageElement) => img.complete)
+          
+          // If all images loaded OR timeout (10s)
+          if (allLoaded || (Date.now() - start > 10000)) {
+            // Extra delay for layout paint (200ms)
+            setTimeout(() => { 
+              window.RENDER_FINISHED = true 
+            }, 200)
+          } else {
+            setTimeout(check, 100)
+          }
+        }
+        check()
+      })
+    })
   })
 }
 

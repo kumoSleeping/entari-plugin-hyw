@@ -8,7 +8,6 @@ from loguru import logger
 from .browser_control.service import get_screenshot_service
 # Search engines from browser_control subpackage
 from .browser_control.engines.duckduckgo import DuckDuckGoEngine
-from .browser_control.engines.google import GoogleEngine
 from .browser_control.engines.default import DefaultEngine
 
 class SearchService:
@@ -21,15 +20,14 @@ class SearchService:
         # Domain blocking
         self._blocked_domains = getattr(config, "blocked_domains", []) or []
         
-        # Select Engine - DefaultEngine when not specified
+        # Select Engine - DuckDuckGo is the default and only engine
         self._engine_name = getattr(config, "search_engine", None)
         if self._engine_name:
             self._engine_name = self._engine_name.lower()
         
-        if self._engine_name == "google":
-            self._engine = GoogleEngine()
-        elif self._engine_name == "default_address_bar": # Explicitly requested address bar capability if needed
-             self._engine = DefaultEngine()
+        if self._engine_name == "default_address_bar":
+            # Explicitly requested address bar capability if needed
+            self._engine = DefaultEngine()
         else:
             # Default: use DuckDuckGo
             self._engine = DuckDuckGoEngine()

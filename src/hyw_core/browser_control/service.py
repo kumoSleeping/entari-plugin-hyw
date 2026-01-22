@@ -13,6 +13,10 @@ from typing import Optional, Dict, Any, List
 from loguru import logger
 import trafilatura
 
+# Import intelligent completeness checker
+from ..crawling.completeness import CompletenessChecker, trigger_lazy_load
+from ..crawling.models import CrawlConfig
+
 class ScreenshotService:
     """
     Browser Service using DrissionPage.
@@ -537,12 +541,26 @@ class ScreenshotService:
         """Synchronous screenshot."""
         if not url: return None
         tab = None
+        capture_width = 1024  # Standard capture width
+        
         try:
             self._ensure_ready()
             page = self._manager.page
             if not page: return None
             
-            tab = page.new_tab(url)
+            # Create blank tab first
+            tab = page.new_tab()
+            
+            # Set viewport BEFORE navigation so page renders at target width from the start
+            # This eliminates the need for post-load resize and reflow
+            try:
+                tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                            width=capture_width, height=900, deviceScaleFactor=1, mobile=False)
+            except:
+                pass
+            
+            # Now navigate to the URL - page will render at target width
+            tab.get(url)
             
             # Start monitoring network traffic
             try:
@@ -551,6 +569,16 @@ class ScreenshotService:
                 tab.listen.start(targets=True) # Listen to everything for now to be safe
             except Exception as e:
                 logger.warning(f"ScreenshotService: Failed to start network listener: {e}")
+
+            # Initialize crawl config for completeness checking (defined outside try for scope)
+            crawl_config = CrawlConfig(
+                scan_full_page=True,
+                scroll_step=800,
+                scroll_delay=0.5,
+                scroll_timeout=min(timeout, 10),
+                image_load_timeout=8.0,
+                image_stability_checks=3,
+            )
 
             try:
                 # Wait for full page load (including JS execution)
@@ -676,49 +704,33 @@ class ScreenshotService:
                         f.write(tab.html)
                 except: pass
                 
-                # Use faster scroll step (800) to ensure lazy loaded images appear
-                self._scroll_to_bottom(tab, step=800, delay=2.0, timeout=min(timeout, 10))
+                # Use crawling module for lazy loading trigger (config defined above)
+                trigger_lazy_load(tab, crawl_config)
                 
             except:
                 pass
             
-            # Refine calculation: Set viewport width to 1024
-
-            capture_width = 1024
-            
-            # Calculate actual content height after lazy loading
-            try:
-                # Use a robust height calculation
-                content_height = tab.run_js('''
-                    return Math.max(
-                        document.body.scrollHeight || 0,
-                        document.documentElement.scrollHeight || 0,
-                        document.body.offsetHeight || 0,
-                        document.documentElement.offsetHeight || 0,
-                        document.documentElement.clientHeight || 0
-                    );
-                ''')
-                # Add a small buffer and cap at 15000px to prevent memory issues
-                h = min(int(content_height) + 50, 15000)
-            except:
-                h = 1000  # Fallback
-            
-            # Set viewport to full content size for single-shot capture
-            try:
-                tab.run_cdp('Emulation.setDeviceMetricsOverride', 
-                            width=capture_width, height=h, deviceScaleFactor=1, mobile=False)
-            except:
-                pass
-
-            # Scrollbar Hiding
+            # Scrollbar Hiding first (before any height calculation)
             from .manager import SharedBrowserManager
             SharedBrowserManager.hide_scrollbars(tab)
             
-            # Scroll back to top before screenshot
+            # Scroll back to top
             tab.run_js("window.scrollTo(0, 0);")
             
-            # Content is already loaded by _scroll_to_bottom which waits for images
-            # Just recalculate final height (content may have grown during scrolling)
+            # Use CompletenessChecker to verify all images are loaded
+            checker = CompletenessChecker(crawl_config)
+            completeness = checker.wait_for_complete(tab, timeout=crawl_config.image_load_timeout)
+            
+            logger.info(
+                f"ScreenshotService: Image completeness: "
+                f"{completeness.loaded_images}/{completeness.total_images} loaded, "
+                f"{completeness.failed_images} pending, "
+                f"{completeness.placeholder_images} placeholders, "
+                f"complete={completeness.is_complete}"
+            )
+            
+            # Now calculate final height ONCE after all content loaded
+            # CompletenessChecker already verified height stability
             try:
                 final_height = tab.run_js('''
                     return Math.max(
@@ -728,12 +740,14 @@ class ScreenshotService:
                         document.documentElement.offsetHeight || 0
                     );
                 ''')
-                final_h = min(int(final_height) + 50, 15000)
-                if final_h != h:
-                    tab.run_cdp('Emulation.setDeviceMetricsOverride', 
-                                width=capture_width, height=final_h, deviceScaleFactor=1, mobile=False)
+                h = min(int(final_height) + 50, 15000)
+                tab.run_cdp('Emulation.setDeviceMetricsOverride', 
+                            width=capture_width, height=h, deviceScaleFactor=1, mobile=False)
             except:
                 pass
+            
+            # Final scroll to top
+            tab.run_js("window.scrollTo(0, 0);")
             
             # Use full_page=False because we manually set the viewport to the full height
             # This avoids stitching artifacts and blank spaces

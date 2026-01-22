@@ -124,15 +124,28 @@ class SharedBrowserManager:
     @staticmethod
     def hide_scrollbars(page: ChromiumPage):
         """
-        Robustly hide scrollbars using CDP commands.
-        This eliminates the reserved space/gutter that standard CSS might miss.
+        Robustly hide scrollbars using CDP commands AND CSS injection.
+        This provides double protection against scrollbar gutters.
         """
         try:
-            # Emulation.setScrollbarsHidden is a CDP command
+            # 1. CDP Command
             page.run_cdp('Emulation.setScrollbarsHidden', hidden=True)
-            logger.debug("SharedBrowserManager: CDP scrollbars hidden.")
+            
+            # 2. CSS Injection (Standard + Webkit)
+            css = """
+                ::-webkit-scrollbar { display: none !important; width: 0 !important; height: 0 !important; }
+                * { -ms-overflow-style: none !important; scrollbar-width: none !important; }
+            """
+            # Inject into current page
+            page.run_js(f"""
+                const style = document.createElement('style');
+                style.textContent = `{css}`;
+                document.head.appendChild(style);
+            """)
+            
+            logger.debug("SharedBrowserManager: Scrollbars hidden via CDP + CSS.")
         except Exception as e:
-            logger.warning(f"SharedBrowserManager: Failed to hide scrollbars via CDP: {e}")
+            logger.warning(f"SharedBrowserManager: Failed to hide scrollbars: {e}")
 
 
 # Module-level singleton accessor
