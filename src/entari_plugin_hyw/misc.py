@@ -1,6 +1,8 @@
 import json
 import base64
 import httpx
+import re
+import time
 from typing import Dict, Any, List, Optional
 from loguru import logger
 from arclet.entari import MessageChain, Image
@@ -170,3 +172,43 @@ async def render_image_unsupported(
         theme_color=theme_color,
         tab_id=tab_id
     )
+
+
+def parse_color(color: str) -> str:
+    """Parse color string to hex format."""
+    if not color:
+        return "#ef4444"
+    color = str(color).strip()
+    if color.startswith('#') and len(color) in [4, 7]:
+        return color
+    if re.match(r'^[0-9a-fA-F]{6}$', color):
+        return f'#{color}'
+    rgb_match = re.match(r'^\(?(\d+)[,\s]+(\d+)[,\s]+(\d+)\)?$', color)
+    if rgb_match:
+        r, g, b = (max(0, min(255, int(x))) for x in rgb_match.groups())
+        return f'#{r:02x}{g:02x}{b:02x}'
+    return "#ef4444"
+
+
+class RecentEventDeduper:
+    """Deduplicates recent events based on a key with TTL."""
+    
+    def __init__(self, ttl_seconds: float = 30.0, max_size: int = 2048):
+        self.ttl_seconds = ttl_seconds
+        self.max_size = max_size
+        self._seen: Dict[str, float] = {}
+
+    def seen_recently(self, key: str) -> bool:
+        now = time.time()
+        if len(self._seen) > self.max_size:
+            self._prune(now)
+        ts = self._seen.get(key)
+        if ts is None or now - ts > self.ttl_seconds:
+            self._seen[key] = now
+            return False
+        return True
+
+    def _prune(self, now: float):
+        expired = [k for k, ts in self._seen.items() if now - ts > self.ttl_seconds]
+        for k in expired:
+            self._seen.pop(k, None)

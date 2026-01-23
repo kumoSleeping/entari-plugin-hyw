@@ -13,6 +13,7 @@ from loguru import logger
 
 from .config import HywCoreConfig, ModelConfig
 from .pipeline import ModularPipeline
+from .agent import AgentPipeline
 from .search import SearchService
 from .stages.base import StageContext
 
@@ -97,12 +98,15 @@ class HywCore:
         # Create search service
         self._search_service = SearchService(config)
         
-        # Create pipeline
+        # Create pipeline (for non-agent mode)
         self._pipeline = ModularPipeline(
             config=config,
             search_service=self._search_service,
             send_func=send_func
         )
+        
+        # Agent pipeline (lazy init)
+        self._agent_pipeline = None
         
         # Create renderer (lazy init)
         self._renderer = None
@@ -218,6 +222,140 @@ class HywCore:
             
         except Exception as e:
             logger.error(f"HywCore query failed: {e}")
+            logger.exception("Query error details:")
+            return QueryResponse(
+                success=False,
+                content="",
+                error=str(e),
+                total_time=time.time() - start_time
+            )
+    
+    async def query_agent(
+        self, 
+        request: QueryRequest,
+        output_path: Optional[str] = None
+    ) -> QueryResponse:
+        """
+        Agent-mode query with tool-calling capability.
+        
+        Uses AgentPipeline which can autonomously call web_tool up to 2 times.
+        Each tool call triggers an IM notification via send_notification callback.
+        
+        Args:
+            request: QueryRequest with user input, images, history
+            output_path: Optional path to save rendered image
+            
+        Returns:
+            QueryResponse with content, rendered image path, and metadata
+        """
+        start_time = time.time()
+        
+        try:
+            # Get or create agent pipeline with current send_func
+            send_func = request.send_notification or self._send_func
+            
+            if self._agent_pipeline is None or self._agent_pipeline.send_func != send_func:
+                self._agent_pipeline = AgentPipeline(
+                    config=self.config,
+                    search_service=self._search_service,
+                    send_func=send_func
+                )
+            
+            # Execute agent pipeline
+            result = await self._agent_pipeline.execute(
+                user_input=request.user_input,
+                conversation_history=request.conversation_history,
+                images=request.images if request.images else None,
+                model_name=request.model_name
+            )
+            
+            total_time = time.time() - start_time
+            
+            # Check for refusal
+            if result.get("refuse_answer"):
+                return QueryResponse(
+                    success=True,
+                    content="",
+                    should_refuse=True,
+                    refuse_reason=result.get("refuse_reason", ""),
+                    total_time=total_time
+                )
+            
+            # Check for error
+            if not result.get("success", True):
+                return QueryResponse(
+                    success=False,
+                    content="",
+                    error=result.get("error", "Unknown error"),
+                    total_time=total_time
+                )
+            
+            # Extract response data
+            content = result.get("llm_response", "")
+            usage = result.get("usage", {})
+            
+            # Convert web_results to references format for frontend
+            # Only include references that are actually cited in the markdown
+            import re
+            web_results = result.get("web_results", [])
+            
+            # Build visible results list (excluding hidden items)
+            visible_results = [r for r in web_results if not r.get("_hidden")]
+            
+            # Parse markdown to find which citations are used (pattern: [number])
+            citation_pattern = re.compile(r'\[(\d+)\]')
+            cited_ids = set()
+            for match in citation_pattern.finditer(content):
+                cited_ids.add(int(match.group(1)))
+            
+            # Only include cited references, in order of first appearance
+            references = []
+            for idx in sorted(cited_ids):
+                # idx is 1-based in markdown
+                if 1 <= idx <= len(visible_results):
+                    r = visible_results[idx - 1]
+                    references.append({
+                        "title": r.get("title", ""),
+                        "url": r.get("url", ""),
+                        "snippet": r.get("content", "")[:300] if r.get("content") else "",
+                        "images": r.get("images", []),
+                        "is_fetched": r.get("_type") == "page",
+                        "raw_screenshot_b64": r.get("screenshot_b64"),
+                    })
+            
+            # Build response
+            response = QueryResponse(
+                success=True,
+                content=content,
+                usage=usage,
+                total_time=total_time,
+                references=references,
+                web_results=web_results,
+                stages_used=result.get("stages_used", [])
+            )
+            
+            # Render image if output path provided
+            if output_path and content:
+                await self._ensure_renderer()
+                
+                render_success = await self._renderer.render(
+                    markdown_content=content,
+                    output_path=output_path,
+                    stats=result.get("stats", {}),
+                    references=references,
+                    page_references=[],
+                    stages_used=result.get("stages_used", []),
+                    theme_color=self.config.theme_color
+                )
+                
+                if render_success:
+                    response.image_path = output_path
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"HywCore query_agent failed: {e}")
+            logger.exception("Agent query error details:")
             return QueryResponse(
                 success=False,
                 content="",
@@ -254,6 +392,15 @@ class HywCore:
         """
         # Default to full_page=True as requested for /w command
         return await self._search_service.screenshot_url(url, full_page=True)
+
+    async def screenshot_with_content(self, url: str, max_content_length: int = 8000) -> Dict[str, Any]:
+        """
+        Capture screenshot and extract page content.
+        
+        Returns:
+            Dict with screenshot_b64, content (truncated), title, url
+        """
+        return await self._search_service.screenshot_with_content(url, max_content_length=max_content_length)
     
     async def screenshot_batch(self, urls: List[str]) -> List[Optional[str]]:
         """

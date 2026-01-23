@@ -542,19 +542,54 @@ class ScreenshotService:
         return await asyncio.gather(*tasks, return_exceptions=True)
 
     async def screenshot_url(self, url: str, wait_load: bool = True, timeout: float = 15.0, full_page: bool = False, quality: int = 80) -> Optional[str]:
-        """Screenshot URL (Async wrapper for sync)."""
+        """Screenshot URL (Async wrapper for sync). Returns base64 string only."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
+        result = await loop.run_in_executor(
             self._executor,
             self._screenshot_sync,
-            url, wait_load, timeout, full_page, quality
+            url, wait_load, timeout, full_page, quality, False  # extract_content=False
         )
+        # Backward compatible: return just the screenshot for old callers
+        if isinstance(result, dict):
+            return result.get("screenshot_b64")
+        return result
 
-    def _screenshot_sync(self, url: str, wait_load: bool, timeout: float, full_page: bool, quality: int) -> Optional[str]:
-        """Synchronous screenshot."""
-        if not url: return None
+    async def screenshot_with_content(self, url: str, timeout: float = 15.0, max_content_length: int = 8000) -> Dict[str, Any]:
+        """
+        Screenshot URL and extract page content.
+        
+        Returns:
+            Dict with:
+                - screenshot_b64: base64 encoded screenshot
+                - content: trafilatura extracted text (truncated to max_content_length)
+                - title: page title
+                - url: final URL
+        """
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            self._executor,
+            self._screenshot_sync,
+            url, True, timeout, False, 65, True  # quality=65 for balance, extract_content=True
+        )
+        
+        if not isinstance(result, dict):
+            return {"screenshot_b64": result, "content": "", "title": "", "url": url}
+        
+        # Truncate content if needed
+        content = result.get("content", "") or ""
+        if len(content) > max_content_length:
+            content = content[:max_content_length] + "\n\n[内容已截断...]"
+        result["content"] = content
+        
+        return result
+
+
+    def _screenshot_sync(self, url: str, wait_load: bool, timeout: float, full_page: bool, quality: int, extract_content: bool = False) -> Any:
+        """Synchronous screenshot. If extract_content=True, returns Dict else str."""
+        if not url: 
+            return {"screenshot_b64": None, "content": "", "title": "", "url": url} if extract_content else None
         tab = None
-        capture_width = 1024  # Standard capture width
+        capture_width = 1440  # Higher resolution for readability
         
         try:
             self._ensure_ready()
@@ -838,13 +873,42 @@ class ScreenshotService:
             # Final scroll to top
             tab.run_js("window.scrollTo(0, 0);")
             
-            # Use full_page=False because we manually set the viewport to the full height
-            # This avoids stitching artifacts and blank spaces
-            return tab.get_screenshot(as_base64='jpg', full_page=False)
+            # Capture screenshot
+            screenshot_b64 = tab.get_screenshot(as_base64='jpg', full_page=False)
+            
+            # Extract content if requested
+            if extract_content:
+                try:
+                    html = tab.html
+                    title = tab.title
+                    final_url = tab.url
+                    
+                    # Minimal trafilatura settings to reduce token consumption
+                    content = trafilatura.extract(
+                        html,
+                        include_links=False,     # No links to reduce tokens
+                        include_images=False,    # No image descriptions
+                        include_comments=False,  # No comments
+                        include_tables=False,    # No tables (can be verbose)
+                        favor_precision=True,    # Favor precision over recall
+                        output_format="txt"      # Plain text (no markdown formatting)
+                    ) or ""
+                    
+                    return {
+                        "screenshot_b64": screenshot_b64,
+                        "content": content,
+                        "title": title,
+                        "url": final_url
+                    }
+                except Exception as e:
+                    logger.warning(f"ScreenshotService: Content extraction failed: {e}")
+                    return {"screenshot_b64": screenshot_b64, "content": "", "title": "", "url": url}
+            
+            return screenshot_b64
                 
         except Exception as e:
             logger.error(f"ScreenshotService: Screenshot URL failed: {e}")
-            return None
+            return {"screenshot_b64": None, "content": "", "title": "", "url": url} if extract_content else None
         finally:
             if tab:
                 try: tab.close()

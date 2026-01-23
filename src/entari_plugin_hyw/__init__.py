@@ -7,10 +7,8 @@ Use large language models to interpret chat messages.
 from dataclasses import dataclass, field
 from importlib.metadata import version as get_version
 from typing import List, Dict, Any, Optional
-import time
 import asyncio
 import os
-import secrets
 import base64
 import re
 import tempfile
@@ -41,81 +39,11 @@ from .misc import (
     resolve_model_name, 
     render_refuse_answer, 
     render_image_unsupported,
+    parse_color,
+    RecentEventDeduper,
 )
+from .filters import parse_filter_syntax
 from .search_cache import SearchResultCache, parse_single_index, parse_multi_indices
-
-
-def parse_filter_syntax(query: str, max_count: int = 3):
-    """
-    Parse enhanced filter syntax supporting:
-    - Chinese/English colons (: ：) and commas (, ，)
-    - Multiple filters: "mcmod=2, github=1 : xxx" 
-    - Index lists: "1, 2, 3 : xxx"
-    - Max total selections
-    
-    Returns:
-        (filters, search_query, error_msg)
-        filters: list of (filter_type, filter_value, count) tuples
-                 filter_type: 'index' or 'link'
-                 count: how many to get (default 1)
-        search_query: the actual search query
-        error_msg: error message if exceeded max
-    """
-    if not query:
-        return [], query, None
-    
-    # Normalize Chinese punctuation to English
-    normalized = query.replace('：', ':').replace('，', ',').replace('、', ',')
-    
-    # Handle escaped colons: \: or /: -> placeholder
-    normalized = re.sub(r'[/\\]:', '\x00COLON\x00', normalized)
-    
-    # Split by colon - last part is the search query
-    parts = normalized.split(':')
-    if len(parts) < 2:
-        # No colon found, restore escaped colons and return as-is
-        return [], query.replace('\\:', ':').replace('/:', ':'), None
-    
-    # Everything after the last colon is the search query
-    search_query = parts[-1].strip().replace('\x00COLON\x00', ':')
-    
-    # Everything before is the filter specification
-    filter_spec = ':'.join(parts[:-1]).strip().replace('\x00COLON\x00', ':')
-    
-    if not filter_spec or not search_query:
-        return [], query.replace('\\:', ':').replace('/:', ':'), None
-    
-    # Parse filter specifications (comma-separated)
-    filter_items = [f.strip() for f in filter_spec.split(',') if f.strip()]
-    
-    filters = []
-    for item in filter_items:
-        # Check for "filter=count" pattern (e.g., "mcmod=2")
-        eq_match = re.match(r'^(\w+)\s*=\s*(\d+)$', item)
-        if eq_match:
-            filter_name = eq_match.group(1).lower()
-            count = int(eq_match.group(2))
-            filters.append(('link', filter_name, count))
-        elif item.isdigit():
-            # Pure index
-            filters.append(('index', int(item), 1))
-        else:
-            # Filter name without count (default count=1)
-            filters.append(('link', item.lower(), 1))
-    
-    # Calculate total count
-    total = sum(f[2] for f in filters)
-    if total > max_count:
-        return [], search_query, f"最多选择{max_count}个结果 (当前选择了{total}个)"
-    
-    # Append filter names to search query
-    # Extract filter names (only 'link' type, skip 'index' type)
-    filter_names = [f[1] for f in filters if f[0] == 'link']
-    if filter_names:
-        # Append filter names to search query: "search_query filter1 filter2"
-        search_query = f"{search_query} {' '.join(filter_names)}"
-    
-    return filters, search_query, None
 
 
 try:
@@ -124,43 +52,8 @@ except Exception:
     __version__ = "4.0.0-rc8"
 
 
-def parse_color(color: str) -> str:
-    if not color:
-        return "#ef4444"
-    color = str(color).strip()
-    if color.startswith('#') and len(color) in [4, 7]:
-        return color
-    if re.match(r'^[0-9a-fA-F]{6}$', color):
-        return f'#{color}'
-    rgb_match = re.match(r'^\(?(\d+)[,\s]+(\d+)[,\s]+(\d+)\)?$', color)
-    if rgb_match:
-        r, g, b = (max(0, min(255, int(x))) for x in rgb_match.groups())
-        return f'#{r:02x}{g:02x}{b:02x}'
-    return "#ef4444"
+_event_deduper = RecentEventDeduper()
 
-
-class _RecentEventDeduper:
-    def __init__(self, ttl_seconds: float = 30.0, max_size: int = 2048):
-        self.ttl_seconds = ttl_seconds
-        self.max_size = max_size
-        self._seen: Dict[str, float] = {}
-
-    def seen_recently(self, key: str) -> bool:
-        now = time.time()
-        if len(self._seen) > self.max_size:
-            self._prune(now)
-        ts = self._seen.get(key)
-        if ts is None or now - ts > self.ttl_seconds:
-            self._seen[key] = now
-            return False
-        return True
-
-    def _prune(self, now: float):
-        expired = [k for k, ts in self._seen.items() if now - ts > self.ttl_seconds]
-        for k in expired:
-            self._seen.pop(k, None)
-
-_event_deduper = _RecentEventDeduper()
 
 
 @dataclass
@@ -170,6 +63,7 @@ class HywConfig(BasicConfModel):
     models: List[Dict[str, Any]] = field(default_factory=list)
     question_command: str = "/q"
     web_command: str = "/w"
+    help_command: str = "/h"
     language: str = "Simplified Chinese"
     temperature: float = 0.4
     
@@ -326,9 +220,9 @@ async def process_request(
             output_path = tf.name
         
         core = get_hyw_core()
-        # 1. Query ONLY (no render path provided)
-        # Pass output_path=None so it returns raw response without internal rendering
-        response = await core.query(request, output_path=None)
+        # Use agent mode with tool-calling capability
+        # Agent can autonomously call web_tool up to 2 times, with IM notifications
+        response = await core.query_agent(request, output_path=None)
         
         # 2. Get the warmed-up tab
         try:
@@ -453,7 +347,6 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
             # Check if too many indices requested (parse_multi_indices returns None if > max_count)
             if query_text and indices is None:
                 # Check if it looks like indices but exceeded limit
-                import re
                 if re.match(r'^[\d,、\s\-–]+$', query_text):
                     await session.send("最多选择3个结果进行总结")
                     search_cache.cleanup()
@@ -551,8 +444,91 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
             search_cache.cleanup()
             return
     
+    # === URL Mode: Direct URL Screenshot + Summarize ===
+    # Detect URL in query and handle directly without Agent
+    url_match = re.search(r'https?://\S+', query_text)
+    if url_match:
+        url = url_match.group(0)
+        # Extract user intent (text before/after URL)
+        user_intent = query_text.replace(url, '').strip()
+        if not user_intent:
+            user_intent = "总结这个页面的内容"
+        
+        if conf.reaction:
+            asyncio.create_task(react(session, "✨"))
+        
+        core = get_hyw_core()
+        local_renderer = await get_content_renderer()
+        
+        # Run screenshot and prepare tab in parallel
+        screenshot_task = asyncio.create_task(core.screenshot(url))
+        tab_task = asyncio.create_task(local_renderer.prepare_tab())
+        
+        # Send notification
+        short_url = url[:40] + "..." if len(url) > 40 else url
+        await session.send(f"📸 正在截图: {short_url}")
+        
+        b64_img = await screenshot_task
+        
+        if not b64_img:
+            try: await tab_task
+            except: pass
+            await session.send(f"❌ 截图失败: {url}")
+            return
+        
+        # Summarize with screenshot
+        request = QueryRequest(
+            user_input=f"{user_intent}\n\nURL: {url}",
+            images=[b64_img],
+            conversation_history=[],
+            model_name=None,
+        )
+        
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+            output_path = tf.name
+        
+        response = await core.query(request, output_path=None)
+        
+        try:
+            tab_id = await tab_task
+        except Exception:
+            tab_id = None
+        
+        if response.success and response.content:
+            render_ok = await core.render(
+                markdown_content=response.content,
+                output_path=output_path,
+                stats={"total_time": response.total_time},
+                references=[],
+                page_references=[{"url": url, "title": "截图页面", "raw_screenshot_b64": b64_img}],
+                tab_id=tab_id
+            )
+            
+            if render_ok and os.path.exists(output_path):
+                with open(output_path, "rb") as f:
+                    img_data = base64.b64encode(f.read()).decode()
+                
+                msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+                if conf.quote:
+                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                
+                await session.send(msg_chain)
+                os.remove(output_path)
+            else:
+                await session.send(response.content[:500])
+        else:
+            await session.send(f"总结失败: {response.error or 'Unknown error'}")
+        
+        return
+    
     # === Filter Mode: Search + Find matching links + Summarize ===
-    filters, search_query, filter_error = parse_filter_syntax(query_text, max_count=3)
+    # Only trigger filter syntax for short queries (≤20 chars, excluding URLs), otherwise use Agent
+    filters = []
+    filter_error = None
+    # Calculate length excluding URLs
+    query_without_urls = re.sub(r'https?://\S+', '', query_text).strip()
+    if len(query_without_urls) <= 20:
+        filters, search_query, filter_error = parse_filter_syntax(query_text, max_count=3)
     
     if filter_error:
         await session.send(filter_error)
@@ -564,6 +540,10 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
         
         core = get_hyw_core()
         local_renderer = await get_content_renderer()
+        
+        # Send pre-notification BEFORE search
+        filter_desc = ", ".join([f[1] if f[0] != 'index' else f"第{f[1]}个" for f in filters])
+        await session.send(f"🔍 正在搜索 \"{search_query}\" 并匹配 [{filter_desc}]...")
         
         # Run search and prepare tab in parallel
         search_task = asyncio.create_task(core.search([search_query]))
@@ -592,13 +572,15 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
                 else:
                     try: await tab_task
                     except: pass
-                    await session.send(f"序号 {filter_value} 超出范围 (1-{len(visible)})")
+                    await session.send(f"⚠️ 序号 {filter_value} 超出范围 (1-{len(visible)})")
                     return
             else:
                 found_count = 0
                 for res in visible:
                     url = res.get("url", "")
-                    if filter_value in url.lower() and url not in urls_to_screenshot:
+                    title = res.get("title", "")
+                    # Match filter against both URL and title
+                    if (filter_value in url.lower() or filter_value in title.lower()) and url not in urls_to_screenshot:
                         urls_to_screenshot.append(url)
                         found_count += 1
                         if found_count >= count:
@@ -607,32 +589,54 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
                 if found_count == 0:
                     try: await tab_task
                     except: pass
-                    await session.send(f"未找到包含 \"{filter_value}\" 的链接")
+                    await session.send(f"⚠️ 未找到包含 \"{filter_value}\" 的链接")
                     return
         
         if not urls_to_screenshot:
             try: await tab_task
             except: pass
-            await session.send("未找到匹配的链接")
+            await session.send("⚠️ 未找到匹配的链接")
             return
         
-        # Take screenshots concurrently
-        screenshot_tasks = [core.screenshot(url) for url in urls_to_screenshot]
+        # Take screenshots with content extraction
+        screenshot_tasks = [core.screenshot_with_content(url) for url in urls_to_screenshot]
         screenshot_results = await asyncio.gather(*screenshot_tasks)
-        screenshots = [b64 for b64 in screenshot_results if b64]
         
-        if not screenshots:
+        # Build page references for rendering (with screenshots)
+        # and collect text content for LLM
+        page_references = []
+        text_contents = []
+        successful_count = 0
+        
+        for url, result in zip(urls_to_screenshot, screenshot_results):
+            if isinstance(result, dict) and result.get("screenshot_b64"):
+                successful_count += 1
+                page_references.append({
+                    "url": url,
+                    "title": result.get("title", "截图页面"),
+                    "raw_screenshot_b64": result.get("screenshot_b64"),
+                })
+                # Collect text for LLM
+                content = result.get("content", "")
+                if content:
+                    text_contents.append(f"## 来源: {result.get('title', url)}\n\n{content}")
+        
+        if not page_references:
             try: await tab_task
             except: pass
             await session.send("无法截图页面")
             return
         
-        # Pass screenshots to LLM for summarization
-        user_query = f"总结关于 \"{search_query}\" 的内容"
+        # Send result notification
+        await session.send(f"🔍 搜索 \"{search_query}\" 并截图 {successful_count} 个匹配结果")
+        
+        # Pass TEXT content to LLM for summarization (not images)
+        combined_content = "\n\n---\n\n".join(text_contents) if text_contents else "无法提取网页内容"
+        user_query = f"总结关于 \"{search_query}\" 的内容。\n\n网页内容:\n{combined_content[:8000]}"
         
         request = QueryRequest(
             user_input=user_query,
-            images=screenshots,
+            images=[],  # No images, use text content instead
             conversation_history=[],
             model_name=None,
         )
@@ -653,7 +657,7 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
                 output_path=output_path,
                 stats={"total_time": response.total_time},
                 references=[],
-                page_references=[],
+                page_references=page_references,  # Pass screenshots for rendering
                 tab_id=tab_id
             )
             
@@ -850,25 +854,27 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
                         if url and url not in urls_to_screenshot:
                             urls_to_screenshot.append(url)
                     else:
-                        await session.send(f"序号 {filter_value} 超出范围 (1-{len(visible)})")
+                        await session.send(f"⚠️ 序号 {filter_value} 超出范围 (1-{len(visible)})")
                         return
                 else:
                     # Link filter: find URLs containing filter term
                     found_count = 0
                     for res in visible:
                         url = res.get("url", "")
-                        if filter_value in url.lower() and url not in urls_to_screenshot:
+                        title = res.get("title", "")
+                        # Match filter against both URL and title
+                        if (filter_value in url.lower() or filter_value in title.lower()) and url not in urls_to_screenshot:
                             urls_to_screenshot.append(url)
                             found_count += 1
                             if found_count >= count:
                                 break
                     
                     if found_count == 0:
-                        await session.send(f"未找到包含 \"{filter_value}\" 的链接")
+                        await session.send(f"⚠️ 未找到包含 \"{filter_value}\" 的链接")
                         return
             
             if not urls_to_screenshot:
-                await session.send("未找到匹配的链接")
+                await session.send("⚠️ 未找到匹配的链接")
                 return
             
             if conf.reaction:
@@ -957,6 +963,42 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
 
 
 metadata("hyw", author=[{"name": "kumoSleeping", "email": "zjr2992@outlook.com"}], version=__version__, config=HywConfig)
+
+# Help command (/h)
+alc_help = Alconna(conf.help_command)
+
+@command.on(alc_help)
+async def handle_help_command(session: Session[MessageCreatedEvent], result: Arparma):
+    """Display help information for all commands."""
+    help_text = f"""HYW Plugin v{__version__}
+
+Question Agent:
+  • {conf.question_command} tell me...
+  • {conf.question_command} [picture] tell me...
+  • [quote] {conf.question_command} tell me...
+Question Filter:
+  • {conf.question_command} github: fastapi
+  • {conf.question_command} 1,2: minecraft
+  • {conf.question_command} mcmod=2: forge mod
+Question Context:
+  • [quote: question] + {conf.question_command} tell me more...
+Web_tool Search:
+  • {conf.web_command} query
+Web_tool Screenshot:
+  • {conf.web_command} https://example.com
+Web_tool Filter(search and screenshot):
+  • {conf.web_command} github: fastapi
+  • {conf.web_command} 1,2: minecraft
+  • {conf.web_command} mcmod=2: forge mod
+Web_tool Context(screenshot):
+  • [quote: web_tool search] + {conf.web_command} 1
+  • [quote: web_tool search] + {conf.web_command} 1, 3
+Web_tool Context(question):
+  • [quote: web_tool screenshot] + {conf.question_command} tell me...
+  • [quote: web_tool search] + {conf.question_command} tell me...
+"""
+    
+    await session.send(help_text)
 
 @listen(CommandReceive)
 async def remove_at(content: MessageChain):

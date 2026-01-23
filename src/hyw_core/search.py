@@ -159,3 +159,13 @@ class SearchService:
         """
         service = get_screenshot_service(headless=self._headless)
         return await service.screenshot_url(url, full_page=full_page)
+
+    async def screenshot_with_content(self, url: str, max_content_length: int = 8000) -> Dict[str, Any]:
+        """
+        Capture screenshot and extract page content.
+        
+        Returns:
+            Dict with screenshot_b64, content (truncated), title, url
+        """
+        service = get_screenshot_service(headless=self._headless)
+        return await service.screenshot_with_content(url, max_content_length=max_content_length)

@@ -43,9 +43,7 @@ class SummaryStage(BaseStage):
         # Select prompt
         language = getattr(self.config, "language", "Simplified Chinese")
         
-        system_prompt = SUMMARY_REPORT_SP.format(
-            language=language
-        )
+        system_prompt = SUMMARY_REPORT_SP + f"\n\n用户要求的语言: {language}"
         
         # Build Context Message
         context_message = f"## Web Search & Page Content\n\n```context\n{full_context}\n```"
