@@ -141,6 +141,8 @@ class AgentPipeline:
     
     MAX_TOOL_ROUNDS = 2  # Maximum rounds of tool calls
     MAX_PARALLEL_TOOLS = 3  # Maximum parallel tool calls per round
+    MAX_LLM_RETRIES = 3  # Maximum retries for empty API responses
+    LLM_RETRY_DELAY = 1.0  # Delay between retries in seconds
     
     def __init__(
         self, 
@@ -247,38 +249,88 @@ class AgentPipeline:
                     })
                 
                 
-                # Final call without tools
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=session.messages,
-                    temperature=self.config.temperature,
-                )
+                # Final call without tools (with retry)
+                response = None
+                for retry in range(self.MAX_LLM_RETRIES):
+                    try:
+                        response = await client.chat.completions.create(
+                            model=model,
+                            messages=session.messages,
+                            temperature=self.config.temperature,
+                        )
+                        
+                        if response.usage:
+                            usage_totals["input_tokens"] += response.usage.prompt_tokens or 0
+                            usage_totals["output_tokens"] += response.usage.completion_tokens or 0
+                        
+                        # Check for valid response
+                        if response.choices:
+                            break  # Success, exit retry loop
+                        
+                        # Empty choices, retry
+                        logger.warning(f"AgentPipeline: Empty choices in force-summary (attempt {retry + 1}/{self.MAX_LLM_RETRIES}): {response}")
+                        if retry < self.MAX_LLM_RETRIES - 1:
+                            await asyncio.sleep(self.LLM_RETRY_DELAY)
+                    except Exception as e:
+                        logger.warning(f"AgentPipeline: LLM error (attempt {retry + 1}/{self.MAX_LLM_RETRIES}): {e}")
+                        if retry < self.MAX_LLM_RETRIES - 1:
+                            await asyncio.sleep(self.LLM_RETRY_DELAY)
+                        else:
+                            return {
+                                "llm_response": f"Error: {e}",
+                                "success": False,
+                                "error": str(e),
+                                "stats": {"total_time": time.time() - start_time}
+                            }
                 
-                if response.usage:
-                    usage_totals["input_tokens"] += response.usage.prompt_tokens or 0
-                    usage_totals["output_tokens"] += response.usage.completion_tokens or 0
+                # Final check after all retries
+                if not response or not response.choices:
+                    logger.error(f"AgentPipeline: All retries failed for force-summary")
+                    return {
+                        "llm_response": "抱歉，AI 服务返回了空响应，请稍后重试。",
+                        "success": False,
+                        "error": "Empty response from API after retries",
+                        "stats": {"total_time": time.time() - start_time},
+                        "usage": usage_totals,
+                    }
                 
                 final_content = response.choices[0].message.content or ""
                 break
             
-            # Normal call with tools
+            # Normal call with tools (with retry)
             llm_start = time.time()
-            try:
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=session.messages,
-                    temperature=self.config.temperature,
-                    tools=tools,
-                    tool_choice="auto",
-                )
-            except Exception as e:
-                logger.error(f"AgentPipeline: LLM error: {e}")
-                return {
-                    "llm_response": f"Error: {e}",
-                    "success": False,
-                    "error": str(e),
-                    "stats": {"total_time": time.time() - start_time}
-                }
+            response = None
+            
+            for retry in range(self.MAX_LLM_RETRIES):
+                try:
+                    response = await client.chat.completions.create(
+                        model=model,
+                        messages=session.messages,
+                        temperature=self.config.temperature,
+                        tools=tools,
+                        tool_choice="auto",
+                    )
+                    
+                    # Check for valid response
+                    if response.choices:
+                        break  # Success, exit retry loop
+                    
+                    # Empty choices, retry
+                    logger.warning(f"AgentPipeline: Empty choices (attempt {retry + 1}/{self.MAX_LLM_RETRIES}): {response}")
+                    if retry < self.MAX_LLM_RETRIES - 1:
+                        await asyncio.sleep(self.LLM_RETRY_DELAY)
+                except Exception as e:
+                    logger.warning(f"AgentPipeline: LLM error (attempt {retry + 1}/{self.MAX_LLM_RETRIES}): {e}")
+                    if retry < self.MAX_LLM_RETRIES - 1:
+                        await asyncio.sleep(self.LLM_RETRY_DELAY)
+                    else:
+                        logger.error(f"AgentPipeline: All retries failed: {e}")
+                        return {
+                            "llm_response": f"Error: {e}",
+                            "success": False,
+                            "error": str(e),
+                            "stats": {"total_time": time.time() - start_time}
+                        }
             
             llm_duration = time.time() - llm_start
             session.llm_time += llm_duration
@@ -286,6 +338,17 @@ class AgentPipeline:
             # Track first LLM call time (理解用户意图)
             if session.call_count == 0 and session.first_llm_time == 0:
                 session.first_llm_time = llm_duration
+            
+            # Final check after all retries
+            if not response or not response.choices:
+                logger.error(f"AgentPipeline: All retries failed, empty choices")
+                return {
+                    "llm_response": "抱歉，AI 服务返回了空响应，请稍后重试。",
+                    "success": False,
+                    "error": "Empty response from API after retries",
+                    "stats": {"total_time": time.time() - start_time},
+                    "usage": usage_totals,
+                }
             
             if response.usage:
                 usage_totals["input_tokens"] += response.usage.prompt_tokens or 0
