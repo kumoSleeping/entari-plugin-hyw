@@ -2,7 +2,7 @@
 Agent Pipeline
 
 Tool-calling agent that can autonomously use web_tool to search/screenshot.
-Maximum 2 tool calls, then forced summary.
+Maximum 2 rounds of tool calls, up to 3 parallel calls per round.
 """
 
 import asyncio
@@ -31,6 +31,9 @@ class AgentSession:
     messages: List[Dict] = field(default_factory=list)  # LLM conversation
     created_at: float = field(default_factory=time.time)
     
+    # Round tracking (each round can have up to 3 parallel tool calls)
+    round_count: int = 0
+    
     # Image tracking
     user_image_count: int = 0  # Number of images from user input
     total_image_count: int = 0  # Total images including web screenshots
@@ -45,12 +48,13 @@ class AgentSession:
     
     @property
     def call_count(self) -> int:
+        """Total number of individual tool calls."""
         return len(self.tool_calls)
     
     @property
     def should_force_summary(self) -> bool:
-        """第3次调用时强制总结"""
-        return self.call_count >= 2
+        """Force summary after 2 rounds of tool calls."""
+        return self.round_count >= 2
 
 
 def parse_filter_syntax(query: str, max_count: int = 3):
@@ -130,12 +134,13 @@ class AgentPipeline:
     
     Flow:
     1. 用户输入 → LLM (with tools)
-    2. If tool_call: execute tool → notify user → loop
-    3. If call_count >= 2: force summary on next call
+    2. If tool_call: execute all tools in parallel → notify user with batched message → loop
+    3. If call_count >= 2 rounds: force summary on next call
     4. Return final content
     """
     
-    MAX_TOOL_CALLS = 2
+    MAX_TOOL_ROUNDS = 2  # Maximum rounds of tool calls
+    MAX_PARALLEL_TOOLS = 3  # Maximum parallel tool calls per round
     
     def __init__(
         self, 
@@ -183,7 +188,9 @@ class AgentPipeline:
         
         # Build initial messages
         language = getattr(self.config, "language", "Simplified Chinese")
-        system_prompt = AGENT_SYSTEM_PROMPT + f"\n\n用户要求的语言: {language}"
+        from datetime import datetime
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+        system_prompt = AGENT_SYSTEM_PROMPT + f"\n\n用户要求的语言: {language}\n当前时间: {current_time}"
         
         # Build user content with images if provided
         user_image_count = len(images) if images else 0
@@ -230,7 +237,7 @@ class AgentPipeline:
         while True:
             # Check if we need to force summary (no tools)
             if session.should_force_summary:
-                logger.info(f"AgentPipeline: Max tool calls ({self.MAX_TOOL_CALLS}) reached, forcing summary")
+                logger.info(f"AgentPipeline: Max tool rounds ({self.MAX_TOOL_ROUNDS}) reached, forcing summary")
                 # Add context message about collected info
                 if context.web_results:
                     context_msg = self._format_web_context(context)
@@ -307,7 +314,12 @@ class AgentPipeline:
                 ]
             })
             
-            # Execute tool calls
+            # Execute all tool calls in parallel
+            tool_tasks = []
+            tool_call_ids = []
+            tool_call_names = []
+            tool_call_args_list = []
+            
             for tool_call in message.tool_calls:
                 tc_id = tool_call.id
                 func_name = tool_call.function.name
@@ -317,17 +329,22 @@ class AgentPipeline:
                 except json.JSONDecodeError:
                     args = {}
                 
-                logger.info(f"AgentPipeline: Executing tool '{func_name}' with args: {args}")
-                
+                tool_call_ids.append(tc_id)
+                tool_call_names.append(func_name)
+                tool_call_args_list.append(args)
+                logger.info(f"AgentPipeline: Queueing tool '{func_name}' with args: {args}")
+            
+            # Check for refuse_answer first (handle immediately)
+            for idx, func_name in enumerate(tool_call_names):
                 if func_name == "refuse_answer":
-                    # Handle refusal
+                    args = tool_call_args_list[idx]
                     reason = args.get("reason", "Refused")
                     context.should_refuse = True
                     context.refuse_reason = reason
                     
                     session.messages.append({
                         "role": "tool",
-                        "tool_call_id": tc_id,
+                        "tool_call_id": tool_call_ids[idx],
                         "content": f"已拒绝回答: {reason}"
                     })
                     
@@ -339,23 +356,50 @@ class AgentPipeline:
                         "stats": {"total_time": time.time() - start_time},
                         "usage": usage_totals,
                     }
+            
+            # Execute web_tool calls in parallel
+            search_start = time.time()
+            tasks_to_run = []
+            task_indices = []
+            
+            for idx, func_name in enumerate(tool_call_names):
+                if func_name == "web_tool":
+                    tasks_to_run.append(self._execute_web_tool(tool_call_args_list[idx], context))
+                    task_indices.append(idx)
+            
+            # Run all web_tool calls in parallel
+            if tasks_to_run:
+                results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
+            else:
+                results = []
+            
+            session.search_time += time.time() - search_start
+            
+            # Process results and collect notifications
+            notifications = []
+            result_map = {}  # Map task index to result
+            
+            for i, result in enumerate(results):
+                task_idx = task_indices[i]
+                if isinstance(result, Exception):
+                    result_map[task_idx] = {"summary": f"执行失败: {result}", "results": []}
+                else:
+                    result_map[task_idx] = result
+            
+            # Add all tool results to messages and collect notifications
+            for idx, func_name in enumerate(tool_call_names):
+                tc_id = tool_call_ids[idx]
+                args = tool_call_args_list[idx]
                 
-                elif func_name == "web_tool":
-                    # Execute web tool with time tracking
-                    search_start = time.time()
-                    result = await self._execute_web_tool(args, context)
-                    session.search_time += time.time() - search_start
+                if func_name == "web_tool":
+                    result = result_map.get(idx, {"summary": "未执行", "results": []})
                     
                     # Track tool call
                     session.tool_calls.append({"name": func_name, "args": args})
                     session.tool_results.append(result)
                     
-                    # Send IM notification with search result (NOT "正在搜索...")
-                    if self.send_func:
-                        try:
-                            await self.send_func(f"🔍 {result['summary']}")
-                        except Exception as e:
-                            logger.warning(f"AgentPipeline: Failed to send notification: {e}")
+                    # Collect notification
+                    notifications.append(f"🔍 {result['summary']}")
                     
                     # Add tool result to messages
                     result_content = f"搜索完成: {result['summary']}\n\n找到 {len(result.get('results', []))} 个结果"
@@ -368,15 +412,15 @@ class AgentPipeline:
                     # Add image source hint for web screenshots
                     screenshot_count = result.get("screenshot_count", 0)
                     if screenshot_count > 0:
-                        start_idx = session.total_image_count + 1
-                        end_idx = session.total_image_count + screenshot_count
-                        session.total_image_count = end_idx
+                        start_idx_img = session.total_image_count + 1
+                        end_idx_img = session.total_image_count + screenshot_count
+                        session.total_image_count = end_idx_img
                         
                         source_desc = result.get("source_desc", "网页截图")
-                        if start_idx == end_idx:
-                            hint = f"第{start_idx}张图片来自{source_desc}，作为查询的参考资料"
+                        if start_idx_img == end_idx_img:
+                            hint = f"第{start_idx_img}张图片来自{source_desc}，作为查询的参考资料"
                         else:
-                            hint = f"第{start_idx}-{end_idx}张图片来自{source_desc}，作为查询的参考资料"
+                            hint = f"第{start_idx_img}-{end_idx_img}张图片来自{source_desc}，作为查询的参考资料"
                         session.messages.append({"role": "system", "content": hint})
                 else:
                     # Unknown tool
@@ -385,6 +429,19 @@ class AgentPipeline:
                         "tool_call_id": tc_id,
                         "content": f"Unknown tool: {func_name}"
                     })
+            
+            # Send batched notification (up to 3 lines)
+            if self.send_func and notifications:
+                try:
+                    # Join notifications with newlines, max 3 lines
+                    notification_msg = "\n".join(notifications[:3])
+                    await self.send_func(notification_msg)
+                except Exception as e:
+                    logger.warning(f"AgentPipeline: Failed to send notification: {e}")
+            
+            # Increment round count after processing all tool calls in this round
+            if tasks_to_run:
+                session.round_count += 1
         
         # Build final response
         total_time = time.time() - start_time
