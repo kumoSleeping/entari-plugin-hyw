@@ -55,6 +55,43 @@ except Exception:
 _event_deduper = RecentEventDeduper()
 
 
+class TaskManager:
+    """Manages async tasks for cancellation"""
+    def __init__(self):
+        self.tasks: Dict[str, asyncio.Task] = {}
+        self.cleanups: Dict[str, callable] = {}
+
+    def register(self, msg_id: str, task: asyncio.Task, cleanup: Optional[callable] = None):
+        self.tasks[msg_id] = task
+        if cleanup:
+            self.cleanups[msg_id] = cleanup
+
+    def unregister(self, msg_id: str):
+        self.tasks.pop(msg_id, None)
+        self.cleanups.pop(msg_id, None)
+
+    async def cancel(self, msg_id: str) -> bool:
+        task = self.tasks.get(msg_id)
+        if task and not task.done():
+            task.cancel()
+
+            # Run cleanup if available
+            cleanup = self.cleanups.get(msg_id)
+            if cleanup:
+                try:
+                    if asyncio.iscoroutinefunction(cleanup):
+                        await cleanup()
+                    else:
+                        cleanup()
+                except Exception as e:
+                    logger.warning(f"Cleanup failed for task {msg_id}: {e}")
+
+            self.unregister(msg_id)
+            return True
+        return False
+
+_task_manager = TaskManager()
+
 
 @dataclass
 class HywConfig(BasicConfModel):
@@ -63,6 +100,7 @@ class HywConfig(BasicConfModel):
     models: List[Dict[str, Any]] = field(default_factory=list)
     question_command: str = "/q"
     web_command: str = "/w"
+    stop_command: str = "/x"
     help_command: str = "/h"
     language: str = "Simplified Chinese"
     temperature: float = 0.4
@@ -199,6 +237,29 @@ async def process_request(
         local_renderer = await get_content_renderer()
         render_tab_task = asyncio.create_task(local_renderer.prepare_tab())
 
+        # Register cleanup for this specific request's resources
+        msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
+
+        async def cleanup_resources():
+            try:
+                # If tab task is still running, cancel it
+                if not render_tab_task.done():
+                    render_tab_task.cancel()
+                else:
+                    # If tab is ready, close it
+                    try:
+                        tab_id = render_tab_task.result()
+                        if tab_id:
+                            await local_renderer.close_tab(tab_id)
+                    except:
+                        pass
+            except Exception as e:
+                logger.warning(f"Resource cleanup failed: {e}")
+
+        # Update task manager with cleanup callback
+        if _task_manager.tasks.get(msg_id):
+            _task_manager.cleanups[msg_id] = cleanup_resources
+
         async def send_noti(msg: str):
             try:
                 if conf.quote:
@@ -267,21 +328,26 @@ async def process_request(
                 msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
             
             sent = await session.send(msg_chain)
-            
+
             sent_id = next((str(e.id) for e in sent if hasattr(e, 'id')), None) if sent else None
             msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
-            
+
             updated_history = hist_payload + [
                 {"role": "user", "content": msg_text},
                 {"role": "assistant", "content": response.content}
             ]
-            
+
             # Save to Memory
             history_manager.remember(
                 sent_id, updated_history, [msg_id],
                 {"model": model}, context_id, code=display_session_id,
             )
-            
+
+            # Store web results in search cache for continuous conversation context
+            # This allows users to reply to this message and have the AI "remember" the search results
+            if response.web_results and sent_id:
+                search_cache.store(sent_id, response.web_results, f"Context for {msg_id}")
+
             # Save to Disk (Debug/Logging)
             if conf.save_conversation:
                 # Extract traces from response
@@ -310,7 +376,7 @@ async def process_request(
 
 alc = Alconna(conf.question_command, Args["all_param;?", AllParam])
 
-@command.on(alc)    
+@command.on(alc)
 async def handle_question_command(session: Session[MessageCreatedEvent], result: Arparma):
     try:
         mid = str(session.event.message.id) if getattr(session.event, "message", None) else str(session.event.id)
@@ -319,367 +385,69 @@ async def handle_question_command(session: Session[MessageCreatedEvent], result:
             return
     except Exception:
         pass
-    
+
     args = result.all_matched_args
     all_param = args.get("all_param")
-    
-    # Extract query text
-    if all_param:
-        if isinstance(all_param, MessageChain):
-            query_text = str(all_param.get(Text)).strip()
-        else:
-            query_text = str(all_param).strip()
-    else:
-        query_text = ""
-    
-    # Check if replying to a cached search result
+
+    # Check if replying to a cached search result (/w context summary)
     reply_msg_id = None
     if session.reply and hasattr(session.reply.origin, 'id'):
         reply_msg_id = str(session.reply.origin.id)
-    
-    # Quote mode: Use cached search results
+
     if reply_msg_id:
         cached = search_cache.get(reply_msg_id)
         if cached:
-            # Parse indices if provided
-            indices = parse_multi_indices(query_text, max_count=3) if query_text else None
-            
-            # Check if too many indices requested (parse_multi_indices returns None if > max_count)
-            if query_text and indices is None:
-                # Check if it looks like indices but exceeded limit
-                if re.match(r'^[\d,、\s\-–]+$', query_text):
-                    await session.send("最多选择3个结果进行总结")
-                    search_cache.cleanup()
-                    return
-            
-            if conf.reaction:
-                asyncio.create_task(react(session, "✨"))
-            
-            core = get_hyw_core()
-            local_renderer = await get_content_renderer()
-            tab_task = asyncio.create_task(local_renderer.prepare_tab())
-            
-            # Collect screenshots for selected pages
-            screenshots = []
-            if indices:
-                # Screenshot mode: capture pages for selected indices
-                for idx in indices:
-                    if idx < len(cached.results):
-                        url = cached.results[idx].get("url", "")
-                        if url:
-                            b64_img = await core.screenshot(url)
-                            if b64_img:
-                                screenshots.append(b64_img)
-                
-                if not screenshots:
-                    try: await tab_task
-                    except: pass
-                    await session.send("无法截图所选页面")
-                    search_cache.cleanup()
-                    return
-                
-                user_query = f"总结关于 \"{cached.query}\" 的内容"
-            else:
-                # No indices - summarize based on cached snippets (no screenshots)
-                context_parts = []
-                for i, res in enumerate(cached.results[:10]):
-                    title = res.get("title", f"Result {i+1}")
-                    snippet = res.get("content", "") or res.get("snippet", "")
-                    context_parts.append(f"## {title}\n{snippet}")
-                
-                context_message = f"基于搜索 \"{cached.query}\" 的结果摘要回答用户问题:\n\n" + "\n\n".join(context_parts)
-                user_query = query_text if query_text else f"总结关于 \"{cached.query}\" 的搜索结果"
-            
-            # Build request with screenshots (if any)
-            if screenshots:
-                request = QueryRequest(
-                    user_input=user_query,
-                    images=screenshots,
-                    conversation_history=[],
-                    model_name=None,
-                )
-            else:
-                request = QueryRequest(
-                    user_input=f"{context_message}\n\n用户问题: {user_query}",
-                    images=[],
-                    conversation_history=[],
-                    model_name=None,
-                )
-            
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-                output_path = tf.name
-            
-            response = await core.query(request, output_path=None)
-            
-            try:
-                tab_id = await tab_task
-            except Exception:
-                tab_id = None
-            
-            if response.success and response.content:
-                render_ok = await core.render(
-                    markdown_content=response.content,
-                    output_path=output_path,
-                    stats={"total_time": response.total_time},
-                    references=[],
-                    page_references=[],
-                    tab_id=tab_id
-                )
-                
-                if render_ok and os.path.exists(output_path):
-                    with open(output_path, "rb") as f:
-                        img_data = base64.b64encode(f.read()).decode()
-                    
-                    msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
-                    if conf.quote:
-                        msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
-                    
-                    await session.send(msg_chain)
-                    os.remove(output_path)
+            # Extract current user query
+            if all_param:
+                if isinstance(all_param, MessageChain):
+                    current_query = str(all_param.get(Text)).strip()
                 else:
-                    await session.send(response.content[:500])
+                    current_query = str(all_param).strip()
             else:
-                await session.send(f"总结失败: {response.error or 'Unknown error'}")
-            
-            search_cache.cleanup()
-            return
-    
-    # === URL Mode: Direct URL Screenshot + Summarize ===
-    # Detect URL in query and handle directly without Agent
-    url_match = re.search(r'https?://\S+', query_text)
-    if url_match:
-        url = url_match.group(0)
-        # Extract user intent (text before/after URL)
-        user_intent = query_text.replace(url, '').strip()
-        if not user_intent:
-            user_intent = "总结这个页面的内容"
-        
-        if conf.reaction:
-            asyncio.create_task(react(session, "✨"))
-        
-        core = get_hyw_core()
-        local_renderer = await get_content_renderer()
-        
-        # Run screenshot and prepare tab in parallel
-        screenshot_task = asyncio.create_task(core.screenshot(url))
-        tab_task = asyncio.create_task(local_renderer.prepare_tab())
-        
-        # Send notification
-        short_url = url[:40] + "..." if len(url) > 40 else url
-        await session.send(f"📸 正在截图: {short_url}")
-        
-        b64_img = await screenshot_task
-        
-        if not b64_img:
-            try: await tab_task
-            except: pass
-            await session.send(f"❌ 截图失败: {url}")
-            return
-        
-        # Summarize with screenshot
-        request = QueryRequest(
-            user_input=f"{user_intent}\n\nURL: {url}",
-            images=[b64_img],
-            conversation_history=[],
-            model_name=None,
-        )
-        
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-            output_path = tf.name
-        
-        response = await core.query(request, output_path=None)
-        
-        try:
-            tab_id = await tab_task
-        except Exception:
-            tab_id = None
-        
-        if response.success and response.content:
-            render_ok = await core.render(
-                markdown_content=response.content,
-                output_path=output_path,
-                stats={"total_time": response.total_time},
-                references=[],
-                page_references=[{"url": url, "title": "截图页面", "raw_screenshot_b64": b64_img}],
-                tab_id=tab_id
-            )
-            
-            if render_ok and os.path.exists(output_path):
-                with open(output_path, "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode()
-                
-                msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
-                if conf.quote:
-                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
-                
-                await session.send(msg_chain)
-                os.remove(output_path)
-            else:
-                await session.send(response.content[:500])
-        else:
-            await session.send(f"总结失败: {response.error or 'Unknown error'}")
-        
-        return
-    
-    # === Filter Mode: Search + Find matching links + Summarize ===
-    # Only trigger filter syntax for short queries (≤20 chars, excluding URLs), otherwise use Agent
-    filters = []
-    filter_error = None
-    # Calculate length excluding URLs
-    query_without_urls = re.sub(r'https?://\S+', '', query_text).strip()
-    if len(query_without_urls) <= 20:
-        filters, search_query, filter_error = parse_filter_syntax(query_text, max_count=3)
-    
-    if filter_error:
-        await session.send(filter_error)
-        return
-    
-    if filters:
-        if conf.reaction:
-            asyncio.create_task(react(session, "✨"))
-        
-        core = get_hyw_core()
-        local_renderer = await get_content_renderer()
-        
-        # Send pre-notification BEFORE search
-        filter_desc = ", ".join([f[1] if f[0] != 'index' else f"第{f[1]}个" for f in filters])
-        await session.send(f"🔍 正在搜索 \"{search_query}\" 并匹配 [{filter_desc}]...")
-        
-        # Run search and prepare tab in parallel
-        search_task = asyncio.create_task(core.search([search_query]))
-        tab_task = asyncio.create_task(local_renderer.prepare_tab())
-        
-        results = await search_task
-        flat_results = results[0] if results else []
-        
-        if not flat_results:
-            try: await tab_task
-            except: pass
-            await session.send("Search returned no results.")
-            return
-        
-        visible = [r for r in flat_results if not r.get("_hidden", False)]
-        
-        # Collect URLs to screenshot
-        urls_to_screenshot = []
-        for filter_type, filter_value, count in filters:
-            if filter_type == 'index':
-                idx = filter_value - 1
-                if 0 <= idx < len(visible):
-                    url = visible[idx].get("url", "")
-                    if url and url not in urls_to_screenshot:
-                        urls_to_screenshot.append(url)
-                else:
-                    try: await tab_task
-                    except: pass
-                    await session.send(f"⚠️ 序号 {filter_value} 超出范围 (1-{len(visible)})")
-                    return
-            else:
-                found_count = 0
-                for res in visible:
-                    url = res.get("url", "")
-                    title = res.get("title", "")
-                    # Match filter against both URL and title
-                    if (filter_value in url.lower() or filter_value in title.lower()) and url not in urls_to_screenshot:
-                        urls_to_screenshot.append(url)
-                        found_count += 1
-                        if found_count >= count:
-                            break
-                
-                if found_count == 0:
-                    try: await tab_task
-                    except: pass
-                    await session.send(f"⚠️ 未找到包含 \"{filter_value}\" 的链接")
-                    return
-        
-        if not urls_to_screenshot:
-            try: await tab_task
-            except: pass
-            await session.send("⚠️ 未找到匹配的链接")
-            return
-        
-        # Take screenshots with content extraction
-        screenshot_tasks = [core.screenshot_with_content(url) for url in urls_to_screenshot]
-        screenshot_results = await asyncio.gather(*screenshot_tasks)
-        
-        # Build page references for rendering (with screenshots)
-        # and collect text content for LLM
-        page_references = []
-        text_contents = []
-        successful_count = 0
-        
-        for url, result in zip(urls_to_screenshot, screenshot_results):
-            if isinstance(result, dict) and result.get("screenshot_b64"):
-                successful_count += 1
-                page_references.append({
-                    "url": url,
-                    "title": result.get("title", "截图页面"),
-                    "raw_screenshot_b64": result.get("screenshot_b64"),
-                })
-                # Collect text for LLM
-                content = result.get("content", "")
-                if content:
-                    text_contents.append(f"## 来源: {result.get('title', url)}\n\n{content}")
-        
-        if not page_references:
-            try: await tab_task
-            except: pass
-            await session.send("无法截图页面")
-            return
-        
-        # Send result notification
-        await session.send(f"🔍 搜索 \"{search_query}\" 并截图 {successful_count} 个匹配结果")
-        
-        # Pass TEXT content to LLM for summarization (not images)
-        combined_content = "\n\n---\n\n".join(text_contents) if text_contents else "无法提取网页内容"
-        user_query = f"总结关于 \"{search_query}\" 的内容。\n\n网页内容:\n{combined_content[:8000]}"
-        
-        request = QueryRequest(
-            user_input=user_query,
-            images=[],  # No images, use text content instead
-            conversation_history=[],
-            model_name=None,
-        )
-        
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
-            output_path = tf.name
-        
-        response = await core.query(request, output_path=None)
-        
-        try:
-            tab_id = await tab_task
-        except Exception:
-            tab_id = None
-        
-        if response.success and response.content:
-            render_ok = await core.render(
-                markdown_content=response.content,
-                output_path=output_path,
-                stats={"total_time": response.total_time},
-                references=[],
-                page_references=page_references,  # Pass screenshots for rendering
-                tab_id=tab_id
-            )
-            
-            if render_ok and os.path.exists(output_path):
-                with open(output_path, "rb") as f:
-                    img_data = base64.b64encode(f.read()).decode()
-                
-                msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
-                if conf.quote:
-                    msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
-                
-                await session.send(msg_chain)
-                os.remove(output_path)
-            else:
-                await session.send(response.content[:500])
-        else:
-            await session.send(f"总结失败: {response.error or 'Unknown error'}")
-        
-        return
-    
-    # Normal query mode (no cache context)
-    await process_request(session, all_param)
+                current_query = ""
+
+            # If empty query, assume request for summary
+            if not current_query:
+                current_query = "请详细总结上述搜索结果"
+
+            # Build full context from cached results
+            context_parts = []
+            for i, res in enumerate(cached.results):
+                title = res.get("title", f"Result {i+1}")
+                url = res.get("url", "")
+                content = res.get("content", "") or res.get("snippet", "")
+                context_parts.append(f"## [{i+1}] {title}\nURL: {url}\n\n{content}")
+
+            full_context = "\n\n".join(context_parts)
+
+            # Construct augmented prompt
+            new_prompt = f"基于以下搜索结果回答问题:\n\n【搜索上下文】\nSearch Query: {cached.query}\n\n{full_context}\n\n【用户问题】\n{current_query}"
+
+            # Use MessageChain with Text for compatibility
+            # This injects the search context into the prompt while maintaining the 'reply' link in history
+            all_param = MessageChain(Text(new_prompt))
+
+            # Log for debug
+            logger.info(f"Injecting search context from message {reply_msg_id} into query")
+
+    # Normal query mode (Standard Agentic Chat)
+    # Register task for cancellation
+    msg_id = str(session.event.message.id) if hasattr(session.event, 'message') else str(session.event.id)
+    task = asyncio.create_task(process_request(session, all_param))
+
+    # Define cleanup to close potential tabs (handled inside process_request but good to have backup)
+    # process_request handles its own cleanup, but we need to track the task itself
+    _task_manager.register(msg_id, task)
+
+    try:
+        await task
+    except asyncio.CancelledError:
+        logger.info(f"Task {msg_id} cancelled by user")
+        await session.send("❌ 任务已停止")
+    except Exception as e:
+        logger.error(f"Task failed: {e}")
+    finally:
+        _task_manager.unregister(msg_id)
 
 
 # Search/Web Command (/w)
@@ -975,13 +743,8 @@ async def handle_help_command(session: Session[MessageCreatedEvent], result: Arp
 Question Agent:
   • {conf.question_command} tell me...
   • {conf.question_command} [picture] tell me...
-  • [quote] {conf.question_command} tell me...
-Question Filter:
-  • {conf.question_command} github: fastapi
-  • {conf.question_command} 1,2: minecraft
-  • {conf.question_command} mcmod=2: forge mod
-Question Context:
-  • [quote: question] + {conf.question_command} tell me more...
+Stop Task:
+  • {conf.stop_command} (reply to the question/web command)
 Web_tool Search:
   • {conf.web_command} query
 Web_tool Screenshot:
@@ -993,12 +756,31 @@ Web_tool Filter(search and screenshot):
 Web_tool Context(screenshot):
   • [quote: web_tool search] + {conf.web_command} 1
   • [quote: web_tool search] + {conf.web_command} 1, 3
-Web_tool Context(question):
-  • [quote: web_tool screenshot] + {conf.question_command} tell me...
-  • [quote: web_tool search] + {conf.question_command} tell me...
 """
-    
+
     await session.send(help_text)
+
+# Stop command (/x)
+alc_stop = Alconna(conf.stop_command)
+
+@command.on(alc_stop)
+async def handle_stop_command(session: Session[MessageCreatedEvent], result: Arparma):
+    """Stop a running task by replying to the original command message."""
+    if not session.reply or not hasattr(session.reply.origin, 'id'):
+        await session.send("请回复正在执行的任务消息以停止它")
+        return
+
+    target_msg_id = str(session.reply.origin.id)
+
+    if await _task_manager.cancel(target_msg_id):
+        # Determine notification based on reaction config
+        if conf.reaction:
+             asyncio.create_task(react(session, "🛑"))
+        else:
+             await session.send("正在停止任务...")
+    else:
+        await session.send("未找到可停止的任务或任务已结束")
+
 
 @listen(CommandReceive)
 async def remove_at(content: MessageChain):

@@ -914,6 +914,49 @@ class ScreenshotService:
                 try: tab.close()
                 except: pass
 
+
+    async def execute_script(self, script: str) -> Dict[str, Any]:
+        """
+        Execute JavaScript in the current active page context.
+        This reuses the shared browser instance.
+        """
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._executor,
+            self._execute_script_sync,
+            script
+        )
+
+    def _execute_script_sync(self, script: str) -> Dict[str, Any]:
+        """Synchronous JS execution."""
+        try:
+            self._ensure_ready()
+            page = self._manager.page
+            if not page:
+                return {"success": False, "error": "Browser not available"}
+
+            # Get current active tab or first tab
+            # Fix: ChromiumPage object has no attribute 'tabs'
+            # We use the page object itself as it represents the active tab controller
+            tab = page
+            if not tab:
+                return {"success": False, "error": "No active tab"}
+
+            logger.info(f"ScreenshotService: Executing JS on {tab.url}")
+
+            # Execute JS
+            result = tab.run_js(script)
+
+            return {
+                "success": True,
+                "result": result,
+                "url": tab.url,
+                "title": tab.title
+            }
+        except Exception as e:
+            logger.error(f"ScreenshotService: JS execution failed: {e}")
+            return {"success": False, "error": str(e)}
+
     async def close(self):
         self._executor.shutdown(wait=False)
         logger.info("ScreenshotService: Closed.")

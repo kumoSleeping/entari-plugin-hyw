@@ -15,7 +15,7 @@ from typing import Any, Callable, Awaitable, Dict, List, Optional
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .definitions import get_web_tool, get_refuse_answer_tool, AGENT_SYSTEM_PROMPT
+from .definitions import get_web_tool, get_refuse_answer_tool, get_js_tool, AGENT_SYSTEM_PROMPT
 from .stages.base import StageContext, StageResult
 from .search import SearchService
 
@@ -209,8 +209,19 @@ class AgentPipeline:
         
         session.messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_content}
         ]
+
+        # Add conversation history (previous turns) before current user message
+        # This enables continuous conversation context
+        if conversation_history:
+            for msg in conversation_history:
+                role = msg.get("role", "")
+                content = msg.get("content", "")
+                if role in ("user", "assistant") and content:
+                    session.messages.append({"role": role, "content": content})
+
+        # Add current user message
+        session.messages.append({"role": "user", "content": user_content})
         
         # Add image source hint for user images
         if user_image_count > 0:
@@ -223,8 +234,9 @@ class AgentPipeline:
         # Tool definitions
         web_tool = get_web_tool()
         refuse_tool = get_refuse_answer_tool()
-        tools = [web_tool, refuse_tool]
-        
+        js_tool = get_js_tool()
+        tools = [web_tool, refuse_tool, js_tool]
+
         usage_totals = {"input_tokens": 0, "output_tokens": 0}
         final_content = ""
         
@@ -429,7 +441,10 @@ class AgentPipeline:
                 if func_name == "web_tool":
                     tasks_to_run.append(self._execute_web_tool(tool_call_args_list[idx], context))
                     task_indices.append(idx)
-            
+                elif func_name == "js_executor":
+                    tasks_to_run.append(self._execute_js_tool(tool_call_args_list[idx], context))
+                    task_indices.append(idx)
+
             # Run all web_tool calls in parallel
             if tasks_to_run:
                 results = await asyncio.gather(*tasks_to_run, return_exceptions=True)
@@ -647,6 +662,59 @@ class AgentPipeline:
             "screenshot_count": 0
         }
     
+    async def _execute_js_tool(self, args: Dict, context: StageContext) -> Dict[str, Any]:
+        """执行 JS 代码工具"""
+        script = args.get("script", "")
+        if not script:
+             return {"summary": "JS执行失败: 代码为空", "results": []}
+
+        if self.send_func:
+            try:
+                await self.send_func("💻 正在执行JavaScript代码...")
+            except: pass
+
+        logger.info(f"AgentPipeline: Executing JS script: {script[:50]}...")
+        result = await self.search_service.execute_script(script)
+
+        # 格式化结果
+        success = result.get("success", False)
+        output = result.get("result", None)
+        error = result.get("error", None)
+        url = result.get("url", "")
+        title = result.get("title", "")
+
+        # Add to context
+        context.web_results.append({
+            "_id": context.next_id(),
+            "_type": "js_result",
+            "url": url,
+            "title": title or "JS Execution",
+            "script": script,
+            "output": str(output) if success else str(error),
+            "success": success,
+            "content": f"Script: {script}\n\nOutput: {output}" if success else f"Error: {error}"
+        })
+
+        if success:
+            summary = f"JS执行成功 (返回: {str(output)[:50]}...)"
+            return {
+                "summary": summary,
+                "results": [{"_type": "js_result", "url": url}],
+                "screenshot_count": 0,
+                "full_output": str(output),  # Return full output for LLM
+                "success": True
+            }
+        else:
+            return {
+                "summary": f"JS执行失败: {str(error)[:50]}",
+                "results": [],
+                "screenshot_count": 0,
+                "full_output": f"JS Execution Failed: {error}",
+                "success": False,
+                "error": str(error)
+            }
+
+
     def _collect_filter_urls(self, filters: List, visible: List[Dict]) -> List[str]:
         """Collect URLs based on filter specifications."""
         urls = []
@@ -729,22 +797,51 @@ class AgentPipeline:
                 "cost": instruct_cost,
             })
         
-        # 2. Search Stage (搜索)
+        # 2. Search Stage (搜索) / Browser JS Stage
         if session.tool_calls:
-            # Collect all search descriptions
+            # Collect all search descriptions and check for JS executor calls
             search_descriptions = []
+            js_calls = []
+
             for tc, result in zip(session.tool_calls, session.tool_results):
-                desc = result.get("summary", "")
-                if desc:
-                    search_descriptions.append(desc)
-            
-            stages.append({
-                "name": "Search",
-                "model": "",
-                "provider": "Web",
-                "description": " → ".join(search_descriptions) if search_descriptions else "Web Search",
-                "time": session.search_time,
-            })
+                if tc.get("name") == "js_executor":
+                    # Collect JS execution info
+                    js_calls.append({
+                        "script": tc.get("args", {}).get("script", ""),
+                        "output": result.get("full_output", result.get("summary", "")),
+                        "url": result.get("results", [{}])[0].get("url", "") if result.get("results") else "",
+                        "success": result.get("success", True), # Default to True if not present
+                        "error": result.get("error", "")
+                    })
+                else:
+                    desc = result.get("summary", "")
+                    if desc:
+                        search_descriptions.append(desc)
+
+            # Add Search stage if there are search calls
+            if search_descriptions:
+                stages.append({
+                    "name": "Search",
+                    "model": "",
+                    "provider": "Web",
+                    "description": " → ".join(search_descriptions),
+                    "time": session.search_time,
+                })
+
+            # Add Browser JS stage for each JS call
+            for js_call in js_calls:
+                stages.append({
+                    "name": "browser_js",
+                    "model": "",
+                    "provider": "Browser",
+                    "description": "JavaScript Execution",
+                    "script": js_call["script"],
+                    "output": js_call["output"],
+                    "url": js_call["url"],
+                    "success": js_call.get("success"),
+                    "error": js_call.get("error"),
+                    "time": 0,  # JS execution time is included in search_time
+                })
         
         # 3. Summary Stage (总结)
         # Calculate remaining tokens after instruct

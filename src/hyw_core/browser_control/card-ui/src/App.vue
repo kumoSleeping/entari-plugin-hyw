@@ -136,6 +136,16 @@ const stripPrefixBeforeH1 = (text: string): string => {
   return text
 }
 
+// Helper to clean up JS execution context path
+const getJsContextDisplay = (url?: string): string => {
+  if (!url) return 'JavaScript Execution'
+  // Hide local paths
+  if (url.includes('Users') || url.includes('/home/') || url.startsWith('file://')) {
+     return 'VM Context'
+  }
+  return getDomain(url)
+}
+
 // Reorder citations and return cleaned markdown + reordered refs
 const reorderedData = computed(() => {
   const originalMd = stripPrefixBeforeH1(data.value?.markdown || '')
@@ -308,6 +318,32 @@ const visionStage = computed(() => data.value?.stages?.find(s => s.name === 'Vis
 
 const summaryStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'summary' || s.name?.toLowerCase() === 'agent'))
 const searchStage = computed(() => data.value?.stages?.find(s => s.name?.toLowerCase() === 'search'))
+
+// Browser JS Driver stage (for js_executor tool results)
+const browserJsStage = computed(() => data.value?.stages?.find(s =>
+  s.name?.toLowerCase() === 'browser' ||
+  s.name?.toLowerCase() === 'js_executor' ||
+  s.name?.toLowerCase() === 'browser_js'
+))
+
+// Truncate code for display (max lines and chars)
+const truncateCode = (code: string, maxLines: number = 8, maxChars: number = 500): string => {
+  if (!code) return ''
+  let result = code.trim()
+
+  // Truncate by characters first
+  if (result.length > maxChars) {
+    result = result.substring(0, maxChars) + '\n... (truncated)'
+  }
+
+  // Then truncate by lines
+  const lines = result.split('\n')
+  if (lines.length > maxLines) {
+    result = lines.slice(0, maxLines).join('\n') + '\n... (' + (lines.length - maxLines) + ' more lines)'
+  }
+
+  return result
+}
 
 // Collect all extracted images from references
 const galleryImages = computed(() => {
@@ -723,7 +759,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
         </div>
 
         <!-- Flow: Unified Stage Info Area -->
-        <div v-if="searchStage || instructStage || summaryStage || visionStage || toolsStage" class="relative group/flow">
+        <div v-if="searchStage || instructStage || summaryStage || visionStage || toolsStage || browserJsStage" class="relative group/flow">
             <!-- Corner Badge -->
             <div 
               class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
@@ -826,13 +862,45 @@ The system automatically handles citations like [1] and [2], reordering them dyn
                     <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Tools</div>
                     <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full" style="color: var(--text-muted)">
                       <span class="truncate max-w-[180px]">System Execution</span>
-                      
+
                       <div class="flex items-center gap-4 shrink-0">
                         <div class="flex items-center gap-1.5 opacity-80">
                           <Icon icon="mdi:clock-outline" class="text-[13px]" />
                           <span>{{ (toolsStage.time || 0).toFixed(2) }}s</span>
                         </div>
                       </div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Browser JS Driver Stage -->
+                <div v-if="browserJsStage" class="relative flex items-start gap-4 z-10 w-full">
+                  <!-- Node: Icon -->
+                  <div class="shrink-0 w-6 h-6 flex items-center justify-center bg-white" style="color: var(--theme-color)">
+                     <Icon icon="mdi:language-javascript" class="w-5 h-5" />
+                  </div>
+                  <!-- Content -->
+                  <div class="flex-1 min-w-0 pt-1">
+                    <div class="text-[17px] font-bold uppercase tracking-tight mb-1.5 leading-none" style="color: var(--text-primary)">Browser JS Driver</div>
+                    <div class="flex items-center justify-between gap-x-4 text-[13px] font-mono leading-tight w-full mb-2" style="color: var(--text-muted)">
+                      <span class="truncate max-w-[180px]">{{ getJsContextDisplay(browserJsStage.url) }}</span>
+
+                      <div class="flex items-center gap-4 shrink-0">
+                        <div v-if="browserJsStage.time" class="flex items-center gap-1.5 opacity-80">
+                          <Icon icon="mdi:clock-outline" class="text-[13px]" />
+                          <span>{{ browserJsStage.time.toFixed(2) }}s</span>
+                        </div>
+                      </div>
+                    </div>
+                    <!-- Input Code Block -->
+                    <div v-if="browserJsStage.script" class="mt-2">
+                      <div class="text-[11px] font-bold uppercase tracking-wide mb-1" style="color: var(--text-muted)">Input</div>
+                      <pre class="text-[11px] font-mono bg-gray-100 p-2 rounded overflow-x-auto max-h-24 overflow-y-auto" style="color: var(--text-body)"><code>{{ truncateCode(browserJsStage.script, 6, 300) }}</code></pre>
+                    </div>
+                    <!-- Output Code Block -->
+                    <div v-if="browserJsStage.output" class="mt-2">
+                      <div class="text-[11px] font-bold uppercase tracking-wide mb-1" style="color: var(--text-muted)">Output</div>
+                      <pre class="text-[11px] font-mono bg-gray-100 p-2 rounded overflow-x-auto max-h-24 overflow-y-auto" style="color: var(--text-body)"><code>{{ truncateCode(browserJsStage.output, 6, 300) }}</code></pre>
                     </div>
                   </div>
                 </div>

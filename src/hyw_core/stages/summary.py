@@ -13,7 +13,7 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from .base import BaseStage, StageContext, StageResult
-from ..definitions import SUMMARY_REPORT_SP, get_refuse_answer_tool
+from ..definitions import SUMMARY_REPORT_SP, IMAGE_CONTEXT_TEMPLATE, get_refuse_answer_tool
 
 
 class SummaryStage(BaseStage):
@@ -52,9 +52,9 @@ class SummaryStage(BaseStage):
         # Build user content
         user_text = context.user_input or "..."
         if images:
-            # Add image context message for multimodal input
-            image_context = f"[System: The user has provided {len(images)} image(s). Please analyze these images together with the text query to provide a comprehensive response.]"
-            user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"{image_context}\n\n{user_text}"}]
+            # 构建智能图文融合指导
+            image_context = IMAGE_CONTEXT_TEMPLATE.format(image_count=len(images))
+            user_content: List[Dict[str, Any]] = [{"type": "text", "text": f"{image_context}{user_text}"}]
             for img_b64 in images:
                 url = f"data:image/jpeg;base64,{img_b64}" if not img_b64.startswith("data:") else img_b64
                 user_content.append({"type": "image_url", "image_url": {"url": url}})
@@ -77,22 +77,49 @@ class SummaryStage(BaseStage):
         
         model = model_cfg.model_name or self.config.model_name
         
-        try:
-            response = await client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=self.config.temperature,
-
-                extra_body=getattr(self.config, "summary_extra_body", None),
-                tools=[refuse_tool],
-                tool_choice="auto",
-            )
-        except Exception as e:
-            logger.error(f"SummaryStage LLM error: {e}")
+        # Retry logic for API calls
+        max_retries = 2
+        response = None
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=self.config.temperature,
+                    extra_body=getattr(self.config, "summary_extra_body", None),
+                    tools=[refuse_tool],
+                    tool_choice="auto",
+                )
+                
+                # Check for valid response
+                if response.choices:
+                    break  # Success, exit retry loop
+                
+                # Empty choices - log and retry
+                logger.warning(f"SummaryStage: Empty choices response (attempt {attempt + 1}/{max_retries + 1}). Response: {response}")
+                last_error = "Invalid API response: no choices returned"
+                
+                if attempt < max_retries:
+                    import asyncio
+                    await asyncio.sleep(1)  # Wait 1 second before retry
+                    
+            except Exception as e:
+                logger.error(f"SummaryStage LLM error (attempt {attempt + 1}/{max_retries + 1}): {e}")
+                last_error = str(e)
+                
+                if attempt < max_retries:
+                    import asyncio
+                    await asyncio.sleep(1)  # Wait 1 second before retry
+        
+        # Check if we got a valid response after retries
+        if not response or not response.choices:
+            logger.error(f"SummaryStage: All retries exhausted. Last error: {last_error}")
             return StageResult(
                 success=False,
-                error=str(e),
-                data={"content": f"Error generating summary: {e}"}
+                error=last_error or "Invalid API response after retries",
+                data={"content": f"Error: {last_error or 'API returned invalid response after retries'}"}
             )
         
         usage = {"input_tokens": 0, "output_tokens": 0}

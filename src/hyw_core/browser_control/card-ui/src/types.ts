@@ -18,6 +18,18 @@ export interface Stage {
     llm_time?: number   // Time spent in LLM processing
     tool_time?: number  // Time spent in Tool execution
     tool_calls?: number // Number of tool calls
+
+    // Browser JS Driver specific
+    url?: string
+    script?: string
+    output?: string
+    js_results?: Array<{
+        script: string;
+        output: string;
+        url?: string;
+        success?: boolean;
+        error?: string;
+    }>
 }
 
 export interface Reference {

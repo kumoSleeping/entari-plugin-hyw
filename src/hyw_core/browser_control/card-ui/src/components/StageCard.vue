@@ -184,6 +184,28 @@ function getModelLogo(model: string): string | undefined {
                 </div>
             </div>
 
+            <!-- JS Execution Results -->
+            <div v-if="stage.js_results?.length && !hideRefs" class="pr-3 py-3 relative z-10 border-b border-gray-50 last:border-0">
+                <div v-for="(js, idx) in stage.js_results" :key="idx" class="flex flex-col gap-2 mb-3 last:mb-0">
+                    <div class="flex items-start gap-2.5">
+                        <div class="w-4 h-4 rounded-sm border border-yellow-500 flex items-center justify-center shrink-0 mt-0.5 bg-yellow-50">
+                             <Icon icon="mdi:code-braces" class="text-[10px] text-yellow-600" />
+                        </div>
+                        <div class="flex-1 min-w-0">
+                             <div class="text-[15px] font-bold text-gray-700 leading-tight">JS Execution</div>
+                             <div v-if="js.script" class="text-[13px] font-mono text-gray-500 truncate mt-0.5">{{ js.script }}</div>
+                        </div>
+                        <div v-if="js.success" class="text-[11px] font-bold text-green-600 bg-green-50 px-1.5 py-0.5 rounded uppercase">Success</div>
+                        <div v-else class="text-[11px] font-bold text-red-600 bg-red-50 px-1.5 py-0.5 rounded uppercase">Failed</div>
+                    </div>
+
+                    <!-- Output/Error Display -->
+                    <div class="ml-6.5 p-2 bg-gray-900 text-gray-300 font-mono text-[12px] leading-relaxed rounded overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] scrollbar-thin">
+                        {{ js.output || js.error || '(No output)' }}
+                    </div>
+                </div>
+            </div>
+
             <!-- Image Search Results - True Masonry Layout -->
             <div v-if="stage.image_references?.length && !hideRefs" class="pr-3 py-3 relative z-10">
               <div class="flex gap-2">
