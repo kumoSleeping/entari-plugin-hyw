@@ -2,7 +2,7 @@
 Agent Pipeline
 
 Tool-calling agent that can autonomously use web_tool to search/screenshot.
-Maximum 2 rounds of tool calls, up to 3 parallel calls per round.
+Maximum 3 rounds of tool calls, up to 3 parallel calls per round.
 """
 
 import asyncio
@@ -53,8 +53,8 @@ class AgentSession:
     
     @property
     def should_force_summary(self) -> bool:
-        """Force summary after 2 rounds of tool calls."""
-        return self.round_count >= 2
+        """Force summary after 3 rounds of tool calls."""
+        return self.round_count >= 3
 
 
 def parse_filter_syntax(query: str, max_count: int = 3):
@@ -135,11 +135,11 @@ class AgentPipeline:
     Flow:
     1. 用户输入 → LLM (with tools)
     2. If tool_call: execute all tools in parallel → notify user with batched message → loop
-    3. If call_count >= 2 rounds: force summary on next call
+    3. If call_count >= 3 rounds: force summary on next call
     4. Return final content
     """
     
-    MAX_TOOL_ROUNDS = 2  # Maximum rounds of tool calls
+    MAX_TOOL_ROUNDS = 3  # Maximum rounds of tool calls
     MAX_PARALLEL_TOOLS = 3  # Maximum parallel tool calls per round
     MAX_LLM_RETRIES = 3  # Maximum retries for empty API responses
     LLM_RETRY_DELAY = 1.0  # Delay between retries in seconds
@@ -243,7 +243,7 @@ class AgentPipeline:
         # Send initial status notification
         if self.send_func:
             try:
-                await self.send_func("💭 正在理解用户意图...")
+                await self.send_func("💭 何意味...")
             except Exception as e:
                 logger.warning(f"AgentPipeline: Failed to send initial notification: {e}")
         

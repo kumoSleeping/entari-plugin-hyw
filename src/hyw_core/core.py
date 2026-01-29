@@ -301,28 +301,20 @@ class HywCore:
             
             # Build visible results list (excluding hidden items)
             visible_results = [r for r in web_results if not r.get("_hidden")]
-            
-            # Parse markdown to find which citations are used (pattern: [number])
-            citation_pattern = re.compile(r'\[(\d+)\]')
-            cited_ids = set()
-            for match in citation_pattern.finditer(content):
-                cited_ids.add(int(match.group(1)))
-            
-            # Only include cited references, in order of first appearance
+
+            # Pass ALL visible results to frontend so [N] citations map correctly to N-th item
+            # App.vue handles reordering used vs unused citations
             references = []
-            for idx in sorted(cited_ids):
-                # idx is 1-based in markdown
-                if 1 <= idx <= len(visible_results):
-                    r = visible_results[idx - 1]
-                    references.append({
-                        "title": r.get("title", ""),
-                        "url": r.get("url", ""),
-                        "snippet": r.get("content", "")[:300] if r.get("content") else "",
-                        "images": r.get("images", []),
-                        "is_fetched": r.get("_type") == "page",
-                        "raw_screenshot_b64": r.get("screenshot_b64"),
-                    })
-            
+            for r in visible_results:
+                references.append({
+                    "title": r.get("title", ""),
+                    "url": r.get("url", ""),
+                    "snippet": r.get("content", "")[:300] if r.get("content") else "",
+                    "images": r.get("images", []),
+                    "is_fetched": r.get("_type") == "page",
+                    "raw_screenshot_b64": r.get("screenshot_b64"),
+                })
+
             # Build response
             response = QueryResponse(
                 success=True,

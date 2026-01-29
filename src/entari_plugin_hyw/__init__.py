@@ -43,7 +43,7 @@ from .misc import (
     RecentEventDeduper,
 )
 from .filters import parse_filter_syntax
-from .search_cache import SearchResultCache, parse_single_index, parse_multi_indices
+from .search_cache import SearchResultCache, parse_single_index, parse_multi_indices, crop_to_square_thumbnail
 
 
 try:
@@ -305,6 +305,22 @@ async def process_request(
             await session.send(f"Error: {response.error}")
             return
         else:
+            # Process screenshots: cache full images and create thumbnails
+            for ref in response.references:
+                if ref.get("raw_screenshot_b64"):
+                    full_b64 = ref["raw_screenshot_b64"]
+                    url = ref.get("url", "")
+
+                    # Cache full screenshot
+                    cache_id = search_cache.store_screenshot(full_b64, url)
+                    ref["screenshot_cache_id"] = cache_id
+
+                    # Create thumbnail (1:1 crop from top)
+                    thumbnail = crop_to_square_thumbnail(full_b64, max_size=400)
+                    if thumbnail:
+                        ref["raw_screenshot_b64"] = thumbnail
+                        ref["is_thumbnail"] = True
+
             # 3. Explicit External Render using the Parallel Tab
             render_ok = await core.render(
                 markdown_content=response.content,
@@ -476,37 +492,148 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
     if session.reply and hasattr(session.reply.origin, 'id'):
         reply_msg_id = str(session.reply.origin.id)
     
-    # Quote + Index mode: Screenshot specific cached result
+    # Quote + Index mode: Screenshot specific cached result(s)
     if reply_msg_id:
         cached = search_cache.get(reply_msg_id)
         if cached:
-            # Parse index from query
+            # Case 1: No query - show all results as Sources card
+            if not query:
+                local_renderer = await get_content_renderer()
+                tab_task = asyncio.create_task(local_renderer.prepare_tab())
+
+                # Build references from cached results
+                references = []
+                for i, res in enumerate(cached.results[:10]):
+                    references.append({
+                        "title": res.get("title", f"Result {i+1}"),
+                        "url": res.get("url", ""),
+                        "snippet": res.get("content", "") or res.get("snippet", ""),
+                        "original_idx": i + 1,
+                    })
+
+                try:
+                    tab_id = await tab_task
+                except Exception:
+                    tab_id = None
+
+                with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
+                    output_path = tf.name
+
+                core = get_hyw_core()
+                render_ok = await core.render(
+                    markdown_content=f"# 搜索结果: {cached.query}",
+                    output_path=output_path,
+                    stats={"total_time": 0},
+                    references=references,
+                    page_references=[],
+                    stages_used=[{"name": "cache", "description": f"缓存结果 ({len(references)} 条)", "time": 0}],
+                    tab_id=tab_id
+                )
+
+                if render_ok and os.path.exists(output_path):
+                    with open(output_path, "rb") as f:
+                        img_data = base64.b64encode(f.read()).decode()
+
+                    msg_chain = MessageChain(Image(src=f'data:image/png;base64,{img_data}'))
+                    if conf.quote:
+                        msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+
+                    sent = await session.send(msg_chain)
+
+                    # Re-cache with new message ID for chaining
+                    sent_id = next((str(e.id) for e in sent if hasattr(e, 'id')), None) if sent else None
+                    if sent_id:
+                        search_cache.store(sent_id, cached.results[:10], cached.query)
+
+                    os.remove(output_path)
+                else:
+                    await session.send("渲染搜索结果失败")
+
+                search_cache.cleanup()
+                return
+
+            # Case 2: Multi-index mode - try parsing multiple indices first
+            indices = parse_multi_indices(query)
+            if indices is not None:
+                # Validate all indices
+                invalid_indices = [i + 1 for i in indices if i >= len(cached.results)]
+                if invalid_indices:
+                    await session.send(f"序号超出范围: {invalid_indices} (最大: {len(cached.results)})")
+                    search_cache.cleanup()
+                    return
+
+                # Collect URLs to screenshot
+                urls_to_screenshot = []
+                for idx in indices:
+                    target_url = cached.results[idx].get("url", "")
+                    if target_url and target_url not in urls_to_screenshot:
+                        urls_to_screenshot.append(target_url)
+
+                if not urls_to_screenshot:
+                    await session.send("所选结果无有效URL")
+                    search_cache.cleanup()
+                    return
+
+                if conf.reaction:
+                    asyncio.create_task(react(session, "📸"))
+
+                core = get_hyw_core()
+                screenshot_results = await core.screenshot_batch(urls_to_screenshot)
+
+                images = [Image(src=f'data:image/jpeg;base64,{b64}') for b64 in screenshot_results if b64]
+
+                if images:
+                    msg_chain = MessageChain(images)
+                    if conf.quote:
+                        msg_chain = MessageChain(Quote(session.event.message.id)) + msg_chain
+                    await session.send(msg_chain)
+                else:
+                    await session.send("截图失败")
+
+                search_cache.cleanup()
+                return
+
+            # Case 3: Single index fallback
             idx = parse_single_index(query)
             if idx is None:
                 # No valid index - show prompt
-                await session.send("请指定序号 (1-10)")
+                await session.send("请指定序号，如: /w 1 或 /w 2、3")
                 search_cache.cleanup()  # Lazy cleanup
                 return
-            
+
             if idx >= len(cached.results):
                 await session.send(f"序号超出范围 (1-{len(cached.results)})")
                 search_cache.cleanup()
                 return
-            
-            # Screenshot the cached URL
+
+            # Screenshot the cached URL - check if already cached first
             target_result = cached.results[idx]
             target_url = target_result.get("url", "")
+            screenshot_cache_id = target_result.get("screenshot_cache_id")
+
             if not target_url:
                 await session.send("该结果无有效URL")
                 search_cache.cleanup()
                 return
-            
-            if conf.reaction:
-                asyncio.create_task(react(session, "📸"))
-            
-            core = get_hyw_core()
-            b64_img = await core.screenshot(target_url)
-            
+
+            # Try to get from cache first
+            b64_img = None
+            if screenshot_cache_id:
+                b64_img = search_cache.get_screenshot(screenshot_cache_id)
+                if b64_img:
+                    logger.info(f"/w using cached screenshot: {screenshot_cache_id}")
+
+            # Fetch if not in cache
+            if not b64_img:
+                if conf.reaction:
+                    asyncio.create_task(react(session, "📸"))
+
+                core = get_hyw_core()
+                b64_img = await core.screenshot(target_url)
+            else:
+                if conf.reaction:
+                    asyncio.create_task(react(session, "✨"))
+
             if b64_img:
                 msg_chain = MessageChain(Image(src=f'data:image/jpeg;base64,{b64_img}'))
                 if conf.quote:
@@ -514,7 +641,7 @@ async def handle_web_command(session: Session[MessageCreatedEvent], result: Arpa
                 await session.send(msg_chain)
             else:
                 await session.send(f"截图失败: {target_url}")
-            
+
             search_cache.cleanup()
             return
         else:

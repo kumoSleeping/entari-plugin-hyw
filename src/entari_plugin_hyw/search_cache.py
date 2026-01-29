@@ -6,8 +6,12 @@ deep query operations on search results.
 """
 
 import time
+import base64
+import io
 from dataclasses import dataclass, field
 from typing import Dict, List, Any, Optional
+
+from loguru import logger
 
 
 @dataclass
@@ -18,21 +22,31 @@ class CacheEntry:
     timestamp: float = field(default_factory=time.time)
 
 
+@dataclass
+class ScreenshotCacheEntry:
+    """A cached full screenshot."""
+    screenshot_b64: str
+    url: str
+    timestamp: float = field(default_factory=time.time)
+
+
 class SearchResultCache:
     """
     In-memory cache for search results with TTL-based expiration.
-    
+
     Cleanup is lazy - performed at the end of each request.
     """
-    
+
     def __init__(self, ttl_seconds: float = 600.0):  # 10 minutes default
         self._cache: Dict[str, CacheEntry] = {}
+        self._screenshot_cache: Dict[str, ScreenshotCacheEntry] = {}  # screenshot_id -> full screenshot
+        self._screenshot_counter: int = 0
         self.ttl_seconds = ttl_seconds
-    
+
     def store(self, message_id: str, results: List[Dict[str, Any]], query: str):
         """
         Store search results associated with a message ID.
-        
+
         Args:
             message_id: The sent message ID that contains the search results image
             results: List of search result dicts with url, title, content, etc.
@@ -43,28 +57,65 @@ class SearchResultCache:
             query=query,
             timestamp=time.time()
         )
-    
+
     def get(self, message_id: str) -> Optional[CacheEntry]:
         """
         Get cached search results for a message ID.
-        
+
         Returns None if not found or expired.
         """
         entry = self._cache.get(message_id)
         if entry is None:
             return None
-        
+
         # Check expiration
         if time.time() - entry.timestamp > self.ttl_seconds:
             del self._cache[message_id]
             return None
-        
+
         return entry
-    
+
+    def store_screenshot(self, screenshot_b64: str, url: str) -> str:
+        """
+        Store a full screenshot and return its cache ID.
+
+        Args:
+            screenshot_b64: Base64 encoded full screenshot
+            url: The URL that was screenshotted
+
+        Returns:
+            A short cache ID for referencing this screenshot
+        """
+        self._screenshot_counter += 1
+        cache_id = f"ss{self._screenshot_counter:04x}"
+        self._screenshot_cache[cache_id] = ScreenshotCacheEntry(
+            screenshot_b64=screenshot_b64,
+            url=url,
+            timestamp=time.time()
+        )
+        return cache_id
+
+    def get_screenshot(self, cache_id: str) -> Optional[str]:
+        """
+        Get a cached full screenshot by ID.
+
+        Returns:
+            Base64 encoded screenshot or None if not found/expired
+        """
+        entry = self._screenshot_cache.get(cache_id)
+        if entry is None:
+            return None
+
+        if time.time() - entry.timestamp > self.ttl_seconds:
+            del self._screenshot_cache[cache_id]
+            return None
+
+        return entry.screenshot_b64
+
     def cleanup(self):
         """
         Remove all expired entries.
-        
+
         Called lazily at the end of each request.
         """
         now = time.time()
@@ -74,9 +125,57 @@ class SearchResultCache:
         ]
         for k in expired_keys:
             del self._cache[k]
-    
+
+        # Also cleanup screenshot cache
+        expired_ss = [
+            k for k, v in self._screenshot_cache.items()
+            if now - v.timestamp > self.ttl_seconds
+        ]
+        for k in expired_ss:
+            del self._screenshot_cache[k]
+
     def __len__(self) -> int:
         return len(self._cache)
+
+
+def crop_to_square_thumbnail(screenshot_b64: str, max_size: int = 400) -> Optional[str]:
+    """
+    Crop a screenshot to a 1:1 square from the top and resize.
+
+    Args:
+        screenshot_b64: Base64 encoded image
+        max_size: Maximum dimension of the output square
+
+    Returns:
+        Base64 encoded cropped/resized image, or None on error
+    """
+    try:
+        from PIL import Image
+
+        # Decode base64
+        img_data = base64.b64decode(screenshot_b64)
+        img = Image.open(io.BytesIO(img_data))
+
+        width, height = img.size
+
+        # Crop to square from top
+        square_size = min(width, height)
+        # Crop from top-left, taking full width if width < height
+        crop_box = (0, 0, square_size, square_size)
+        cropped = img.crop(crop_box)
+
+        # Resize if larger than max_size
+        if square_size > max_size:
+            cropped = cropped.resize((max_size, max_size), Image.Resampling.LANCZOS)
+
+        # Encode back to base64
+        buffer = io.BytesIO()
+        cropped.save(buffer, format='JPEG', quality=85)
+        return base64.b64encode(buffer.getvalue()).decode('utf-8')
+
+    except Exception as e:
+        logger.warning(f"Failed to crop screenshot: {e}")
+        return None
 
 
 def parse_single_index(text: str) -> Optional[int]:

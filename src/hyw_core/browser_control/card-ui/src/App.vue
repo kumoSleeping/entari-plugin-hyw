@@ -167,22 +167,12 @@ const reorderedData = computed(() => {
   const idMap = new Map()
   const newReferences: any[] = []
   
-  // 1. Used refs
+  // Only include refs that are actually cited in the markdown
   usageOrder.forEach((oldId, idx) => {
     const newId = idx + 1
     idMap.set(oldId, newId)
     const sourceRef = allRefs[oldId - 1]
     if (sourceRef) newReferences.push({ ...sourceRef, original_idx: newId })
-  })
-  
-  // 2. Unused refs
-  allRefs.forEach((ref, idx) => {
-    const oldId = idx + 1
-    if (!idMap.has(oldId)) {
-      const newId = newReferences.length + 1
-      idMap.set(oldId, newId)
-      newReferences.push({ ...ref, original_idx: newId })
-    }
   })
   
   const newMd = originalMd.replace(citationRegex, (m, n) => {
@@ -659,7 +649,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
             <div 
               class="shadow-sm shadow-black/5 bg-white" 
               :class="[
-                section.contentType === 'summary' ? 'pt-8 px-5 pb-4 text-base leading-relaxed text-justify break-words' : '',
+                section.contentType === 'summary' ? 'pt-8 px-5 pb-4 text-base leading-relaxed break-words' : '',
                 section.contentType === 'code' ? 'pt-7 pb-2' : '',
                 section.contentType === 'table' ? 'pt-5' : ''
               ]"
@@ -687,7 +677,7 @@ The system automatically handles citations like [1] and [2], reordering them dyn
           </div>
           
           <div class="shadow-sm shadow-black/5 bg-white pt-10 px-5 pb-6 space-y-6">
-             <div v-for="ref in referencesList" :key="ref.url" class="group/item flex items-start gap-3 pl-0.5">
+             <div v-for="(ref, index) in referencesList" :key="ref.url + '-' + index" class="group/item flex items-start gap-3 pl-0.5">
                 <!-- Number -->
                 <div class="shrink-0 w-5 h-5 text-[14px] font-bold flex items-center justify-center pt-0.5" 
                      :style="{ color: themeColor }">
@@ -710,23 +700,33 @@ The system automatically handles citations like [1] and [2], reordering them dyn
                    </div>
                    
                    <!-- Snippet / Screenshot (Condition: Must have snippet or raw screenshot) -->
-                   <div v-if="ref.raw_screenshot_b64 || ref.snippet" 
+                   <div v-if="ref.raw_screenshot_b64 || ref.snippet"
                         class="mt-1.5 pl-3 py-0.5"
                         :class="[(ref.is_fetched || ref.type === 'page') ? 'border-l-[3px]' : 'border-l-2 border-transparent']"
                         :style="(ref.is_fetched || ref.type === 'page') ? { borderColor: themeColor } : {}"
                    >
                       <!-- Real page screenshot if available -->
-                      <img v-if="ref.raw_screenshot_b64" 
-                           :src="getImageUrl(ref.raw_screenshot_b64)"
-                           class="max-w-full h-auto rounded-sm border border-gray-200 shadow-sm"
-                           alt="Page preview"
-                      />
+                      <div v-if="ref.raw_screenshot_b64" class="relative">
+                        <img
+                             :src="getImageUrl(ref.raw_screenshot_b64)"
+                             class="max-w-full h-auto rounded-sm border border-gray-200 shadow-sm"
+                             :class="ref.is_thumbnail ? 'aspect-square object-cover' : ''"
+                             alt="Page preview"
+                        />
+                        <!-- Thumbnail hint -->
+                        <div v-if="ref.is_thumbnail && ref.screenshot_cache_id"
+                             class="mt-1 text-[10px] font-mono opacity-50"
+                             style="color: var(--text-muted)"
+                        >
+                          /w {{ ref.original_idx }} 查看完整页面
+                        </div>
+                      </div>
                       <!-- Fallback to markdown snippet -->
                       <MarkdownContent v-else
-                        :markdown="ref.snippet" 
+                        :markdown="ref.snippet"
                         :bare="true"
                         :compact="true"
-                      /> 
+                      />
                    </div>
                 </div>
              </div>
