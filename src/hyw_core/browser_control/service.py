@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, List
 from loguru import logger
 import trafilatura
+from PIL import Image
+from io import BytesIO
 
 # Import intelligent completeness checker
 from ..crawling.completeness import CompletenessChecker, trigger_lazy_load
@@ -541,13 +543,13 @@ class ScreenshotService:
         tasks = [self.screenshot_url(url, timeout=timeout, full_page=full_page) for url in urls]
         return await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def screenshot_url(self, url: str, wait_load: bool = True, timeout: float = 15.0, full_page: bool = False, quality: int = 80) -> Optional[str]:
+    async def screenshot_url(self, url: str, wait_load: bool = True, timeout: float = 15.0, full_page: bool = False, quality: int = 90, scale: int = 1) -> Optional[str]:
         """Screenshot URL (Async wrapper for sync). Returns base64 string only."""
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
             self._executor,
             self._screenshot_sync,
-            url, wait_load, timeout, full_page, quality, False  # extract_content=False
+            url, wait_load, timeout, full_page, quality, scale, False  # extract_content=False
         )
         # Backward compatible: return just the screenshot for old callers
         if isinstance(result, dict):
@@ -569,7 +571,7 @@ class ScreenshotService:
         result = await loop.run_in_executor(
             self._executor,
             self._screenshot_sync,
-            url, True, timeout, False, 65, True  # quality=65 for balance, extract_content=True
+            url, True, timeout, False, 80, 2, True  # quality=80 for balance, scale=2, extract_content=True
         )
         
         if not isinstance(result, dict):
@@ -584,12 +586,12 @@ class ScreenshotService:
         return result
 
 
-    def _screenshot_sync(self, url: str, wait_load: bool, timeout: float, full_page: bool, quality: int, extract_content: bool = False) -> Any:
+    def _screenshot_sync(self, url: str, wait_load: bool, timeout: float, full_page: bool, quality: int, scale: int = 1, extract_content: bool = False) -> Any:
         """Synchronous screenshot. If extract_content=True, returns Dict else str."""
         if not url: 
             return {"screenshot_b64": None, "content": "", "title": "", "url": url} if extract_content else None
         tab = None
-        capture_width = 1440  # Higher resolution for readability
+        capture_width = 3000  # Increased for more comfortable page size while maintaining high resolution
         
         try:
             self._ensure_ready()
@@ -603,7 +605,7 @@ class ScreenshotService:
             # This eliminates the need for post-load resize and reflow
             try:
                 tab.run_cdp('Emulation.setDeviceMetricsOverride', 
-                            width=capture_width, height=900, deviceScaleFactor=1, mobile=False)
+                            width=capture_width, height=900, deviceScaleFactor=scale, mobile=False)
             except:
                 pass
             
@@ -875,6 +877,23 @@ class ScreenshotService:
             
             # Capture screenshot
             screenshot_b64 = tab.get_screenshot(as_base64='jpg', full_page=False)
+            
+            # Use Pillow for intelligent compression
+            if screenshot_b64 and quality < 95: # Only compress if quality is not near maximum
+                try:
+                    img_bytes = base64.b64decode(screenshot_b64)
+                    img = Image.open(BytesIO(img_bytes))
+                    
+                    # Convert to RGB if not already (some images might be RGBA, which JPEG doesn't support)
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    
+                    output_buffer = BytesIO()
+                    img.save(output_buffer, format="WebP", quality=quality, optimize=True) # Output as WebP format
+                    screenshot_b64 = base64.b64encode(output_buffer.getvalue()).decode()
+                    logger.debug(f"ScreenshotService: Applied Pillow compression with quality={quality}")
+                except Exception as e:
+                    logger.warning(f"ScreenshotService: Pillow compression failed: {e}")
             
             # Extract content if requested
             if extract_content:

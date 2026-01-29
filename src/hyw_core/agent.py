@@ -480,7 +480,18 @@ class AgentPipeline:
                     notifications.append(f"🔍 {result['summary']}")
                     
                     # Add tool result to messages
-                    result_content = f"搜索完成: {result['summary']}\n\n找到 {len(result.get('results', []))} 个结果"
+                    formatted_results = ""
+                    if result.get("results"):
+                        formatted_results = "\n\n详细结果:\n"
+                        for i, r in enumerate(result["results"]):
+                            title = r.get("title", "无标题")
+                            url = r.get("url", "")
+                            snippet = r.get("snippet", "") or r.get("content", "") or ""
+                            # Limit snippet length
+                            snippet = snippet[:300] + "..." if len(snippet) > 300 else snippet
+                            formatted_results += f"{i+1}. [{title}]({url})\n   摘要: {snippet}\n\n"
+
+                    result_content = f"搜索完成: {result['summary']}\n\n找到 {len(result.get('results', []))} 个结果{formatted_results}"
                     session.messages.append({
                         "role": "tool",
                         "tool_call_id": tc_id,

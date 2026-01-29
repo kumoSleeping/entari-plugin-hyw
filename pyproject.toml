@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari_plugin_hyw"
-version = "4.0.0-rc15"
+version = "4.0.0-rc16"
 description = "Use large language models to interpret chat messages"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "DrissionPage>=4.1.1.2",
     "trafilatura>=1.6.0",
     "json-repair>=0.55.0",
+    "Pillow>=10.0.0",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
