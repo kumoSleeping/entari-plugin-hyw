@@ -3,52 +3,31 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "entari_plugin_hyw"
-version = "4.0.0-rc17"
-description = "Use large language models to interpret chat messages"
+name = "hyw-workspace"
+version = "0.0.0"
+description = "HYW Workspace - Development environment for hyw-core, entari-plugin-hyw and hyw-cli"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
-dependencies = [
-    "arclet-entari[full]>=0.16.5",
-    "openai",
-    "httpx",
-    "markdown>=3.10",
-    "DrissionPage>=4.1.1.2",
-    "trafilatura>=1.6.0",
-    "json-repair>=0.55.0",
-    "Pillow>=10.0.0",
-]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
-keywords = ["entari", "llm", "ai", "bot", "chat"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-]
+
+# Workspace root has no direct dependencies
+dependencies = []
 
 [project.optional-dependencies]
 dev = [
+    # Dev tools only - workspace packages are auto-resolved
     "entari-plugin-server>=0.5.0",
     "satori-python-adapter-onebot11>=0.2.5",
     "noneprompt",
     "rich",
+    "pytest",
+    "pytest-asyncio",
 ]
 
-[project.urls]
-Homepage = "https://github.com/kumoSleeping/entari-plugin-hyw"
-Repository = "https://github.com/kumoSleeping/entari-plugin-hyw"
-"Issue Tracker" = "https://github.com/kumoSleeping/entari-plugin-hyw/issues"
+[tool.uv.workspace]
+members = ["src/hyw_core", "src/entari_plugin_hyw", "src/hyw_cli"]
 
 [tool.setuptools]
-include-package-data = true
-
-[tool.setuptools.packages.find]
-where = ["src"]
-include = ["entari_plugin_hyw*", "hyw_core*"]
-
-[tool.setuptools.package-data]
-"hyw_core.browser_control" = ["assets/**/*", "landing.html"]
+# Root package is not meant to be installed
+py-modules = []

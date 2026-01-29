@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "entari-plugin-hyw"
+version = "4.0.0-rc18"
+description = "Entari plugin for HYW - Use large language models to interpret chat messages"
+authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
+dependencies = [
+    "hyw-core",
+    "arclet-entari[full]>=0.16.5",
+    "markdown>=3.10",
+]
+requires-python = ">=3.10,<3.13"
+readme = "README.md"
+license = {text = "MIT"}
+keywords = ["entari", "llm", "ai", "bot", "chat"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "entari-plugin-server>=0.5.0",
+    "satori-python-adapter-onebot11>=0.2.5",
+    "noneprompt",
+    "rich",
+]
+
+[project.urls]
+Homepage = "https://github.com/kumoSleeping/entari-plugin-hyw"
+Repository = "https://github.com/kumoSleeping/entari-plugin-hyw"
+"Issue Tracker" = "https://github.com/kumoSleeping/entari-plugin-hyw/issues"
+
+[tool.uv.sources]
+hyw-core = { workspace = true }
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["entari_plugin_hyw*"]

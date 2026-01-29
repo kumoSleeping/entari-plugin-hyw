@@ -1,69 +1,221 @@
-name: Publish to PyPI
+name: Publish Packages
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'pyproject.toml'  # 监听 pyproject.toml 文件变动
-      - 'src/**'  # 监听源代码变动
-  workflow_dispatch:  # 允许手动触发
+      - 'src/hyw_core/**'
+      - 'src/entari_plugin_hyw/**'
+      - 'src/hyw_cli/**'
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to publish (all, hyw-core, entari-plugin-hyw, hyw-cli)'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - hyw-core
+          - entari-plugin-hyw
+          - hyw-cli
 
 permissions:
   contents: write
-  id-token: write  # 用于 OIDC 认证
+  id-token: write
 
 jobs:
-  publish:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      hyw-core: ${{ steps.changes.outputs.hyw-core }}
+      entari-plugin-hyw: ${{ steps.changes.outputs.entari-plugin-hyw }}
+      hyw-cli: ${{ steps.changes.outputs.hyw-cli }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect changed packages
+        id: changes
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            case "${{ inputs.package }}" in
+              all)
+                echo "hyw-core=true" >> $GITHUB_OUTPUT
+                echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
+                echo "hyw-cli=true" >> $GITHUB_OUTPUT
+                ;;
+              hyw-core)
+                echo "hyw-core=true" >> $GITHUB_OUTPUT
+                ;;
+              entari-plugin-hyw)
+                echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
+                ;;
+              hyw-cli)
+                echo "hyw-cli=true" >> $GITHUB_OUTPUT
+                ;;
+            esac
+          else
+            git diff --name-only HEAD~1 HEAD > changed_files.txt
+            if grep -q "^src/hyw_core/" changed_files.txt; then
+              echo "hyw-core=true" >> $GITHUB_OUTPUT
+            fi
+            if grep -q "^src/entari_plugin_hyw/" changed_files.txt; then
+              echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
+            fi
+            if grep -q "^src/hyw_cli/" changed_files.txt; then
+              echo "hyw-cli=true" >> $GITHUB_OUTPUT
+            fi
+          fi
+
+  publish-hyw-core:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.hyw-core == 'true'
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
 
-    - name: Install build dependencies
-      run: |
-        python -m pip install --upgrade pip
-        pip install build twine
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
 
-    - name: Extract version from pyproject.toml
-      id: get_version
-      run: |
-        VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-        echo "VERSION=$VERSION" >> $GITHUB_ENV
-        echo "version=$VERSION" >> $GITHUB_OUTPUT
+      - name: Extract version
+        id: get_version
+        working-directory: src/hyw_core
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
 
-    - name: Build distribution
-      run: |
-        python -m build
+      - name: Build
+        working-directory: src/hyw_core
+        run: python -m build
 
-    - name: Check distribution
-      run: |
-        twine check dist/*
+      - name: Check distribution
+        working-directory: src/hyw_core
+        run: twine check dist/*
 
-    - name: Publish to PyPI
-      uses: pypa/gh-action-pypi-publish@release/v1
-      # 使用 OIDC 认证，更安全
-      # 如果你更喜欢使用 API Token，可以取消下面这行注释并设置 PYPI_TOKEN secret
-      # with:
-      #   password: ${{ secrets.PYPI_TOKEN }}
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: src/hyw_core/dist/
 
-    - name: Create GitHub Release
-      id: create_release
-      uses: softprops/action-gh-release@v1
-      with:
-        tag_name: v${{ env.VERSION }}
-        name: Release v${{ env.VERSION }}
-        body: |
-          Release version ${{ env.VERSION }}
-          
-          ## Changes
-          - Check the commit history for detailed changes
-        files: |
-          ./dist/entari_plugin_hyw-${{ env.VERSION }}.tar.gz
-          ./dist/entari_plugin_hyw-${{ env.VERSION }}-py3-none-any.whl
-        draft: false
-        prerelease: false
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: hyw-core-v${{ env.VERSION }}
+          name: hyw-core v${{ env.VERSION }}
+          body: |
+            Release hyw-core version ${{ env.VERSION }}
+          files: |
+            src/hyw_core/dist/*
+          draft: false
+          prerelease: false
+
+  publish-entari-plugin-hyw:
+    needs: [detect-changes, publish-hyw-core]
+    if: always() && needs.detect-changes.outputs.entari-plugin-hyw == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install build twine
+
+      - name: Extract version
+        id: get_version
+        working-directory: src/entari_plugin_hyw
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Build
+        working-directory: src/entari_plugin_hyw
+        run: python -m build
+
+      - name: Check distribution
+        working-directory: src/entari_plugin_hyw
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: src/entari_plugin_hyw/dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: entari-plugin-hyw-v${{ env.VERSION }}
+          name: entari-plugin-hyw v${{ env.VERSION }}
+          body: |
+            Release entari-plugin-hyw version ${{ env.VERSION }}
+          files: |
+            src/entari_plugin_hyw/dist/*
+          draft: false
+          prerelease: false
+
+  # publish-hyw-cli:
+  #   needs: [detect-changes, publish-hyw-core]
+  #   if: always() && needs.detect-changes.outputs.hyw-cli == 'true'
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #
+  #     - name: Set up Python
+  #       uses: actions/setup-python@v4
+  #       with:
+  #         python-version: '3.11'
+  #
+  #     - name: Install build dependencies
+  #       run: |
+  #         python -m pip install --upgrade pip
+  #         pip install build twine
+  #
+  #     - name: Extract version
+  #       id: get_version
+  #       working-directory: src/hyw_cli
+  #       run: |
+  #         VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+  #         echo "VERSION=$VERSION" >> $GITHUB_ENV
+  #         echo "version=$VERSION" >> $GITHUB_OUTPUT
+  #
+  #     - name: Build
+  #       working-directory: src/hyw_cli
+  #       run: python -m build
+  #
+  #     - name: Check distribution
+  #       working-directory: src/hyw_cli
+  #       run: twine check dist/*
+  #
+  #     - name: Publish to PyPI
+  #       uses: pypa/gh-action-pypi-publish@release/v1
+  #       with:
+  #         packages-dir: src/hyw_cli/dist/
+  #
+  #     - name: Create GitHub Release
+  #       uses: softprops/action-gh-release@v1
+  #       with:
+  #         tag_name: hyw-cli-v${{ env.VERSION }}
+  #         name: hyw-cli v${{ env.VERSION }}
+  #         body: |
+  #           Release hyw-cli version ${{ env.VERSION }}
+  #         files: |
+  #           src/hyw_cli/dist/*
+  #         draft: false
+  #         prerelease: false

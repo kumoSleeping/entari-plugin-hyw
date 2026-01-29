@@ -471,13 +471,17 @@ class AgentPipeline:
                 
                 if func_name == "web_tool":
                     result = result_map.get(idx, {"summary": "未执行", "results": []})
-                    
+
                     # Track tool call
                     session.tool_calls.append({"name": func_name, "args": args})
                     session.tool_results.append(result)
-                    
-                    # Collect notification
-                    notifications.append(f"🔍 {result['summary']}")
+
+                    # Collect notification with appropriate emoji
+                    summary = result['summary']
+                    if "失败" in summary or "Error" in summary:
+                        notifications.append(f"⚠️ {summary}")
+                    else:
+                        notifications.append(f"🔍 {summary}")
                     
                     # Add tool result to messages
                     formatted_results = ""
@@ -566,8 +570,7 @@ class AgentPipeline:
             # Send URL screenshot notification
             if self.send_func:
                 try:
-                    short_url = url[:40] + "..." if len(url) > 40 else url
-                    await self.send_func(f"📸 正在截图: {short_url}")
+                    await self.send_func(f"🌐 正在获取页面...")
                 except Exception:
                     pass
             
