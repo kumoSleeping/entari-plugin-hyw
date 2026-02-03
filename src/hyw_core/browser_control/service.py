@@ -198,22 +198,11 @@ class ScreenshotService:
             # Open new blank tab
             tab = page.new_tab()
             
-            # Focus address bar with Ctrl+L (or Cmd+L on Mac)
-            import platform
-            if platform.system() == "Darwin":
-                tab.actions.key_down('cmd').key_down('l').key_up('l').key_up('cmd')
-            else:
-                tab.actions.key_down('ctrl').key_down('l').key_up('l').key_up('ctrl')
-            
-            # Small delay for address bar to focus
-            import time as _time
-            _time.sleep(0.05)
-            
-            # Type the query
-            tab.actions.type(query)
-            
-            # Press Enter to search
-            tab.actions.key_down('enter').key_up('enter')
+            # Direct navigation to avoid focus stealing (Cmd+L/Ctrl+L forces window focus)
+            import urllib.parse
+            # Using DuckDuckGo as configured in entari.yml
+            search_url = f"https://duckduckgo.com/?q={urllib.parse.quote(query)}"
+            tab.get(search_url)
             
             # Wait for page to load
             try:

@@ -40,7 +40,7 @@ from .config import HywCoreConfig, ModelConfig
 
 # Pipeline components
 from .pipeline import ModularPipeline
-from .search import SearchService
+from .tools.duckduckgo_search import DuckDuckGoSearchService as SearchService
 
 # Stage components
 from .stages import (

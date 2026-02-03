@@ -14,7 +14,7 @@ from loguru import logger
 from .config import HywCoreConfig, ModelConfig
 from .pipeline import ModularPipeline
 from .agent import AgentPipeline
-from .search import SearchService
+from .tools.duckduckgo_search import DuckDuckGoSearchService as SearchService
 from .stages.base import StageContext
 
 
@@ -28,6 +28,7 @@ class QueryRequest:
     
     # Optional callbacks
     send_notification: Optional[Callable[[str], Awaitable[None]]] = None
+    event_callback: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
 
 
 @dataclass
@@ -253,12 +254,14 @@ class HywCore:
         try:
             # Get or create agent pipeline with current send_func
             send_func = request.send_notification or self._send_func
+            event_func = request.event_callback
             
-            if self._agent_pipeline is None or self._agent_pipeline.send_func != send_func:
+            if self._agent_pipeline is None or self._agent_pipeline.send_func != send_func or self._agent_pipeline.event_func != event_func:
                 self._agent_pipeline = AgentPipeline(
                     config=self.config,
                     search_service=self._search_service,
-                    send_func=send_func
+                    send_func=send_func,
+                    event_func=event_func
                 )
             
             # Execute agent pipeline

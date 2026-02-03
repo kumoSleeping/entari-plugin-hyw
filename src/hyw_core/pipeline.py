@@ -16,7 +16,7 @@ from openai import AsyncOpenAI
 from .stages.base import StageContext, StageResult
 from .stages.base import StageContext, StageResult, BaseStage
 from .stages.summary import SummaryStage
-from .search import SearchService
+from .tools.duckduckgo_search import DuckDuckGoSearchService as SearchService
 
 
 class ModularPipeline:

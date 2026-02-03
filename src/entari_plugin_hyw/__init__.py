@@ -44,6 +44,7 @@ from .misc import (
 )
 from .filters import parse_filter_syntax
 from .search_cache import SearchResultCache, parse_single_index, parse_multi_indices, crop_to_square_thumbnail
+from .ws_manager import manager as ws_manager
 
 
 try:
@@ -104,13 +105,13 @@ class HywConfig(BasicConfModel):
     help_command: str = "/h"
     language: str = "Simplified Chinese"
     temperature: float = 0.4
-    
+
     model_name: Optional[str] = None
     api_key: Optional[str] = None
     base_url: str = "https://openrouter.ai/api/v1"
-    
+
     search_engine: str = "duckduckgo"
-    
+
     headless: bool = False
     save_conversation: bool = False
     reaction: bool = False
@@ -119,6 +120,11 @@ class HywConfig(BasicConfModel):
 
     # Main model configuration (used for summary/main LLM calls)
     main: Optional[Dict[str, Any]] = None
+
+    # External server configuration (requires entari_plugin_server)
+    enable_server: bool = False
+    server_path: str = "/hyw"
+    server_token: Optional[str] = None
     
     def __post_init__(self):
         self.theme_color = parse_color(self.theme_color)
@@ -269,12 +275,16 @@ async def process_request(
             except Exception as e:
                 logger.warning(f"Failed to send notification: {e}")
 
+        async def broadcast_event(event: Dict[str, Any]):
+            await ws_manager.broadcast(event)
+
         request = QueryRequest(
             user_input=msg_text,
             images=images,
             conversation_history=hist_payload,
             model_name=model,
-            send_notification=send_noti
+            send_notification=send_noti,
+            event_callback=broadcast_event
         )
         
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tf:
@@ -912,3 +922,15 @@ async def handle_stop_command(session: Session[MessageCreatedEvent], result: Arp
 @listen(CommandReceive)
 async def remove_at(content: MessageChain):
     return content.lstrip(At)
+
+
+# Initialize external server routes (optional, requires entari_plugin_server)
+from .server import setup_server_routes
+setup_server_routes(
+    conf=conf,
+    get_hyw_core=get_hyw_core,
+    resolve_model_name=resolve_model_name,
+    QueryRequest=QueryRequest,
+    get_content_renderer=get_content_renderer,
+    version=__version__,
+)

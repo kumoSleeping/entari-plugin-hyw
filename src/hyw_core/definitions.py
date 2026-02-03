@@ -6,11 +6,43 @@ All global prompts and tool definitions for the pipeline stages.
 
 from typing import Dict, Any
 
+# Import tools from new modular structure
+from .tools.duckduckgo_search import get_duckduckgo_search_tool
+from .tools.js_executor import get_js_executor_tool
+from .tools.refuse_answer import get_refuse_answer_tool
+from .tools.x_search import get_x_search_tool
+
 # Used by SummaryStage - language appended at runtime
 SUMMARY_REPORT_SP = """# 你是一个总结助手 (Agent), 你的职责是基于搜索工具给出的信息，回答用户的问题或解释用户问题中的关键词。
 ## 核心原则
 最小限度使用自身知识, 尽可能使用 web_tool 获取信息.
 遇到计算、js代码、算法任务, 积极使用 js_executor 工具完成计算任务.
+遇到需要实时信息, x 搜索时, 使用 x_search 工具完成搜索任务.
+
+你是一个智能信息检索工具的预处理部分。
+
+# Input Context
+接下来接收到的用户消息是来自 IM 软件的聊天信息。他可能是在向你发问，也可能是在对话中。
+
+# Logic & Tasks
+请你针对输入内容做出以下判断并执行：
+
+## 1. 意图判断：是在对话中上传的消息
+- **判定意图**：如果该消息是一位用户在与别人的对话中提取并上传给你的，其意图是让你提取关键词进行背景搜索。
+- **第一阶段（本身搜索）**：
+    - 最多可以进行 3 次搜索。
+    - 必须提取用户消息中的关键词并对其“本身”进行搜索，**而不是**进行关联搜索。
+    - 每个搜索必须只包含 1-2 个关键词，且该关键词必须直接出自用户消息本身, 而且这如果是2个词搜索，必须是关联性很强的2个词组合在一起搜索。
+    - **强约束**：确定搜索词语必须且一定出自用户说的话本身。**不允许**增加任何辅助搜索词。只要不是用户原话中出现的词，一律不允许搜索。
+- **第二阶段（二次关联）**：
+    - 在“本身搜索”完成后，再进行一次通过搜索到的信息来添加辅助搜索词、或进行关联搜索的操作。
+
+## 2. 意图判断：是提问或下达任务
+- **判定意图**：如果用户的意图是直接向你提出问题或者任务。
+- **执行逻辑**：请改成分配任务模式，并智能选择使用或不使用工具。
+
+# Requirements
+- **合规性**：必须严格注意用户输入内容的合规程度。
 
 ## 抓重点原则
 搜索结果中往往混杂大量信息，你需要：
@@ -58,58 +90,10 @@ def get_refuse_answer_tool() -> Dict[str, Any]:
     }
 
 
-def get_web_tool() -> Dict[str, Any]:
-    """Tool for web search with filter syntax and URL screenshot."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "web_tool",
-            "description": """搜索网页或截图指定URL。用于获取duckduckgo搜索结果或网页内容
-## 使用方式
-网页搜索(大部分问题优先使用此方法): 
-直接传入搜索词如 "python async" 会返回搜索结果列表 搜索词尽可能少且精准, 以利于传统搜索引擎检索
-
-网页截图(当用户明确要求截图时使用):
-传入完整URL如 "https://example.com" 会直接截图该页面
-""",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索查询或网页获取"
-                    }
-                },
-                "required": ["query"]
-            }
-        }
-    }
-
-
-def get_js_tool() -> Dict[str, Any]:
-    """Tool for executing JavaScript in the browser."""
-    return {
-        "type": "function",
-        "function": {
-            "name": "js_executor",
-            "description": """执行JavaScript代码并返回结果。
-代码将在当前浏览器页面的上下文中执行。
-注意：
-1. 必须使用 `return` 语句返回结果，或者直接作为表达式（如 `1+1`）。
-2. 严禁使用 `console.log`，其输出无法被捕获，会导致返回 None。
-""",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "script": {
-                        "type": "string",
-                        "description": "要执行的JavaScript代码字符串"
-                    }
-                },
-                "required": ["script"]
-            }
-        }
-    }
+# Backward compatibility aliases
+get_web_tool = get_duckduckgo_search_tool
+get_js_tool = get_js_executor_tool
+get_x_tool = get_x_search_tool
 
 
 # =============================================================================

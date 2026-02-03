@@ -1,0 +1,37 @@
+#!/bin/bash
+# Simple wrapper to run the python script using system python
+# In a real app, you might bundle a standalone python executable
+
+# Get the directory where this script is located
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# In production (app bundle), resources are in ../Resources relative to the executable
+# In dev, they are in src-tauri/target/debug/... or we point to source.
+# Tauri sets $RESOURCE_PATH or similar? No, usually we just locate relative to binary.
+
+# Detect if running in bundle or dev
+if [ -d "$DIR/../Resources" ]; then
+    # Production MacOS Bundle
+    PYTHON_SCRIPT="$DIR/../Resources/python/bridge.py"
+else
+    # Dev environment - assume script is in binaries/ and python is in src/hyw_desktop/python
+    # We need to map where we put the resource in tauri.conf.json
+    # If we map "src/hyw_desktop/python" to "python", it will be available.
+    # In dev, the sidecar runs from src-tauri/binaries/
+    # The resources are usually not moved in dev unless configured.
+    # Let's assume we copy it or point to it.
+
+    # Absolute path fallback for dev if needed, or relative path
+    # relative to src-tauri/binaries/ -> ../../src/hyw_desktop/python/bridge.py
+    PYTHON_SCRIPT="$DIR/../../../src/hyw_desktop/python/bridge.py"
+fi
+
+# Fallback if file not found (e.g. strict resource path in prod)
+if [ ! -f "$PYTHON_SCRIPT" ]; then
+    # Try finding it in the current directory or standard resource paths
+    if [ -f "$DIR/python/bridge.py" ]; then
+        PYTHON_SCRIPT="$DIR/python/bridge.py"
+    fi
+fi
+
+exec python3 "$PYTHON_SCRIPT"

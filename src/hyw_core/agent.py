@@ -15,9 +15,10 @@ from typing import Any, Callable, Awaitable, Dict, List, Optional
 from loguru import logger
 from openai import AsyncOpenAI
 
-from .definitions import get_web_tool, get_refuse_answer_tool, get_js_tool, AGENT_SYSTEM_PROMPT
+from .definitions import get_web_tool, get_refuse_answer_tool, get_js_tool, get_x_tool, AGENT_SYSTEM_PROMPT
 from .stages.base import StageContext, StageResult
-from .search import SearchService
+from .tools.duckduckgo_search import DuckDuckGoSearchService as SearchService
+from .tools.x_search import XSearchService
 
 
 @dataclass
@@ -145,16 +146,27 @@ class AgentPipeline:
     LLM_RETRY_DELAY = 1.0  # Delay between retries in seconds
     
     def __init__(
-        self, 
-        config: Any, 
+        self,
+        config: Any,
         search_service: SearchService,
-        send_func: Optional[Callable[[str], Awaitable[None]]] = None
+        send_func: Optional[Callable[[str], Awaitable[None]]] = None,
+        event_func: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     ):
         self.config = config
         self.search_service = search_service
+        self.x_search_service = XSearchService(headless=True)
         self.send_func = send_func
+        self.event_func = event_func
         self.client = AsyncOpenAI(base_url=config.base_url, api_key=config.api_key)
     
+    async def _emit_event(self, type: str, data: Dict[str, Any]):
+        """Emit structured event."""
+        if self.event_func:
+            try:
+                await self.event_func({"type": type, "data": data, "timestamp": time.time()})
+            except Exception as e:
+                logger.warning(f"AgentPipeline: Failed to emit event {type}: {e}")
+
     async def execute(
         self,
         user_input: str,
@@ -164,6 +176,9 @@ class AgentPipeline:
     ) -> Dict[str, Any]:
         """Execute agent with tool-calling loop."""
         start_time = time.time()
+        
+        # Emit start event
+        await self._emit_event("agent_start", {"query": user_input, "model": model_name})
         
         # Get model config
         model_cfg = self.config.get_model_config("main")
@@ -235,7 +250,8 @@ class AgentPipeline:
         web_tool = get_web_tool()
         refuse_tool = get_refuse_answer_tool()
         js_tool = get_js_tool()
-        tools = [web_tool, refuse_tool, js_tool]
+        x_tool = get_x_tool()
+        tools = [web_tool, refuse_tool, js_tool, x_tool]
 
         usage_totals = {"input_tokens": 0, "output_tokens": 0}
         final_content = ""
@@ -249,6 +265,9 @@ class AgentPipeline:
         
         # Agent loop
         while True:
+            # Emit thinking event
+            await self._emit_event("thought", {"status": "thinking", "round": session.round_count})
+
             # Check if we need to force summary (no tools)
             if session.should_force_summary:
                 logger.info(f"AgentPipeline: Max tool rounds ({self.MAX_TOOL_ROUNDS}) reached, forcing summary")
@@ -375,6 +394,20 @@ class AgentPipeline:
                 logger.info(f"AgentPipeline: Model answered directly after {session.call_count} tool calls")
                 break
             
+            # Emit tool calls event
+            tools_data = []
+            for tc in message.tool_calls:
+                try:
+                    args_obj = json.loads(tc.function.arguments)
+                except:
+                    args_obj = tc.function.arguments
+                tools_data.append({
+                    "id": tc.id, 
+                    "name": tc.function.name, 
+                    "args": args_obj
+                })
+            await self._emit_event("tool_call", {"tools": tools_data})
+            
             # Add assistant message with tool calls
             session.messages.append({
                 "role": "assistant",
@@ -436,10 +469,13 @@ class AgentPipeline:
             search_start = time.time()
             tasks_to_run = []
             task_indices = []
-            
+
             for idx, func_name in enumerate(tool_call_names):
                 if func_name == "web_tool":
                     tasks_to_run.append(self._execute_web_tool(tool_call_args_list[idx], context))
+                    task_indices.append(idx)
+                elif func_name == "x_search":
+                    tasks_to_run.append(self._execute_x_search_tool(tool_call_args_list[idx], context))
                     task_indices.append(idx)
                 elif func_name == "js_executor":
                     tasks_to_run.append(self._execute_js_tool(tool_call_args_list[idx], context))
@@ -469,8 +505,15 @@ class AgentPipeline:
                 tc_id = tool_call_ids[idx]
                 args = tool_call_args_list[idx]
                 
-                if func_name == "web_tool":
+                if func_name == "web_tool" or func_name == "x_search":
                     result = result_map.get(idx, {"summary": "未执行", "results": []})
+
+                    # Emit tool result
+                    await self._emit_event("tool_result", {
+                        "id": tc_id,
+                        "name": func_name,
+                        "result": result
+                    })
 
                     # Track tool call
                     session.tool_calls.append({"name": func_name, "args": args})
@@ -546,6 +589,15 @@ class AgentPipeline:
         
         stages_used = self._build_stages_ui(session, context, usage_totals, total_time)
         logger.info(f"AgentPipeline: Built stages_used = {stages_used}")
+        
+        # Emit finish event
+        await self._emit_event("agent_finish", {
+            "success": True,
+            "response": final_content,
+            "stages": stages_used,
+            "stats": stats,
+            "web_results": context.web_results
+        })
         
         return {
             "llm_response": final_content,
@@ -675,7 +727,59 @@ class AgentPipeline:
             "results": visible,
             "screenshot_count": 0
         }
-    
+
+    async def _execute_x_search_tool(self, args: Dict, context: StageContext) -> Dict[str, Any]:
+        """Execute x_search tool."""
+        query = args.get("query", "")
+        filter_type = args.get("filter_type", "top")
+
+        if not query:
+            return {"summary": "X搜索失败: 查询为空", "results": []}
+
+        if self.send_func:
+            try:
+                filter_desc = {"top": "综合", "live": "最新", "user": "用户", "media": "媒体"}.get(filter_type, filter_type)
+                await self.send_func(f"🐦 正在X搜索 \"{query}\" ({filter_desc})...")
+            except: pass
+
+        logger.info(f"AgentPipeline: Executing X search: {query} ({filter_type})")
+        result = await self.x_search_service.search(query, filter_type=filter_type)
+
+        # Check if error
+        if result.get("error"):
+            return {
+                "summary": f"X搜索失败: {result['error']}",
+                "results": [],
+                "screenshot_count": 0
+            }
+
+        # Process successful result
+        url = result.get("url", "")
+        title = result.get("title", f"X Search: {query}")
+        screenshot_b64 = result.get("screenshot_b64")
+        content = result.get("content", "")
+
+        # Add to context
+        context.web_results.append({
+            "_id": context.next_id(),
+            "_type": "x_search",
+            "url": url,
+            "title": title,
+            "screenshot_b64": screenshot_b64,
+            "content": content,
+            "query": query,
+            "filter": filter_type
+        })
+
+        summary = f"X搜索完成: {query}"
+
+        return {
+            "summary": summary,
+            "results": [{"_type": "x_search", "url": url, "title": title}],
+            "screenshot_count": 1 if screenshot_b64 else 0,
+            "source_desc": f"X搜索结果 ({query})"
+        }
+
     async def _execute_js_tool(self, args: Dict, context: StageContext) -> Dict[str, Any]:
         """执行 JS 代码工具"""
         script = args.get("script", "")
