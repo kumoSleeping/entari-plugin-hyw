@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hyw-workspace"
-version = "0.0.0"
+version = "0.0.1"
 description = "HYW Workspace - Development environment for hyw-core, entari-plugin-hyw and hyw-cli"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 requires-python = ">=3.10,<3.13"
