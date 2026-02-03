@@ -34,50 +34,52 @@ jobs:
       hyw-cli: ${{ steps.changes.outputs.hyw-cli }}
     steps:
       - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name != 'workflow_dispatch'
         with:
-          fetch-depth: 0
+          filters: |
+            hyw-core: src/hyw_core/**
+            entari-plugin-hyw: src/entari_plugin_hyw/**
+            hyw-cli: src/hyw_cli/**
 
       - name: Detect changed packages
         id: changes
         run: |
+          # Initialize variables with filter outputs (empty if filter didn't run)
+          HYW_CORE="${{ steps.filter.outputs.hyw-core }}"
+          ENTARI_PLUGIN="${{ steps.filter.outputs.entari-plugin-hyw }}"
+          HYW_CLI="${{ steps.filter.outputs.hyw-cli }}"
+
+          # Handle manual dispatch overrides
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             case "${{ inputs.package }}" in
               all)
-                echo "hyw-core=true" >> $GITHUB_OUTPUT
-                echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
-                echo "hyw-cli=true" >> $GITHUB_OUTPUT
+                HYW_CORE="true"
+                ENTARI_PLUGIN="true"
+                HYW_CLI="true"
                 ;;
               hyw-core)
-                echo "hyw-core=true" >> $GITHUB_OUTPUT
+                HYW_CORE="true"
                 ;;
               entari-plugin-hyw)
-                echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
+                ENTARI_PLUGIN="true"
                 ;;
               hyw-cli)
-                echo "hyw-cli=true" >> $GITHUB_OUTPUT
+                HYW_CLI="true"
                 ;;
             esac
-          else
-            # For push events, check all changed files in the push
-            if [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
-              git diff --name-only ${{ github.event.before }} ${{ github.event.after }} > changed_files.txt
-            else
-              git diff --name-only HEAD~1 HEAD > changed_files.txt
-            fi
-
-            echo "Changed files:"
-            cat changed_files.txt
-
-            if grep -q "^src/hyw_core/" changed_files.txt; then
-              echo "hyw-core=true" >> $GITHUB_OUTPUT
-            fi
-            if grep -q "^src/entari_plugin_hyw/" changed_files.txt; then
-              echo "entari-plugin-hyw=true" >> $GITHUB_OUTPUT
-            fi
-            if grep -q "^src/hyw_cli/" changed_files.txt; then
-              echo "hyw-cli=true" >> $GITHUB_OUTPUT
-            fi
           fi
+
+          echo "Detected changes:"
+          echo "hyw-core: $HYW_CORE"
+          echo "entari-plugin-hyw: $ENTARI_PLUGIN"
+          echo "hyw-cli: $HYW_CLI"
+
+          echo "hyw-core=$HYW_CORE" >> $GITHUB_OUTPUT
+          echo "entari-plugin-hyw=$ENTARI_PLUGIN" >> $GITHUB_OUTPUT
+          echo "hyw-cli=$HYW_CLI" >> $GITHUB_OUTPUT
 
   publish-hyw-core:
     needs: detect-changes
