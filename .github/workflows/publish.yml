@@ -35,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Detect changed packages
         id: changes
@@ -58,7 +58,16 @@ jobs:
                 ;;
             esac
           else
-            git diff --name-only HEAD~1 HEAD > changed_files.txt
+            # For push events, check all changed files in the push
+            if [[ -n "${{ github.event.before }}" && "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]]; then
+              git diff --name-only ${{ github.event.before }} ${{ github.event.after }} > changed_files.txt
+            else
+              git diff --name-only HEAD~1 HEAD > changed_files.txt
+            fi
+
+            echo "Changed files:"
+            cat changed_files.txt
+
             if grep -q "^src/hyw_core/" changed_files.txt; then
               echo "hyw-core=true" >> $GITHUB_OUTPUT
             fi
