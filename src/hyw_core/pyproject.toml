@@ -1,6 +1,6 @@
 [project]
 name = "hyw-core"
-version = "4.0.3"
+version = "4.0.4"
 description = "Core logic for HYW Agent"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
