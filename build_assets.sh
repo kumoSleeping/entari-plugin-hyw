@@ -3,10 +3,10 @@ set -e
 
 echo "Building Card UI Assets..."
 
-# Go to card-ui directory
-cd src/hyw_core/browser_control/card-ui
+# Go to card-ui directory (New Path)
+cd src/hyw_core/hyw_core/tools/_public/browser/card-ui
 
-# Install dependencies if node_modules missing or package.json changed (naive check, just run install usually fast enough)
+# Install dependencies
 echo "Installing dependencies..."
 npm install
 
@@ -14,4 +14,4 @@ npm install
 echo "Running Vite build..."
 npm run build
 
-echo "Done. Assets built to src/hyw_core/browser_control/assets/card-dist"
+echo "Done. Assets built to src/hyw_core/tools/public/browser/assets/card-dist"

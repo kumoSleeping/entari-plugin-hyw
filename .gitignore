@@ -66,3 +66,11 @@ src/assets/icon
 
 .browser_context
 .trash/
+.python-version
+logs/
+
+entari_plugin_hyw_old/
+hyw_core_old/
+
+
+.cursor/
