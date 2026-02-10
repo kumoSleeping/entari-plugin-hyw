@@ -22,6 +22,9 @@ async def web_search(query: str, headless: bool = True) -> str:
     """
     global _global_index_counter
 
+    # 预处理：移除可能导致搜索失败的双引号（包括中文双引号）
+    query = query.replace('"', ' ').replace('“', ' ').replace('”', ' ')
+
     print(f"  [SearchTool] Searching: {query}")
     service = DuckDuckGoSearchService(headless=headless)
     results = await service.search(query)

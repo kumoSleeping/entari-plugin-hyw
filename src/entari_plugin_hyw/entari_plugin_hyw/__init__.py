@@ -144,7 +144,7 @@ try:
     from importlib.metadata import version as get_version
     __version__ = get_version("entari_plugin_hyw")
 except Exception:
-    __version__ = "4.0.0-rc21"
+    __version__ = "4.0.3"
 
 @dataclass
 class HywConfig(BasicConfModel):
@@ -347,4 +347,4 @@ async def cleanup_resources():
         await _core_agent.close()
         _core_agent = None
 
-metadata("hyw", author=[{"name": "kumo", "email": "dev@example.com"}], version=__version__, config=HywConfig)
+__plugin__ = metadata("hyw", author=[{"name": "kumo", "email": "dev@example.com"}], version=__version__, config=HywConfig)

@@ -4,13 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari-plugin-hyw"
-version = "4.0.2"
+version = "4.0.3"
 description = "Entari plugin for HYW - Use large language models to interpret chat messages"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
-"hyw-core>=1.0.1",
+    "hyw-core>=1.0.1",
     "arclet-entari[full]>=0.16.5",
     "markdown>=3.10",
+    "satori-python-core<0.18.0",
+    "satori-python-client<0.18.0",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"

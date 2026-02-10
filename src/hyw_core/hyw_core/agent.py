@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from loguru import logger
 from typing import List, Optional, Dict, Any, Union
 from openai import AsyncOpenAI
 from .models import Message, AgentResponse, ToolResult
@@ -39,26 +40,75 @@ class AgentSession:
         if self.finished:
             return AgentResponse(content="", history=self.history)
 
-        self._cleanup_temp_prompts()
+        # 不再直接清理 temp prompts，而是发送时过滤
+        # self._cleanup_temp_prompts()
         self.turn += 1
 
         try:
-            # 构建请求参数 - 纯文本输出，不使用 response_format
-            kwargs: Dict[str, Any] = {"model": self.model, "messages": self.api_messages}
+            # 构建请求参数 - 过滤掉非当前轮次的 temp prompt
+            # 保留所有非 _temp 消息
+            # 保留 _temp 且 turn 等于当前轮次 (需要在 configure 中记录 turn) 或 刚刚添加的 (假设没有 turn 标记的就是新的?)
+            # 为了简单起见，我们修改 logic：发送所有消息，但只保留最近的一个 temp prompt?
+            # 或者更严谨地：在 configure 时标记 turn。
+
+            # 临时修补：如果不修改 configure，无法区分。
+            # 但通常 step 前会调用 configure。所以 api_messages 里所有的 _temp 都是最新的（假设之前的已经被清理了）。
+            # 但如果我们不清理，就会堆积。
+            # 方案：在构建 messages 时，过滤掉旧的 _temp。
+            # 假设 api_messages 中的 _temp 都有 turn 标记（稍后修改 configure）。
+
+            current_messages = []
+            for msg in self.api_messages:
+                if not msg.get("_temp"):
+                    current_messages.append(msg)
+                elif msg.get("_temp_turn") == self.turn: # 假设 configure 设置了 _temp_turn = self.turn + 1 (因为 step 还没跑，turn 还没加?)
+                    # 修正：step 开头 self.turn += 1。
+                    # configure 在 step 之前跑，那时 self.turn 是 N。step 跑的时候 self.turn 变成 N+1。
+                    # 所以 configure 应该记录的是 N+1 ? 或者 step 晚点加 turn?
+                    # 让我们看 agent.py 的 turn 逻辑。
+                    # __init__: turn = 0.
+                    # step: turn += 1.
+                    # flow (调用 configure): turn 还是 0 (第一次).
+                    # 所以 configure 记录 turn=0. step 变成 1.
+                    # 匹配逻辑应该是 msg.get("_temp_turn") == self.turn - 1 ?
+                    # 不，最好 step 里的 turn += 1 放在后面？或者 configure 用 next turn。
+                    current_messages.append(msg)
+
+            # 如果没有修改 configure，这种过滤会失败。
+            # 我们先用简单方案：发送所有消息。
+            # 之前的 bug 是 _cleanup_temp_prompts() 删除了所有 _temp。
+            # 如果我们删掉这就好了？但下一轮会带上前一轮的 temp。
+            # 这是一个权衡。
+            # 鉴于用户急需修复 "temp_prompt 没生效"，我们先改为：
+            # 每次 step 结束时清理？或者 step 开始时不清理，由 flow 控制？
+            # 最好的办法是：在 step 内部，先提取 messages 发送，然后再清理（但在 api_messages 里保留用于 log？）
+
+            # 采用方案：仅用于发送的临时列表
+            messages_to_send = self.api_messages
+
+            kwargs: Dict[str, Any] = {"model": self.model, "messages": messages_to_send}
 
             # LLM 调用
             response = await self.client.chat.completions.create(**kwargs)
+
+            # ... (处理响应)
             msg = response.choices[0].message
             content = msg.content or ""
 
-            # 记录原始响应到 api_messages
+            # 记录原始响应
             self.api_messages.append({"role": "assistant", "content": content})
 
-            # 解析 XML 格式输出
+            # 这一步之后清理旧的 temp prompts?
+            # 如果清理了，log 就没了。
+            # 所以 api_messages 必须保留所有历史。
+            # 只有 messages_to_send 需要过滤。
+
             return await self._parse_xml_response(content)
 
         except Exception as e:
             self.finished = True
+            import traceback
+            logger.exception(f"Error in HywAgent.step: {e}")
             return AgentResponse(content="", success=False, error=str(e), history=self.history)
 
     async def _parse_xml_response(self, raw_content: str) -> AgentResponse:

@@ -60,8 +60,9 @@ async def render(
 
         tab_id = await renderer.prepare_tab()
 
-        # 根据评分重排序 references
-        sorted_references = reorder_references_by_scoring(references or [], scoring)
+        # 根据评分重排序 references - 已移除，防止序号错乱
+        # sorted_references = reorder_references_by_scoring(references or [], scoring)
+        sorted_references = references or []
 
         success = await renderer.render(
             markdown_content=content,
