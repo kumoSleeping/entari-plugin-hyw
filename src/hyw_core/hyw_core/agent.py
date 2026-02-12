@@ -129,25 +129,54 @@ class AgentSession:
         # 2. 解析评分 <scoring>...</scoring>
         scoring = self._extract_scoring(raw_content)
 
-        # 3. 解析最终回复 <response>...</response> 或 <response render="true">...</response>
-        response_match = re.search(r'<response(?:\s+render=["\']?(true|false)["\']?)?\s*>(.*?)</response>', raw_content, re.DOTALL | re.IGNORECASE)
-        if response_match:
-            should_render = response_match.group(1) and response_match.group(1).lower() == "true"
-            content = response_match.group(2).strip()
-            self.history.append(Message(role="assistant", content=content))
-            self.finished = True
-            return AgentResponse(
-                content=content,
-                history=self.history,
-                is_final=True,
-                should_render=should_render,
-                scoring=scoring
-            )
+        # 3. 作为最终回复处理 (移除 <response> 标签解析)
+        final_content = raw_content
 
-        # 4. 没有匹配到 XML 标签，当作纯文本回复
-        self.history.append(Message(role="assistant", content=raw_content))
+        # 移除 scoring 标签以免显示
+        if scoring:
+             final_content = re.sub(r'<scoring>.*?</scoring>', '', final_content, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        self.history.append(Message(role="assistant", content=final_content))
         self.finished = True
-        return AgentResponse(content=raw_content, history=self.history, is_final=True, scoring=scoring)
+
+        # 自动检测是否包含 Markdown
+        should_render = self._has_markdown(final_content)
+
+        return AgentResponse(
+            content=final_content,
+            history=self.history,
+            is_final=True,
+            should_render=should_render,
+            scoring=scoring
+        )
+
+    def _has_markdown(self, text: str) -> bool:
+        """检测文本是否包含 Markdown 语法"""
+        if not text:
+            return False
+        # 字数阈值：超过 200 字直接触发渲染
+        if len(text.strip()) > 200:
+            return True
+
+        # 常见的 Markdown 模式
+        patterns = [
+            r'^#{1,6}\s',           # 标题 (行首)
+            r'^[\*\-]\s',           # 无序列表 (行首)
+            r'^\d+\.\s',            # 有序列表 (行首)
+            r'```',                 # 代码块
+            r'`[^`]+`',             # 行内代码
+            r'\[.*?\]\(.*?\)',      # 链接
+            r'(\*\*|__|\*|_).*(\*\*|__|\*|_)', # 粗体/斜体 (简单检测成对标记)
+            r'^>\s',                # 引用 (行首)
+            r'^---\s*$',            # 分割线 (行首)
+            r'\|.*\|'               # 表格 (简单检测)
+        ]
+
+        for pattern in patterns:
+            if re.search(pattern, text, re.MULTILINE):
+                return True
+
+        return False
 
     def _extract_scoring(self, content: str) -> Optional[List[Dict[str, Any]]]:
         """提取评分信息 <scoring><item index="1" score="8">理由</item>...</scoring>"""

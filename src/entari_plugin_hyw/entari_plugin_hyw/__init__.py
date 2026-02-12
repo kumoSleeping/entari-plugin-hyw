@@ -144,7 +144,7 @@ try:
     from importlib.metadata import version as get_version
     __version__ = get_version("entari_plugin_hyw")
 except Exception:
-    __version__ = "4.0.4"
+    __version__ = "4.0.5"
 
 @dataclass
 class HywConfig(BasicConfModel):
