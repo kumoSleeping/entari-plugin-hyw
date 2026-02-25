@@ -58,7 +58,8 @@ async def chat_flow(session: "AgentSession"):
 - **范围**：`[解释工作, 文本工作, 探究含义, 问题解决, 简单日常]`
 - **语法**：支持多选（用 `;` 分隔）和不确定性（用 `?` 标记）。
 - **特殊规则**：
-  - 若 `type` 包含 **"解释工作"** 或 **"探究含义"**，你进入【深度审视模式】。在此模式下，你**必须**在 `<clarification_needed>` 中生成 **10-20 个** 疑问点。
+  - 若 `type` 包含 **"解释工作"** 或 **"探究含义"**，你进入【深度审视模式】。在此模式下，你**必须**在 `<clarification_needed>` 中生成 **6 个** 疑问点。
+  - 每个疑问点都必须附带评分 `score`（1-10），分数越高表示对最终答案正确性的影响越大。
   - 这些疑问点必须不仅限于宏观层面，还要精确到对你“打算回复的每一句话”的假设进行反问和推测（例如：“我假设用户想知道架构原理，但如果他只想知道怎么配置呢？”）。
 
 ## 2. 视觉分析工具 (Vision Analysis Tool)
@@ -70,6 +71,9 @@ async def chat_flow(session: "AgentSession"):
 在使用工具或作出回复之前, 你需要输出一个 response_logic:
 <response_logic>
     <planning>
+        <goal priority="[1-3]" from_score="[1-10]">[本轮目标，必须基于 clarification_needed 的高分项]</goal>
+        <goal priority="[1-3]" from_score="[1-10]">[本轮目标]</goal>
+        <goal priority="[1-3]" from_score="[1-10]">[本轮目标]</goal>
         </planning>
 
     <vision_analysis>
@@ -78,14 +82,21 @@ async def chat_flow(session: "AgentSession"):
     </vision_analysis>
 
     <clarification_needed>
-        1. [反问/推测]
+        <item score="[1-10]">[反问/推测]</item>
         ...
-        15. [反问/推测]
+        <item score="[1-10]">[反问/推测]</item>
     </clarification_needed>
 
     <execution_content>
         </execution_content>
 </response_logic>
+
+## clarification -> 目标 规则（强约束）
+- 先生成 6 条 `<clarification_needed>` 并打分，再设定 `<planning>` 目标。
+- `<planning>` 目标必须引用 `clarification_needed` 的高分项，按分数从高到低定优先级。
+- 分数 >= 8 的疑问点必须至少映射到一个目标；若 >= 8 的项超过 3 个，优先取最高分的 3 个。
+- 若没有 >= 8 的项，则取分数最高的前 3 项设为目标。
+- 目标要可执行，直接服务于本轮“是否继续搜索 / 如何回答”。
 
 
 ## 工具
@@ -233,7 +244,8 @@ async def chat_flow(session: "AgentSession"):
 ...
 <item index="15" score="3">无关内容</item>
 </scoring>
-评分结束后, 需要继续输出一个 response_logic , 根据你最新获取的知识提出新的 plan 和 clarification_needed.
+评分结束后, 需要继续输出一个 response_logic , 根据你最新获取的知识提出新的 plan 和 clarification_needed。
+注意：plan 中的目标必须参考 clarification_needed 的评分，高分项优先进入目标。
 
 完成后根据你的评分结果、response_logic中的困惑和计划, 如果搜索质量普遍较低、困惑点直接影响结果, 你需要继续搜索获取更多信息.
 注意：这些“是否继续搜索”的判断属于内部决策，不要在最终正文中输出类似“无需进一步搜索”的流程句。
