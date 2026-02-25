@@ -94,7 +94,10 @@ class FlowRunner:
         user_input: str,
         flow: Union[Flow, FlowPolicy, None] = None,
         max_turns: int = 10,
-        images: Optional[List[str]] = None
+        images: Optional[List[str]] = None,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        start_turn: int = 0,
+        continuation: bool = False
     ) -> FlowResult:
         # 重置搜索序号计数器，确保每次新对话从 1 开始
         reset_search_index()
@@ -110,6 +113,28 @@ class FlowRunner:
             policy_func = flow
 
         session = self.agent.init_session(user_input, target_registry, images)
+        if start_turn:
+            session.turn = start_turn
+        if continuation:
+            session.is_continuation = True
+
+        # 预置历史上下文（仅拼接为消息，不触发系统提示）
+        if history_messages:
+            history_api = []
+            history_internal = []
+            for msg in history_messages:
+                if not isinstance(msg, dict):
+                    continue
+                role = msg.get("role")
+                content = msg.get("content", "")
+                if role not in ("user", "assistant", "system"):
+                    continue
+                history_api.append({"role": role, "content": content})
+                history_internal.append(Message(role=role, content=str(content)))
+
+            if history_api:
+                session.api_messages = history_api + session.api_messages
+                session.history = history_internal + session.history
         self._session = session
 
         last_response = None

@@ -5,23 +5,20 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hyw-workspace"
 version = "0.0.1"
-description = "HYW Workspace - Development environment for hyw-core, entari-plugin-hyw and hyw-cli"
+description = "HYW Workspace - Development environment for entari-plugin-hyw and entari-plugin-codex"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
 
 # Workspace root has no direct dependencies
-dependencies = [
-    "claude-agent-sdk>=0.1.26",
-    "openrouter>=0.6.0",
-]
+dependencies = ["arclet.entari[yaml,cron,dotenv] >= 0.16.8"]
 
 [project.optional-dependencies]
 dev = [
     # Workspace packages
-    "hyw-core",
     "entari-plugin-hyw",
+    "entari-plugin-codex",
     # Dev tools
     "entari-plugin-server>=0.5.0",
     "entari-cli>=0.3.0",
@@ -33,12 +30,11 @@ dev = [
 ]
 
 [tool.uv.workspace]
-members = ["src/hyw_core", "src/entari_plugin_hyw", "src/hyw_cli"]
+members = ["src/entari_plugin_hyw", "src/entari_plugin_codex", "hyw-workspace/1528593481/work/entari_1"]
 
 [tool.uv.sources]
-hyw-core = { workspace = true }
 entari-plugin-hyw = { workspace = true }
-hyw-cli = { workspace = true }
+entari-plugin-codex = { workspace = true }
 
 [tool.setuptools]
 # Root package is not meant to be installed

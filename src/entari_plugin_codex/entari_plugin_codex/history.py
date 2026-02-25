@@ -1,10 +1,12 @@
+import json
 import random
 import string
 import time
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 
 class HistoryManager:
-    def __init__(self):
+    def __init__(self, ttl_seconds: int = 7 * 24 * 3600):
         self._history: Dict[str, List[Dict[str, Any]]] = {}
         self._metadata: Dict[str, Dict[str, Any]] = {}
         self._mapping: Dict[str, str] = {}
@@ -12,12 +14,18 @@ class HistoryManager:
         self._created_at: Dict[str, float] = {}
         self._related_ids: Dict[str, List[str]] = {}
         self._context_by_key: Dict[str, str] = {}
-        self._ttl_seconds: int = 3600
+        self._ttl_seconds: int = max(int(ttl_seconds), 60)
         
         # New: Short code management
         self._short_codes: Dict[str, str] = {} # code -> key
         self._key_to_code: Dict[str, str] = {} # key -> code
         self._context_history: Dict[str, List[str]] = {} # context_id -> list of keys
+
+    def conversation_count(self) -> int:
+        return len(self._history)
+
+    def set_ttl_seconds(self, ttl_seconds: int) -> None:
+        self._ttl_seconds = max(int(ttl_seconds), 60)
 
     def is_bot_message(self, message_id: str) -> bool:
         """Check if the message ID belongs to a bot message"""
@@ -126,6 +134,193 @@ class HistoryManager:
             if context_id not in self._context_history:
                 self._context_history[context_id] = []
             self._context_history[context_id].append(key)
+
+    def _build_state(self) -> Dict[str, Any]:
+        return {
+            "version": 1,
+            "saved_at": time.time(),
+            "ttl_seconds": int(self._ttl_seconds),
+            "history": self._history,
+            "metadata": self._metadata,
+            "mapping": self._mapping,
+            "context_latest": self._context_latest,
+            "created_at": self._created_at,
+            "related_ids": self._related_ids,
+            "context_by_key": self._context_by_key,
+            "short_codes": self._short_codes,
+            "key_to_code": self._key_to_code,
+            "context_history": self._context_history,
+        }
+
+    def save_state_file(self, state_file: str) -> bool:
+        path = Path(state_file).expanduser()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            payload = json.dumps(self._build_state(), ensure_ascii=False, separators=(",", ":"))
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(path)
+            return True
+        except Exception:
+            return False
+
+    def _load_state(self, payload: Dict[str, Any]) -> None:
+        history_raw = payload.get("history")
+        metadata_raw = payload.get("metadata")
+        mapping_raw = payload.get("mapping")
+        context_latest_raw = payload.get("context_latest")
+        created_at_raw = payload.get("created_at")
+        related_ids_raw = payload.get("related_ids")
+        context_by_key_raw = payload.get("context_by_key")
+        short_codes_raw = payload.get("short_codes")
+        key_to_code_raw = payload.get("key_to_code")
+        context_history_raw = payload.get("context_history")
+
+        history: Dict[str, List[Dict[str, Any]]] = {}
+        if isinstance(history_raw, dict):
+            for key, value in history_raw.items():
+                key_s = str(key).strip()
+                if not key_s or not isinstance(value, list):
+                    continue
+                rows = [item for item in value if isinstance(item, dict)]
+                history[key_s] = rows
+
+        metadata: Dict[str, Dict[str, Any]] = {}
+        if isinstance(metadata_raw, dict):
+            for key, value in metadata_raw.items():
+                key_s = str(key).strip()
+                if not key_s or not isinstance(value, dict):
+                    continue
+                metadata[key_s] = value
+
+        mapping: Dict[str, str] = {}
+        if isinstance(mapping_raw, dict):
+            for key, value in mapping_raw.items():
+                key_s = str(key).strip()
+                val_s = str(value).strip()
+                if key_s and val_s:
+                    mapping[key_s] = val_s
+
+        context_latest: Dict[str, str] = {}
+        if isinstance(context_latest_raw, dict):
+            for key, value in context_latest_raw.items():
+                key_s = str(key).strip()
+                val_s = str(value).strip()
+                if key_s and val_s:
+                    context_latest[key_s] = val_s
+
+        created_at: Dict[str, float] = {}
+        if isinstance(created_at_raw, dict):
+            for key, value in created_at_raw.items():
+                key_s = str(key).strip()
+                if not key_s:
+                    continue
+                try:
+                    created_at[key_s] = float(value)
+                except (TypeError, ValueError):
+                    continue
+
+        related_ids: Dict[str, List[str]] = {}
+        if isinstance(related_ids_raw, dict):
+            for key, value in related_ids_raw.items():
+                key_s = str(key).strip()
+                if not key_s or not isinstance(value, list):
+                    continue
+                related_ids[key_s] = [str(item).strip() for item in value if str(item).strip()]
+
+        context_by_key: Dict[str, str] = {}
+        if isinstance(context_by_key_raw, dict):
+            for key, value in context_by_key_raw.items():
+                key_s = str(key).strip()
+                val_s = str(value).strip()
+                if key_s and val_s:
+                    context_by_key[key_s] = val_s
+
+        short_codes: Dict[str, str] = {}
+        if isinstance(short_codes_raw, dict):
+            for code, key in short_codes_raw.items():
+                code_s = str(code).strip().lower()
+                key_s = str(key).strip()
+                if code_s and key_s:
+                    short_codes[code_s] = key_s
+
+        key_to_code: Dict[str, str] = {}
+        if isinstance(key_to_code_raw, dict):
+            for key, code in key_to_code_raw.items():
+                key_s = str(key).strip()
+                code_s = str(code).strip().lower()
+                if key_s and code_s:
+                    key_to_code[key_s] = code_s
+
+        context_history: Dict[str, List[str]] = {}
+        if isinstance(context_history_raw, dict):
+            for key, value in context_history_raw.items():
+                key_s = str(key).strip()
+                if not key_s or not isinstance(value, list):
+                    continue
+                context_history[key_s] = [str(item).strip() for item in value if str(item).strip()]
+
+        # Rebuild missing maps if state is partial.
+        if not mapping:
+            for key in history:
+                mapping[key] = key
+                for rid in related_ids.get(key, []):
+                    mapping[rid] = key
+
+        if not key_to_code and short_codes:
+            for code, key in short_codes.items():
+                key_to_code[key] = code
+        elif key_to_code and not short_codes:
+            for key, code in key_to_code.items():
+                short_codes[code] = key
+
+        # Keep only references to existing conversation keys.
+        valid_keys = set(history.keys())
+        mapping = {k: v for k, v in mapping.items() if v in valid_keys}
+        related_ids = {k: v for k, v in related_ids.items() if k in valid_keys}
+        created_at = {k: v for k, v in created_at.items() if k in valid_keys}
+        metadata = {k: v for k, v in metadata.items() if k in valid_keys}
+        context_by_key = {k: v for k, v in context_by_key.items() if k in valid_keys}
+        key_to_code = {k: v for k, v in key_to_code.items() if k in valid_keys}
+        short_codes = {code: key for code, key in short_codes.items() if key in valid_keys}
+
+        filtered_context_history: Dict[str, List[str]] = {}
+        for context_id, keys in context_history.items():
+            hit = [key for key in keys if key in valid_keys]
+            if hit:
+                filtered_context_history[context_id] = hit
+        context_history = filtered_context_history
+
+        filtered_context_latest: Dict[str, str] = {}
+        for context_id, key in context_latest.items():
+            if key in valid_keys:
+                filtered_context_latest[context_id] = key
+        context_latest = filtered_context_latest
+
+        self._history = history
+        self._metadata = metadata
+        self._mapping = mapping
+        self._context_latest = context_latest
+        self._created_at = created_at
+        self._related_ids = related_ids
+        self._context_by_key = context_by_key
+        self._short_codes = short_codes
+        self._key_to_code = key_to_code
+        self._context_history = context_history
+        self.prune_expired()
+
+    def load_state_file(self, state_file: str) -> bool:
+        path = Path(state_file).expanduser()
+        if not path.exists():
+            return False
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return False
+            self._load_state(payload)
+            return True
+        except Exception:
+            return False
 
     def save_to_disk(self, key: str, save_root: str = "data/conversations", image_path: Optional[str] = None, web_results: Optional[List[Dict]] = None, vision_trace: Optional[Dict] = None, instruct_traces: Optional[List[Dict]] = None):
         """Save conversation history to specific folder structure"""

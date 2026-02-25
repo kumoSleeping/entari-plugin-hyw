@@ -9,7 +9,7 @@ from .web_fetch import web_fetch
 
 # === 渲染功能 (不再作为 LLM 工具，由插件层根据结构化输出调用) ===
 # 使用方法:
-#   from hyw_core.tools.render import render
+#   from entari_plugin_hyw.core.tools.render import render
 #   result = await render(content, title, headless=True)
 #   # result 是 ToolResult，result.content 包含 base64 图片
 

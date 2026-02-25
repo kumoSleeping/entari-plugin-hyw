@@ -3,19 +3,19 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "entari-plugin-hyw"
-version = "4.0.6"
-description = "Entari plugin for HYW - Use large language models to interpret chat messages"
+name = "entari-plugin-codex"
+version = "0.0.1"
+description = "Entari plugin for Codex execution and progress streaming"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 dependencies = [
     "arclet-entari[full]>=0.16.5",
-    "openai>=1.0.0",
-    "duckduckgo-search>=6.0.0",
+    "entari-plugin-hyw>=4.0.5",
     "DrissionPage>=4.0.0",
-    "trafilatura>=1.6.0",
     "loguru>=0.7.0",
     "Pillow>=10.0.0",
-    "markdown>=3.10",
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+    "cairosvg>=2.7.1",
     "satori-python-core<0.18.0",
     "satori-python-client<0.18.0",
 ]
@@ -41,20 +41,13 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/kumoSleeping/entari-plugin-hyw"
-Repository = "https://github.com/kumoSleeping/entari-plugin-hyw"
-"Issue Tracker" = "https://github.com/kumoSleeping/entari-plugin-hyw/issues"
+Homepage = "https://github.com/kumoSleeping/entari-plugin-codex"
+Repository = "https://github.com/kumoSleeping/entari-plugin-codex"
+"Issue Tracker" = "https://github.com/kumoSleeping/entari-plugin-codex/issues"
 
 [tool.setuptools]
 include-package-data = true
 
-[tool.setuptools.package-data]
-"entari_plugin_hyw.core" = [
-    "tools/_public/browser/landing.html",
-    "tools/_public/browser/assets/**/*",
-    "tools/_public/browser/card-ui/**/*",
-]
-
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["entari_plugin_hyw*"]
+include = ["entari_plugin_codex*"]

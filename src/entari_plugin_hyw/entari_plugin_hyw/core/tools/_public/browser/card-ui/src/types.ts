@@ -56,6 +56,13 @@ export interface CrawledPage {
 export interface Stats {
     total_time?: number
     vision_duration?: number
+    usage?: {
+        input_tokens?: number
+        cached_input_tokens?: number
+        output_tokens?: number
+        total_tokens?: number
+    }
+    operation_rounds?: number
 }
 
 export interface Flags {

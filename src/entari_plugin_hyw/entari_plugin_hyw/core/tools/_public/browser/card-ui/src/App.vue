@@ -410,6 +410,37 @@ const parsedSections = computed(() => {
   return sections
 })
 
+const formatTokenW = (value?: number): string => {
+  const n = Number(value || 0)
+  return `${(n / 10000).toFixed(2)}w`
+}
+
+const runtimeStatsMarkdown = computed(() => {
+  const stats = data.value?.stats || {}
+  const usage = stats.usage || {}
+
+  const hasUsage =
+    Number(usage.input_tokens || 0) > 0 ||
+    Number(usage.cached_input_tokens || 0) > 0 ||
+    Number(usage.output_tokens || 0) > 0 ||
+    Number(usage.total_tokens || 0) > 0
+
+  if (!hasUsage) {
+    return ''
+  }
+
+  const rows: string[] = [
+    '| Metric | Value |',
+    '| --- | --- |',
+  ]
+
+  rows.push(
+    `| Tokens | ${formatTokenW(usage.total_tokens)} (Input: ${formatTokenW(usage.input_tokens)} / Cached: ${formatTokenW(usage.cached_input_tokens)} / Output: ${formatTokenW(usage.output_tokens)}) |`
+  )
+
+  return rows.join('\n')
+})
+
 onMounted(() => {
   if (window.RENDER_DATA && Object.keys(window.RENDER_DATA).length > 0) {
     data.value = window.RENDER_DATA
@@ -479,7 +510,16 @@ The system automatically handles citations like [1] and [2], reordering them dyn
         }
       ],
       image_references: [],
-      stats: { total_time: 1.5 },
+      stats: {
+        total_time: 1.5,
+        operation_rounds: 2,
+        usage: {
+          input_tokens: 19893,
+          cached_input_tokens: 10368,
+          output_tokens: 641,
+          total_tokens: 20534,
+        },
+      },
       theme_color: '#ef4444'
     }
   }
@@ -543,6 +583,25 @@ The system automatically handles citations like [1] and [2], reordering them dyn
           </div>
 
         </template>
+
+        <!-- Runtime Stats -->
+        <div v-if="runtimeStatsMarkdown" class="relative">
+          <div
+            class="absolute -top-2 -left-2 h-7 px-2.5 z-10 flex items-center justify-center gap-1.5"
+            :style="{ backgroundColor: themeColor, color: headerTextColor, boxShadow: '0 2px 4px 0 rgba(0,0,0,0.15)' }"
+          >
+            <Icon icon="mdi:counter" class="text-[14px]" />
+            <span class="text-[12px] font-bold uppercase tracking-wide">Runtime</span>
+          </div>
+          <div class="shadow-sm shadow-black/5 bg-white pt-10 px-5 pb-6">
+            <MarkdownContent
+              :markdown="runtimeStatsMarkdown"
+              :bare="true"
+              :num-search-refs="0"
+              :num-page-refs="0"
+            />
+          </div>
+        </div>
         
         <!-- Sources Section (Bibliography) - Styled as Card -->
         <div v-if="referencesList.length" class="relative group/sources">
