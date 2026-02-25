@@ -1,5 +1,4 @@
 import asyncio
-import json
 import re
 from loguru import logger
 from typing import List, Optional, Dict, Any, Union
@@ -12,12 +11,21 @@ from .config import HywCoreConfig
 class AgentSession:
     """Agent 会话，使用 XML 格式输出，自行解析"""
 
-    def __init__(self, client: AsyncOpenAI, model: str, user_input: str, registry: ToolRegistry, images: Optional[List[str]] = None):
+    def __init__(
+        self,
+        client: AsyncOpenAI,
+        model: str,
+        user_input: str,
+        registry: ToolRegistry,
+        images: Optional[List[str]] = None,
+        temperature: Optional[float] = None,
+    ):
         self.client = client
         self.model = model
         self.registry = registry
         self.turn = 0
         self.finished = False
+        self.temperature = temperature
 
         # 构造用户消息 (支持多模态)
         if images:
@@ -40,74 +48,30 @@ class AgentSession:
         if self.finished:
             return AgentResponse(content="", history=self.history)
 
-        # 不再直接清理 temp prompts，而是发送时过滤
-        # self._cleanup_temp_prompts()
         self.turn += 1
 
         try:
-            # 构建请求参数 - 过滤掉非当前轮次的 temp prompt
-            # 保留所有非 _temp 消息
-            # 保留 _temp 且 turn 等于当前轮次 (需要在 configure 中记录 turn) 或 刚刚添加的 (假设没有 turn 标记的就是新的?)
-            # 为了简单起见，我们修改 logic：发送所有消息，但只保留最近的一个 temp prompt?
-            # 或者更严谨地：在 configure 时标记 turn。
-
-            # 临时修补：如果不修改 configure，无法区分。
-            # 但通常 step 前会调用 configure。所以 api_messages 里所有的 _temp 都是最新的（假设之前的已经被清理了）。
-            # 但如果我们不清理，就会堆积。
-            # 方案：在构建 messages 时，过滤掉旧的 _temp。
-            # 假设 api_messages 中的 _temp 都有 turn 标记（稍后修改 configure）。
-
-            current_messages = []
-            for msg in self.api_messages:
-                if not msg.get("_temp"):
-                    current_messages.append(msg)
-                elif msg.get("_temp_turn") == self.turn: # 假设 configure 设置了 _temp_turn = self.turn + 1 (因为 step 还没跑，turn 还没加?)
-                    # 修正：step 开头 self.turn += 1。
-                    # configure 在 step 之前跑，那时 self.turn 是 N。step 跑的时候 self.turn 变成 N+1。
-                    # 所以 configure 应该记录的是 N+1 ? 或者 step 晚点加 turn?
-                    # 让我们看 agent.py 的 turn 逻辑。
-                    # __init__: turn = 0.
-                    # step: turn += 1.
-                    # flow (调用 configure): turn 还是 0 (第一次).
-                    # 所以 configure 记录 turn=0. step 变成 1.
-                    # 匹配逻辑应该是 msg.get("_temp_turn") == self.turn - 1 ?
-                    # 不，最好 step 里的 turn += 1 放在后面？或者 configure 用 next turn。
-                    current_messages.append(msg)
-
-            # 如果没有修改 configure，这种过滤会失败。
-            # 我们先用简单方案：发送所有消息。
-            # 之前的 bug 是 _cleanup_temp_prompts() 删除了所有 _temp。
-            # 如果我们删掉这就好了？但下一轮会带上前一轮的 temp。
-            # 这是一个权衡。
-            # 鉴于用户急需修复 "temp_prompt 没生效"，我们先改为：
-            # 每次 step 结束时清理？或者 step 开始时不清理，由 flow 控制？
-            # 最好的办法是：在 step 内部，先提取 messages 发送，然后再清理（但在 api_messages 里保留用于 log？）
-
-            # 采用方案：仅用于发送的临时列表
             messages_to_send = self.api_messages
-
             kwargs: Dict[str, Any] = {"model": self.model, "messages": messages_to_send}
+            if self.temperature is not None:
+                kwargs["temperature"] = self.temperature
+                logger.info(f"[Sampling] 第{self.turn}轮调用参数: temperature={self.temperature:.2f}")
+            else:
+                logger.info(f"[Sampling] 第{self.turn}轮调用参数: temperature=<模型默认>")
 
             # LLM 调用
             response = await self.client.chat.completions.create(**kwargs)
 
-            # ... (处理响应)
             msg = response.choices[0].message
             content = msg.content or ""
 
             # 记录原始响应
             self.api_messages.append({"role": "assistant", "content": content})
 
-            # 这一步之后清理旧的 temp prompts?
-            # 如果清理了，log 就没了。
-            # 所以 api_messages 必须保留所有历史。
-            # 只有 messages_to_send 需要过滤。
-
             return await self._parse_xml_response(content)
 
         except Exception as e:
             self.finished = True
-            import traceback
             logger.exception(f"Error in HywAgent.step: {e}")
             return AgentResponse(content="", success=False, error=str(e), history=self.history)
 
@@ -124,7 +88,7 @@ class AgentSession:
             tool_calls_dump = [{"name": tc["name"], "arguments": tc["arguments"]} for tc in tool_calls]
             self.history.append(Message(role="assistant", content=raw_content, tool_calls=tool_calls_dump))
             # 执行工具
-            return await self._execute_tool_calls(tool_calls)
+            return await self._execute_tool_calls(tool_calls, raw_content)
 
         # 2. 解析评分 <scoring>...</scoring>
         scoring = self._extract_scoring(raw_content)
@@ -268,7 +232,24 @@ class AgentSession:
             params[key] = value.strip()
         return params
 
-    async def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]]) -> AgentResponse:
+    def _extract_progress_hint(self, content: str) -> Optional[str]:
+        """提取模型在工具调用前输出的专用进度说明标签。"""
+        match = re.search(
+            r"<progress_hint[^>]*>(.*?)</progress_hint>",
+            content,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        hint = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        if not hint:
+            return None
+
+        hint = hint.replace("\\n", "\n").strip()
+        return hint or None
+
+    async def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], raw_content: str = "") -> AgentResponse:
         """执行从结构化输出解析出的工具调用"""
         tasks, infos = [], []
         search_queries = []
@@ -284,32 +265,22 @@ class AgentSession:
             tasks.append(self.registry.execute(name, args))
             infos.append(name)
 
-        if not tasks:
-            return AgentResponse(content="", history=self.history, success=True)
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        # 搜索完成后发送汇总消息
+        # 搜索开始前发送“过程说明 + 搜索词”
         if search_queries and self.registry.get_send_hook():
-            search_summary_lines = [f"🔍 搜索完成 ({len(search_queries)} 条):"]
-            for i, (query, result) in enumerate(zip(search_queries, results)):
-                if isinstance(result, Exception):
-                    search_summary_lines.append(f"  {i+1}. {query} ❌ 失败")
-                else:
-                    result_str = str(result) if not hasattr(result, 'content') else result.content
-                    try:
-                        parsed = json.loads(result_str)
-                        count = parsed.get("count", 0)
-                        summary = parsed.get("summary", "")
-                        search_summary_lines.append(f"  {i+1}. {query} ✓ {count} 条结果")
-                        if summary:
-                            search_summary_lines.append(f"      {summary}")
-                    except json.JSONDecodeError:
-                        result_count = result_str.count("**[") if "**[" in result_str else 0
-                        search_summary_lines.append(f"  {i+1}. {query} ✓ {result_count} 条结果")
-            await self.registry.get_send_hook()("\n".join(search_summary_lines))
+            progress_hint = self._extract_progress_hint(raw_content) if raw_content else None
+            start_lines: List[str] = []
+            if progress_hint:
+                start_lines.append(progress_hint)
+            start_lines.append("🔍 正在搜索:")
+            for i, query in enumerate(search_queries, start=1):
+                start_lines.append(f"  {i}. {query}")
+            await self.registry.get_send_hook()("\n".join(start_lines))
 
-        # 处理结果，添加到 api_messages
+        results: List[Any] = []
+        if tasks:
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 处理 registry 结果，添加到 api_messages
         for name, result in zip(infos, results):
             if isinstance(result, Exception):
                 tool_content = f"Error: {result}"
@@ -363,7 +334,15 @@ class HywAgent:
         self.model = config.model_name
 
     def init_session(self, user_input: str, registry: Optional[ToolRegistry] = None, images: Optional[List[str]] = None) -> AgentSession:
-        return AgentSession(self.client, self.model, user_input, registry or ToolRegistry(), images)
+        logger.info(f"[Temperature] 更改成功: 会话温度已设置为 {self.config.temperature:.2f}")
+        return AgentSession(
+            self.client,
+            self.model,
+            user_input,
+            registry or ToolRegistry(),
+            images,
+            temperature=self.config.temperature,
+        )
 
     async def close(self):
         await self.client.close()
