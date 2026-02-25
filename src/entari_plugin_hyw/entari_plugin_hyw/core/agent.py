@@ -7,6 +7,19 @@ from .models import Message, AgentResponse, ToolResult
 from .tools.registry import ToolRegistry
 from .config import HywCoreConfig
 
+_TIME_RANGE_HINT_ZH = {
+    "d": "近1日",
+    "w": "近1周",
+    "m": "近1月",
+    "y": "近1年",
+}
+
+
+def _format_time_range_hint(time_range: str) -> str:
+    if not time_range:
+        return ""
+    return _TIME_RANGE_HINT_ZH.get(time_range.strip().lower(), "")
+
 
 class AgentSession:
     """Agent 会话，使用 XML 格式输出，自行解析"""
@@ -303,7 +316,7 @@ class AgentSession:
     async def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], raw_content: str = "") -> AgentResponse:
         """执行从结构化输出解析出的工具调用"""
         tasks, infos = [], []
-        search_queries = []
+        search_queries: List[Dict[str, str]] = []
 
         for tc in tool_calls:
             name = tc["name"]
@@ -311,7 +324,11 @@ class AgentSession:
 
             # 收集搜索查询
             if name == "web_search":
-                search_queries.append(args.get("query", ""))
+                search_queries.append({
+                    "query": args.get("query", ""),
+                    "kl": args.get("kl", ""),
+                    "time_range": args.get("time_range", ""),
+                })
 
             tasks.append(self.registry.execute(name, args))
             infos.append(name)
@@ -323,8 +340,12 @@ class AgentSession:
             if progress_hint:
                 start_lines.append(progress_hint)
             start_lines.append("🔍 正在搜索:")
-            for i, query in enumerate(search_queries, start=1):
-                start_lines.append(f"  {i}. {query}")
+            for i, search_call in enumerate(search_queries, start=1):
+                query = search_call.get("query", "")
+                time_range = (search_call.get("time_range", "") or "").strip()
+                time_hint = _format_time_range_hint(time_range)
+                extra = f" | [{time_hint}]" if time_hint else ""
+                start_lines.append(f"  {i}. {query}{extra}")
             await self.registry.get_send_hook()("\n".join(start_lines))
 
         results: List[Any] = []

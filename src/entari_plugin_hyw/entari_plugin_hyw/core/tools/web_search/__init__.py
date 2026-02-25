@@ -13,7 +13,7 @@ def reset_search_index():
     _global_index_counter = 0
 
 
-async def web_search(query: str, headless: bool = True) -> str:
+async def web_search(query: str, kl: str = "", time_range: str = "", headless: bool = True) -> str:
     """
     执行网页搜索，返回原始结果。
 
@@ -24,10 +24,12 @@ async def web_search(query: str, headless: bool = True) -> str:
 
     # 预处理：移除可能导致搜索失败的双引号（包括中文双引号）
     query = query.replace('"', ' ').replace('“', ' ').replace('”', ' ')
+    kl = (kl or "").strip()
+    time_range = (time_range or "").strip()
 
     print(f"  [SearchTool] Searching: {query}")
     service = DuckDuckGoSearchService(headless=headless)
-    results = await service.search(query)
+    results = await service.search(query, kl=kl or None, time_range=time_range or None)
 
     if not results:
         return json.dumps({
@@ -56,6 +58,10 @@ async def web_search(query: str, headless: bool = True) -> str:
 
     output = {
         "query": query,
+        "filters": {
+            "kl": kl or None,
+            "time_range": time_range or None
+        },
         "count": len(formatted_results),
         "results": formatted_results
     }

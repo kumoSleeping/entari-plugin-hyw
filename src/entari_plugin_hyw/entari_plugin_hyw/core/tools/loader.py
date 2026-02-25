@@ -28,8 +28,8 @@ def load_tools(config: HywCoreConfig) -> ToolRegistry:
     registry = ToolRegistry()
 
     # 1. Web Search
-    async def _search(query: str):
-        return await web_search(query, headless=config.headless)
+    async def _search(query: str, kl: str = "", time_range: str = ""):
+        return await web_search(query, kl=kl, time_range=time_range, headless=config.headless)
     registry.register("web_search", _search)
 
     # 2. Web Fetch (Replaces Screenshot)

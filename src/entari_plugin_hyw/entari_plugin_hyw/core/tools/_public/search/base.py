@@ -10,7 +10,7 @@ from typing import List, Dict, Any
 
 class SearchEngine(ABC):
     @abstractmethod
-    def build_url(self, query: str, limit: int = 10) -> str:
+    def build_url(self, query: str, limit: int = 10, **kwargs: Any) -> str:
         """Build the search URL for the given query."""
         pass
 

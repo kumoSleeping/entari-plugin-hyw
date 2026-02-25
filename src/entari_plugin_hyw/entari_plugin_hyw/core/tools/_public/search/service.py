@@ -27,8 +27,8 @@ class DuckDuckGoSearchService:
 
         logger.info("DuckDuckGoSearchService initialized")
 
-    def _build_search_url(self, query: str) -> str:
-        return self._engine.build_url(query)
+    def _build_search_url(self, query: str, kl: Optional[str] = None, time_range: Optional[str] = None) -> str:
+        return self._engine.build_url(query, kl=kl, time_range=time_range)
 
     async def search_batch(self, queries: List[str]) -> List[List[Dict[str, Any]]]:
         """Execute multiple searches concurrently."""
@@ -36,7 +36,7 @@ class DuckDuckGoSearchService:
         tasks = [self.search(q) for q in queries]
         return await asyncio.gather(*tasks)
 
-    async def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search(self, query: str, kl: Optional[str] = None, time_range: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Main search entry point.
         Returns parsed search results only.
@@ -44,11 +44,11 @@ class DuckDuckGoSearchService:
         if not query:
             return []
 
-        url = self._build_search_url(query)
+        url = self._build_search_url(query, kl=kl, time_range=time_range)
         results = []
 
         try:
-            logger.info(f"Search: '{query}' -> {url}")
+            logger.info(f"Search: query='{query}', kl='{kl or ''}', time_range='{time_range or ''}' -> {url}")
             page_data = await self._browser.fetch_page(url, include_screenshot=False)
 
             content = page_data.get("html", "") or page_data.get("content", "")

@@ -6,10 +6,24 @@ Handles URL building and result parsing for DuckDuckGo Lite.
 
 import urllib.parse
 import re
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from loguru import logger
 
 from .base import SearchEngine
+
+_TIME_RANGE_TO_DF = {
+    "d": "d",
+    "w": "w",
+    "m": "m",
+    "y": "y",
+}
+
+
+def _normalize_df(time_range: Optional[str]) -> Optional[str]:
+    if not time_range:
+        return None
+    normalized = time_range.strip().lower()
+    return _TIME_RANGE_TO_DF.get(normalized)
 
 
 class DuckDuckGoEngine(SearchEngine):
@@ -18,10 +32,24 @@ class DuckDuckGoEngine(SearchEngine):
     Handles both Markdown (from Crawl4AI) and HTML (fallback).
     """
 
-    def build_url(self, query: str, limit: int = 10) -> str:
-        encoded_query = urllib.parse.quote(query)
+    def build_url(
+        self,
+        query: str,
+        limit: int = 10,
+        kl: Optional[str] = None,
+        time_range: Optional[str] = None,
+    ) -> str:
         base = "https://lite.duckduckgo.com/lite/"
-        return f"{base}?q={encoded_query}"
+        params = {"q": query}
+
+        if kl and kl.strip():
+            params["kl"] = kl.strip()
+
+        df = _normalize_df(time_range)
+        if df:
+            params["df"] = df
+
+        return f"{base}?{urllib.parse.urlencode(params)}"
 
     def parse(self, content: str) -> List[Dict[str, Any]]:
         # Prioritize HTML parsing if content looks like HTML
