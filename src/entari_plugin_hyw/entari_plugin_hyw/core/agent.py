@@ -42,6 +42,9 @@ class AgentSession:
         # 可用工具名称列表
         self.available_tools: List[str] = []
         self.use_final_only = False
+        self.final_format_retry_count = 0
+        self.max_final_format_retries = 2
+        self.format_retry_pending = False
 
     async def step(self) -> AgentResponse:
         """执行一轮 LLM 推理 + 工具执行（使用 XML 格式解析）"""
@@ -93,8 +96,16 @@ class AgentSession:
         # 2. 解析评分 <scoring>...</scoring>
         scoring = self._extract_scoring(raw_content)
 
-        # 3. 作为最终回复处理：优先提取 execution_content，避免暴露内部思考结构
-        final_content = self._extract_final_content(raw_content)
+        # 3. 最终回复必须使用 <final_response> 包裹
+        final_content = self._extract_final_response(raw_content)
+        if final_content is None:
+            return self._request_final_format_retry(
+                "最终回复缺少 <final_response>...</final_response> 包裹。"
+            )
+        if self._contains_forbidden_process_phrasing(final_content):
+            return self._request_final_format_retry(
+                "最终回复包含流程性话术，请直接给出结果。"
+            )
 
         self.history.append(Message(role="assistant", content=final_content))
         self.finished = True
@@ -109,6 +120,46 @@ class AgentSession:
             should_render=should_render,
             scoring=scoring
         )
+
+    def _extract_final_response(self, content: str) -> Optional[str]:
+        """提取最终回复标签 <final_response>...</final_response>。"""
+        match = re.search(
+            r"<final_response[^>]*>(.*?)</final_response>",
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            return None
+        final_text = match.group(1).strip()
+        return final_text or None
+
+    def _contains_forbidden_process_phrasing(self, text: str) -> bool:
+        """检查是否包含不应出现在最终答案中的流程性话术。"""
+        normalized = re.sub(r"\s+", "", text)
+        forbidden = [
+            "基于已获取的高分搜索结果",
+            "无需进一步搜索",
+            "直接进行结构化总结回复",
+            "基于搜索到",
+            "直接给出结论",
+        ]
+        return any(p.replace(" ", "") in normalized for p in forbidden)
+
+    def _request_final_format_retry(self, reason: str) -> AgentResponse:
+        """最终回复不满足期望时，不结束会话，继续引导模型完成。"""
+        logger.info(f"[Format] 继续运行，等待最终回复: {reason}")
+        self.format_retry_pending = True
+        self.api_messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "请继续完成当前任务。\n"
+                    "若还需要工具，请先调用工具；\n"
+                    "若可直接回答，请仅输出 <final_response>...</final_response> 并给出结果，避免流程话术。"
+                ),
+            }
+        )
+        return AgentResponse(content="", history=self.history, success=True)
 
     def _has_markdown(self, text: str) -> bool:
         """检测文本是否包含 Markdown 语法"""

@@ -18,6 +18,18 @@ CONTINUATION_PROMPT = """
 """.strip()
 
 async def chat_flow(session: "AgentSession"):
+    if getattr(session, "format_retry_pending", False):
+        session.format_retry_pending = False
+        session.configure(
+            tools=DEFAULT_TOOLS,
+            temp_prompt="""
+请继续完成当前任务。
+若还需要工具，请先调用工具；
+若可直接回答，请仅输出 <final_response>...</final_response> 并给出结果，避免流程性话术。
+""".strip(),
+        )
+        return
+
     is_continuation = getattr(session, "is_continuation", False)
 
     if session.turn == 0 and not is_continuation:
@@ -36,6 +48,7 @@ async def chat_flow(session: "AgentSession"):
 ## 输出要求
 完成信息收集立刻给出最终回复, 不要输出多余废话.
 禁止输出任何过程回复.
+硬性要求：最终回复必须使用 <final_response>...</final_response> 包裹；不要遗漏。
 
 ## 1. 任务类型定义与处理协议
 你需要在第每一轮输出一个简单的规划, 根据实时的信息变化改变:
@@ -89,6 +102,7 @@ async def chat_flow(session: "AgentSession"):
 3. 输出格式（重要！）
 > 你的输出必须使用 XML 标签格式。根据情况选择：
 <tool_call name="web_search"><query>搜索词</query></tool_call>
+<final_response>最终给用户的答案（可用 Markdown）</final_response>
 
 > 可以同时调用多个工具，每个工具一个 <tool_call> 标签。
 > 若本轮有工具调用，请在 tool_call 前额外输出一段:
@@ -96,6 +110,10 @@ async def chat_flow(session: "AgentSession"):
 > 示例:
 <progress_hint>简单理解用户的需求可能是...\n我现在调用了...搜索...以探究...。</progress_hint>
 > 该标签只用于给用户展示过程提示；不要写进最终答案正文
+> 最终答案只允许放在 <final_response> 中，且只包含对用户有意义的结果。
+> 禁止在 <final_response> 中输出流程性话术（例如“基于搜索到...直接给出结论”“无需进一步搜索”等）。
+> 如果本轮不调用工具，也必须直接输出 <final_response> 并给出可用结果。
+> 再强调一次：任何最终可见回复都必须放在 <final_response> 里。
 
 ## web_search 使用指南
 
@@ -159,8 +177,9 @@ async def chat_flow(session: "AgentSession"):
         - 使用 `<summary>...</summary>` 包裹核心摘要
         - 正文使用 Markdown 格式
         - 使用百科式的正式语气
-        - 格式(直接输出markdown)：:
-        ```markdown
+        - 格式(输出在 final_response XML 中)：:
+        ```xml
+        <final_response>
         <scoring>
         ...
         </scoring>
@@ -172,11 +191,13 @@ async def chat_flow(session: "AgentSession"):
 
         ## 正文内容
         详细的 Markdown 格式回复...
+        </final_response>
         ```
 
     - 纯文本回复（例如打招呼、简单的确认）：
         - 保证三句话以内、不使用 markdown 、不使用 <summary> 、不使用引用、不带标题、不使用**重点**内容, 你在就像是人类打字一样.
         - 使用和用户对话的口吻
+        - 仍然必须使用 <final_response>...</final_response> 包裹
 """,
             tools=DEFAULT_TOOLS,
         )
@@ -190,6 +211,7 @@ async def chat_flow(session: "AgentSession"):
 > 如果用户明确要求你直接回答、或者简单的问好、或简单的翻译、格式变换等文本工作、可以最小限度的输出 response_logic 后直接回复.
 > 如果你觉得此问题需要先探索一下相关信息再回答，可以先调用工具获取信息，不要直接回答。
 > 你可以先调用工具获取信息，再根据工具结果进行总结回答。
+> 无论是否调用工具，本轮最终回复都必须使用 <final_response>...</final_response>。
 """
         )
     elif session.turn == 1 and is_continuation:
@@ -215,6 +237,7 @@ async def chat_flow(session: "AgentSession"):
 
 完成后根据你的评分结果、response_logic中的困惑和计划, 如果搜索质量普遍较低、困惑点直接影响结果, 你需要继续搜索获取更多信息.
 注意：这些“是否继续搜索”的判断属于内部决策，不要在最终正文中输出类似“无需进一步搜索”的流程句。
+最终可见回复必须使用 <final_response>...</final_response> 包裹。
 
 1. 如果你需要继续探索, 请继续调用工具获取信息. 
     - 搜索时请基于上轮的搜索结果和用户的原始问题提炼关键词进行搜索, 不要重复搜索上轮已经搜索过的关键词了
