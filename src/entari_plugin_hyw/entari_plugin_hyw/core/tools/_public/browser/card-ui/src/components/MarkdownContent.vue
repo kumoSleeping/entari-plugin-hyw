@@ -352,18 +352,20 @@ const processedHtml = computed(() => {
 
 /* Code line numbers - Modern minimalist style */
 .code-with-lines {
-  overflow-x: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .code-with-lines code {
   display: block;
-  width: 100%;
+  width: max-content;
+  min-width: 100%;
   padding: 1.25em 0;
   background: white;
 }
 .code-with-lines .code-line {
   display: flex;
   align-items: stretch;
-  min-width: 0;
+  min-width: max-content;
 }
 .code-with-lines .line-number {
   flex-shrink: 0;
@@ -380,12 +382,12 @@ const processedHtml = computed(() => {
   justify-content: flex-end;
 }
 .code-with-lines .line-content {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: 0 0 auto;
+  min-width: max-content;
   padding: 0.1em 1.25em 0.1em 1em;
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-wrap: anywhere;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
   background: white;
 }
 </style>

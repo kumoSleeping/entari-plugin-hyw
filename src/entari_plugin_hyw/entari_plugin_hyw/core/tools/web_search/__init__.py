@@ -2,6 +2,8 @@ import json
 from typing import List, Dict, Any
 from .._public.search.service import DuckDuckGoSearchService
 
+_VALID_TIME_RANGE_CODES = {"d", "w", "m", "y"}
+
 
 # 全局序号计数器，用于多次搜索时序号递增
 _global_index_counter = 0
@@ -25,7 +27,11 @@ async def web_search(query: str, kl: str = "", time_range: str = "", headless: b
     # 预处理：移除可能导致搜索失败的双引号（包括中文双引号）
     query = query.replace('"', ' ').replace('“', ' ').replace('”', ' ')
     kl = (kl or "").strip()
-    time_range = (time_range or "").strip()
+    time_range = (time_range or "").strip().lower()
+    if time_range == "a":
+        time_range = ""
+    elif time_range not in _VALID_TIME_RANGE_CODES:
+        time_range = ""
 
     print(f"  [SearchTool] Searching: {query}")
     service = DuckDuckGoSearchService(headless=headless)
@@ -34,6 +40,10 @@ async def web_search(query: str, kl: str = "", time_range: str = "", headless: b
     if not results:
         return json.dumps({
             "query": query,
+            "filters": {
+                "kl": kl or None,
+                "time_range": time_range or None
+            },
             "count": 0,
             "results": []
         }, ensure_ascii=False)

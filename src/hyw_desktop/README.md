@@ -1,5 +1,16 @@
-# Vue 3 + TypeScript + Vite
+# hyw-desktop
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Status: **In development (not usable yet)**.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+`hyw-desktop` is an experimental desktop client (Vue + Tauri) intended to host HYW-oriented workflows locally.
+
+## Current State
+
+- UI and Tauri scaffolding exist.
+- Feature set is incomplete.
+- No stability guarantee.
+- Interfaces may change without compatibility commitments.
+
+## Recommendation
+
+For practical use, use `entari-plugin-hyw` first.

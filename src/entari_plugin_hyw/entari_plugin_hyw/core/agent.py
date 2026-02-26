@@ -13,12 +13,18 @@ _TIME_RANGE_HINT_ZH = {
     "m": "近1月",
     "y": "近1年",
 }
+_VALID_TIME_RANGE_CODES = {"d", "w", "m", "y"}
+
+
+def _normalize_time_range_code(time_range: str) -> str:
+    code = (time_range or "").strip().lower()
+    if code == "a":
+        return ""
+    return code if code in _VALID_TIME_RANGE_CODES else ""
 
 
 def _format_time_range_hint(time_range: str) -> str:
-    if not time_range:
-        return ""
-    return _TIME_RANGE_HINT_ZH.get(time_range.strip().lower(), "")
+    return _TIME_RANGE_HINT_ZH.get(_normalize_time_range_code(time_range), "")
 
 
 class AgentSession:
@@ -110,11 +116,15 @@ class AgentSession:
         scoring = self._extract_scoring(raw_content)
 
         # 3. 最终回复必须使用 <final_response> 包裹
-        final_content = self._extract_final_response(raw_content)
-        if final_content is None:
+        final_content_raw = self._extract_final_response(raw_content)
+        if final_content_raw is None:
             return self._request_final_format_retry(
                 "最终回复缺少 <final_response>...</final_response> 包裹。"
             )
+        final_content = self._extract_final_content(final_content_raw)
+        if not final_content:
+            final_content = final_content_raw
+
         if self._contains_forbidden_process_phrasing(final_content):
             return self._request_final_format_retry(
                 "最终回复包含流程性话术，请直接给出结果。"
@@ -324,10 +334,16 @@ class AgentSession:
 
             # 收集搜索查询
             if name == "web_search":
+                raw_time_range = str(args.get("time_range", "") or "")
+                normalized_time_range = _normalize_time_range_code(raw_time_range)
+                if normalized_time_range:
+                    args["time_range"] = normalized_time_range
+                else:
+                    args.pop("time_range", None)
                 search_queries.append({
                     "query": args.get("query", ""),
                     "kl": args.get("kl", ""),
-                    "time_range": args.get("time_range", ""),
+                    "time_range": normalized_time_range,
                 })
 
             tasks.append(self.registry.execute(name, args))
