@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "entari-plugin-hyw"
-version = "6.0.1"
+version = "6.0.2"
 description = "Entari plugin for HYW"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 requires-python = ">=3.10,<3.13"
