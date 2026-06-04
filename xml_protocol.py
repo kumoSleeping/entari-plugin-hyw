@@ -76,7 +76,7 @@ def extract_final_content(content: str) -> str:
     for block in execution_matches:
         candidate = block.strip()
         if candidate:
-            return candidate
+            return remove_visual_separators(candidate)
 
     without_logic = re.sub(
         r"<response_logic[^>]*>.*?</response_logic>",
@@ -85,7 +85,7 @@ def extract_final_content(content: str) -> str:
         flags=re.DOTALL | re.IGNORECASE,
     ).strip()
     if without_logic:
-        return without_logic
+        return remove_visual_separators(without_logic)
 
     without_internal_blocks = re.sub(
         r"<(?:planning|clarification_needed|vision_analysis)[^>]*>.*?</(?:planning|clarification_needed|vision_analysis)>",
@@ -100,9 +100,19 @@ def extract_final_content(content: str) -> str:
         flags=re.IGNORECASE,
     ).strip()
     if without_internal_tags:
-        return without_internal_tags
+        return remove_visual_separators(without_internal_tags)
 
-    return without_scoring
+    return remove_visual_separators(without_scoring)
+
+
+def remove_visual_separators(content: str) -> str:
+    """Remove standalone decorative separators from final Markdown."""
+    if not content:
+        return ""
+
+    text = re.sub(r"(?im)^\s*<hr\s*/?>\s*$", "", content)
+    text = re.sub(r"(?m)^\s*(?:-{3,}|\*{3,}|_{3,}|={3,}|-{2,}\s*-+|—{2,}|─{2,})\s*$", "", text)
+    return re.sub(r"\n{3,}", "\n\n", text).strip()
 
 
 def extract_progress_hint(content: str) -> Optional[str]:
