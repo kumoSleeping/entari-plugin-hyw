@@ -3,23 +3,27 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hyw-workspace"
-version = "0.0.1"
-description = "HYW Workspace - Development environment for entari-plugin-hyw and entari-plugin-codex"
+name = "entari-plugin-hyw"
+version = "6.0.0rc1"
+description = "Entari plugin for HYW"
 authors = [{name = "kumoSleeping", email = "zjr2992@outlook.com"}]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license = {text = "MIT"}
-
-# Workspace root has no direct dependencies
-dependencies = ["arclet.entari[yaml,cron,dotenv] >= 0.16.8"]
+dependencies = [
+    "arclet-entari[full]>=0.16.5",
+    "httpx>=0.27.0",
+    "DrissionPage>=4.0.0",
+    "trafilatura>=1.6.0",
+    "loguru>=0.7.0",
+    "Pillow>=10.0.0",
+    "markdown>=3.10",
+    "satori-python-core<0.18.0",
+    "satori-python-client<0.18.0",
+]
 
 [project.optional-dependencies]
 dev = [
-    # Workspace packages
-    "entari-plugin-hyw",
-    "entari-plugin-codex",
-    # Dev tools
     "entari-plugin-server>=0.5.0",
     "entari-cli>=0.3.0",
     "satori-python-adapter-onebot11>=0.2.5",
@@ -29,13 +33,15 @@ dev = [
     "pytest-asyncio",
 ]
 
-[tool.uv.workspace]
-members = ["src/entari_plugin_hyw", "src/entari_plugin_codex", "hyw-workspace/1528593481/work/entari_1"]
-
-[tool.uv.sources]
-entari-plugin-hyw = { workspace = true }
-entari-plugin-codex = { workspace = true }
-
 [tool.setuptools]
-# Root package is not meant to be installed
-py-modules = []
+include-package-data = true
+packages = ["entari_plugin_hyw", "entari_plugin_hyw.browser", "entari_plugin_hyw.crawling"]
+
+[tool.setuptools.package-dir]
+entari_plugin_hyw = "."
+
+[tool.setuptools.package-data]
+entari_plugin_hyw = [
+    "browser/assets/**/*",
+    "browser/card-ui/**/*",
+]
