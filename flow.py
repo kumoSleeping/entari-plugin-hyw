@@ -91,7 +91,9 @@ class FlowRunner:
         self,
         user_input: str,
         flow: Union[Flow, FlowPolicy, None] = None,
-        max_turns: int = 10,
+        max_turns: int = 15,
+        search_turn_budget: int = 10,
+        finalization_turns: int = 5,
         images: Optional[List[str]] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
         start_turn: int = 0,
@@ -135,11 +137,37 @@ class FlowRunner:
                 session.history = history_internal + session.history
         self._session = session
 
+        max_turns = max(max_turns, search_turn_budget + finalization_turns)
         last_response = None
         while not session.finished and session.turn < max_turns:
             if policy_func:
                 if await policy_func(session) is False:
                     break
+
+            if session.turn == 6:
+                session.configure(
+                    temp_prompt=(
+                        "你已经进行了多轮搜索。现在请判断是否真的还有新的信息增量："
+                        "如果只是在围绕同一个实体、同一组关键词或同一种说法反复展开，"
+                        "通常已经没有什么新的东西值得继续搜索了。\n"
+                        "接下来优先整合已有证据并收束答案；只有当你能明确提出一个全新的、"
+                        "能改变结论的检索角度时，才继续搜索。"
+                    ),
+                )
+
+            if session.turn >= search_turn_budget:
+                remaining = max_turns - session.turn
+                stop_within = min(3, remaining)
+                session.configure(
+                    tools=[],
+                    final_only=True,
+                    temp_prompt=(
+                        "搜索轮次已经用完，现在必须进入最终收束阶段。\n"
+                        "本轮禁止继续调用任何工具，只允许输出最终答案正文。\n"
+                        f"你必须在 {stop_within} 轮以内停止并给出可用结果；"
+                        "如果证据不足，也要简短说明已知信息、未确认点和无法确定的原因。"
+                    ),
+                )
 
             last_response = await session.step()
 

@@ -107,6 +107,17 @@ class AgentSession:
         # 3. 最终回复必须使用 <final_response> 包裹
         final_content_raw = self._extract_final_response(raw_content)
         if final_content_raw is None:
+            fallback_content = self._coerce_unwrapped_final_response(raw_content)
+            if fallback_content:
+                self.history.append(Message(role="assistant", content=fallback_content))
+                self.finished = True
+                return AgentResponse(
+                    content=fallback_content,
+                    history=self.history,
+                    is_final=True,
+                    should_render=self._has_markdown(fallback_content),
+                    scoring=scoring,
+                )
             return self._request_final_format_retry(
                 "最终回复缺少 <final_response>...</final_response> 包裹。"
             )
@@ -150,6 +161,22 @@ class AgentSession:
         ]
         return any(p.replace(" ", "") in normalized for p in forbidden)
 
+    def _coerce_unwrapped_final_response(self, raw_content: str) -> Optional[str]:
+        """Accept obvious final prose when the model forgot the XML wrapper."""
+        if not raw_content:
+            return None
+        if re.search(r"<(?:tool_call|response_logic|planning|clarification_needed|vision_analysis|execution_content)\b", raw_content, re.IGNORECASE):
+            return None
+
+        cleaned = self._remove_clickable_links(extract_final_content(raw_content))
+        if not cleaned or self._contains_forbidden_process_phrasing(cleaned):
+            return None
+
+        if self._has_markdown(cleaned) or len(cleaned.strip()) > 80:
+            logger.info("[Format] 接受未包裹的最终正文并按最终回复处理。")
+            return cleaned
+        return None
+
     def _remove_clickable_links(self, text: str) -> str:
         """移除最终正文中的可点击链接，保留可读文本。"""
         if not text:
@@ -163,6 +190,15 @@ class AgentSession:
     def _request_final_format_retry(self, reason: str) -> AgentResponse:
         """最终回复不满足期望时，不结束会话，继续引导模型完成。"""
         logger.info(f"[Format] 继续运行，等待最终回复: {reason}")
+        self.final_format_retry_count += 1
+        if self.final_format_retry_count > self.max_final_format_retries:
+            self.finished = True
+            return AgentResponse(
+                content="我这次没有拿到可用的最终回复格式，先停止，避免继续空转。",
+                history=self.history,
+                is_final=True,
+                should_render=False,
+            )
         self.format_retry_pending = True
         self.api_messages.append(
             {
