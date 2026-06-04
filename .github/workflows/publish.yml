@@ -1,0 +1,69 @@
+name: Build and Publish
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: browser/card-ui/package-lock.json
+
+      - name: Build card UI
+        working-directory: browser/card-ui
+        run: |
+          npm ci
+          npm run build
+          rm -rf node_modules
+
+      - name: Install Python build tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build Python package
+        run: python -m build
+
+      - name: Check distributions
+        run: twine check dist/*
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: entari-plugin-hyw-v${{ steps.version.outputs.version }}
+          name: entari-plugin-hyw v${{ steps.version.outputs.version }}
+          files: dist/*
+          draft: false
+          prerelease: ${{ contains(steps.version.outputs.version, 'a') || contains(steps.version.outputs.version, 'b') || contains(steps.version.outputs.version, 'rc') }}

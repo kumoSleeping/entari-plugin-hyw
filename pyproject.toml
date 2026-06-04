@@ -43,5 +43,4 @@ entari_plugin_hyw = "."
 [tool.setuptools.package-data]
 entari_plugin_hyw = [
     "browser/assets/**/*",
-    "browser/card-ui/**/*",
 ]
