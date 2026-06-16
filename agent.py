@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from urllib.parse import urlparse
 from loguru import logger
 from typing import List, Optional, Dict, Any, Union
 from .llm import HttpChatClient
@@ -53,6 +54,8 @@ class AgentSession:
         self.final_format_retry_count = 0
         self.max_final_format_retries = 2
         self.format_retry_pending = False
+        self._pending_browser_progress: List[str] = []
+        self._browser_progress_started = False
 
     async def step(self) -> AgentResponse:
         """执行一轮 LLM 推理 + 工具执行（使用 XML 格式解析）"""
@@ -124,7 +127,7 @@ class AgentSession:
         final_content = self._extract_final_content(final_content_raw)
         if not final_content:
             final_content = final_content_raw
-        final_content = self._remove_clickable_links(final_content)
+        final_content = self._strip_internal_final_blocks(self._remove_clickable_links(final_content))
 
         if self._contains_forbidden_process_phrasing(final_content):
             return self._request_final_format_retry(
@@ -187,6 +190,24 @@ class AgentSession:
         without_bare_urls = re.sub(r"\b(?:https?://|www\.)\S+", "", without_angle_links)
         return re.sub(r"[ \t]{2,}", " ", without_bare_urls).strip()
 
+    def _strip_internal_final_blocks(self, text: str) -> str:
+        """Remove internal XML blocks that should never be shown to users."""
+        if not text:
+            return ""
+        cleaned = re.sub(
+            r"<(?:scoring|response_logic|planning|clarification_needed|vision_analysis|execution_content)[^>]*>.*?</(?:scoring|response_logic|planning|clarification_needed|vision_analysis|execution_content)>",
+            "",
+            text,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        cleaned = re.sub(
+            r"</?(?:scoring|response_logic|planning|clarification_needed|vision_analysis|execution_content)[^>]*>",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        )
+        return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
     def _request_final_format_retry(self, reason: str) -> AgentResponse:
         """最终回复不满足期望时，不结束会话，继续引导模型完成。"""
         logger.info(f"[Format] 继续运行，等待最终回复: {reason}")
@@ -194,20 +215,29 @@ class AgentSession:
         if self.final_format_retry_count > self.max_final_format_retries:
             self.finished = True
             return AgentResponse(
-                content="我这次没有拿到可用的最终回复格式，先停止，避免继续空转。",
+                content="这次没能稳定生成可用答案，我先停下。请稍后重试或换一个更具体的问题。",
                 history=self.history,
                 is_final=True,
                 should_render=False,
             )
         self.format_retry_pending = True
+        if self.use_final_only:
+            retry_content = (
+                "工具阶段已经结束，当前没有任何可用工具。\n"
+                "不要输出 <tool_call>、<progress_hint>、<response_logic>、<planning> 或 <scoring>。\n"
+                "请只输出一个 <final_response>...</final_response>，标签内直接给出最终答案；"
+                "证据不足时也在最终答案里说明已知信息和未确认点。"
+            )
+        else:
+            retry_content = (
+                "请继续完成当前任务。\n"
+                "若还需要工具，请先调用工具；\n"
+                "若可直接回答，请仅输出 <final_response>...</final_response> 并给出结果，避免流程话术。"
+            )
         self.api_messages.append(
             {
                 "role": "user",
-                "content": (
-                    "请继续完成当前任务。\n"
-                    "若还需要工具，请先调用工具；\n"
-                    "若可直接回答，请仅输出 <final_response>...</final_response> 并给出结果，避免流程话术。"
-                ),
+                "content": retry_content,
             }
         )
         return AgentResponse(content="", history=self.history, success=True)
@@ -260,43 +290,92 @@ class AgentSession:
         """提取模型在工具调用前输出的专用进度说明标签。"""
         return extract_progress_hint(content)
 
+    def _format_browser_action_progress(self, action_call: Dict[str, str], completed: bool = False) -> str:
+        action = (action_call.get("action") or "").strip().lower()
+        query = (action_call.get("query") or "").strip()
+        url = (action_call.get("url") or "").strip()
+        text = (action_call.get("text") or "").strip()
+        target = (action_call.get("target") or "").strip()
+        ref = (action_call.get("ref") or "").strip()
+        prefix = "已" if completed else "正在"
+
+        if action == "search":
+            return f"{prefix}搜索 {query}".rstrip()
+
+        if action in {"new_tab", "navigate"} and url:
+            domain = self._display_domain(url)
+            return f"{prefix}阅读网页 {domain}" if domain else f"{prefix}阅读网页"
+
+        if action == "click":
+            label = target or text or (f"ref {ref}" if ref else "")
+            return f"{prefix}点击 {label}".rstrip()
+
+        if action == "type":
+            label = target or (f"ref {ref}" if ref else "")
+            return f"{prefix}输入 {label}".rstrip()
+
+        if action == "press":
+            return f"{prefix}按键 {text or target}".rstrip()
+
+        return f"{prefix}执行 {action}".rstrip()
+
+    def _display_domain(self, url: str) -> str:
+        try:
+            normalized = url if re.match(r"^https?://", url, re.IGNORECASE) else f"https://{url}"
+            parsed = urlparse(normalized)
+            return (parsed.netloc or parsed.path).split("/")[0].lower()
+        except Exception:
+            return ""
+
     async def _execute_tool_calls(self, tool_calls: List[Dict[str, Any]], raw_content: str = "") -> AgentResponse:
         """执行从结构化输出解析出的工具调用"""
         tasks, infos = [], []
-        search_queries: List[Dict[str, str]] = []
+        browser_actions: List[Dict[str, str]] = []
 
         for tc in tool_calls:
             name = tc["name"]
             args = tc["arguments"]
 
-            # 收集搜索查询
-            if name == "web_search":
-                args.pop("time_range", None)
-                args.pop("kl", None)
-                search_queries.append({
-                    "query": args.get("query", ""),
+            if name == "browser_action":
+                browser_actions.append({
+                    "action": str(args.get("action", "")),
+                    "query": str(args.get("query", "")),
+                    "url": str(args.get("url", "")),
+                    "text": str(args.get("text", "")),
+                    "target": str(args.get("target", "")),
+                    "ref": str(args.get("ref", "")),
+                    "tab_id": str(args.get("tab_id", "")),
                 })
 
             tasks.append(self.registry.execute(name, args))
             infos.append(name)
 
-        # 搜索开始前发送“过程说明 + 搜索词”
-        if search_queries and self.registry.get_send_hook():
-            progress_hint = self._extract_progress_hint(raw_content) if raw_content else None
-            start_lines: List[str] = []
-            if progress_hint:
-                start_lines.append(progress_hint)
-            start_lines.append("🔍 正在搜索:")
-            for i, search_call in enumerate(search_queries, start=1):
-                query = search_call.get("query", "")
-                start_lines.append(f"  {i}. {query}")
+        progress_hint = self._extract_progress_hint(raw_content) if raw_content else None
+        if browser_actions and self.registry.get_send_hook() and (progress_hint or not self._browser_progress_started):
+            current_progress = [
+                self._format_browser_action_progress(action_call)
+                for action_call in browser_actions
+            ]
+            start_lines = [progress_hint or "开始检索关键信息。"]
+            if self._pending_browser_progress:
+                start_lines.append("🌐 已执行操作:")
+                for i, item in enumerate(self._pending_browser_progress, start=1):
+                    start_lines.append(f"  {i}. {item}")
+            start_lines.append("🌐 正在操作浏览器:")
+            for i, item in enumerate(current_progress, start=1):
+                start_lines.append(f"  {i}. {item}")
+            self._pending_browser_progress = []
+            self._browser_progress_started = True
             await self.registry.get_send_hook()("\n".join(start_lines))
+        elif browser_actions:
+            self._pending_browser_progress.extend(
+                self._format_browser_action_progress(action_call, completed=True)
+                for action_call in browser_actions
+            )
 
         results: List[Any] = []
         if tasks:
             results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        search_result_index = 0
 
         # 处理 registry 结果，添加到 api_messages
         for name, result in zip(infos, results):
@@ -310,19 +389,6 @@ class AgentSession:
                     return AgentResponse(content=tool_content, history=self.history)
             else:
                 tool_content = str(result)
-
-            if name == "web_search":
-                try:
-                    payload = json.loads(tool_content)
-                    rows = payload.get("results", [])
-                    if isinstance(rows, list):
-                        for row in rows:
-                            if isinstance(row, dict):
-                                search_result_index += 1
-                                row["index"] = search_result_index
-                        tool_content = json.dumps(payload, ensure_ascii=False, indent=2)
-                except Exception:
-                    pass
 
             # 添加工具结果到 api_messages（使用 user role 模拟，因为没有真正的 tool_call_id）
             self.api_messages.append({"role": "user", "content": f"[Tool Result: {name}]\n{tool_content}"})

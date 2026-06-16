@@ -19,10 +19,6 @@ class HywConfigData:
     theme_color: str = "#ff0000"
     save_conversation: bool = False
 
-    # Search Settings
-    search_engine: str = "duckduckgo"
-    jina_key: Optional[str] = None
-
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "HywConfigData":
         """Helper to load from dict, ignoring unknown keys"""

@@ -2,8 +2,7 @@ from .tool_registry import ToolRegistry
 from .config import HywConfigData
 
 # === 显式导入所有工具 (函数式) ===
-from .search_jina import web_search
-from .fetch_browser import web_fetch
+from .browser_action import browser_action
 
 def load_tools(config: HywConfigData) -> ToolRegistry:
     """
@@ -19,15 +18,32 @@ def load_tools(config: HywConfigData) -> ToolRegistry:
     """
     registry = ToolRegistry()
 
-    # 1. Web Search
-    async def _search(query: str):
-        return await web_search(query, headless=config.headless)
-    registry.register("web_search", _search)
-
-    # 2. Web Fetch (Replaces Screenshot)
-    async def _web_fetch(url: str):
-        return await web_fetch(url, headless=config.headless)
-    registry.register("web_fetch", _web_fetch)
+    async def _browser_action(
+        action: str,
+        url: str = "",
+        query: str = "",
+        selector: str = "",
+        ref: str = "",
+        tab_id: str = "",
+        text: str = "",
+        key: str = "",
+        target: str = "",
+        timeout: float = 10.0,
+    ):
+        return await browser_action(
+            action=action,
+            url=url,
+            query=query,
+            selector=selector,
+            ref=ref,
+            tab_id=tab_id,
+            text=text,
+            key=key,
+            target=target,
+            timeout=timeout,
+            headless=config.headless,
+        )
+    registry.register("browser_action", _browser_action)
 
     return registry
 

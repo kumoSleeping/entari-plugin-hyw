@@ -208,7 +208,7 @@ class ScreenshotService:
             try:
                 tab.wait.doc_loaded(timeout=timeout)
                 # Reduced wait for initial results
-                _time.sleep(0.2)
+                time.sleep(0.2)
             except:
                 pass
             

@@ -6,6 +6,9 @@ Supports multi-tab concurrency via DrissionPage's built-in tab management.
 """
 
 import threading
+import os
+import socket
+import subprocess
 from typing import Optional, Any
 from loguru import logger
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -54,7 +57,15 @@ class SharedBrowserManager:
             # Configure options
             co = ChromiumOptions()
             co.headless(self.headless)
-            co.auto_port()  # Auto find available port
+            profile_dir = os.path.join(os.getcwd(), "data", "hyw_browser_profile")
+            os.makedirs(profile_dir, exist_ok=True)
+            co.set_user_data_path(profile_dir)
+            co.set_local_port(_find_free_port())
+
+            proxy = _detect_proxy()
+            if proxy:
+                co.set_proxy(proxy)
+                logger.info(f"SharedBrowserManager: Using proxy {proxy}")
             
             # Anti-detection settings 
             co.set_argument('--no-sandbox')
@@ -70,7 +81,6 @@ class SharedBrowserManager:
             
             # Show Landing Page
             try:
-                import os
                 landing_path = os.path.join(os.path.dirname(__file__), 'landing.html')
                 if os.path.exists(landing_path):
                     self._page.get(f"file://{landing_path}")
@@ -171,3 +181,38 @@ def close_shared_browser():
     if _shared_manager:
         _shared_manager.close()
         _shared_manager = None
+
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return int(s.getsockname()[1])
+
+
+def _detect_proxy() -> str:
+    explicit = os.environ.get("HYW_BROWSER_PROXY", "").strip()
+    if explicit:
+        return explicit
+
+    if os.name != "posix":
+        return ""
+
+    try:
+        output = subprocess.check_output(["scutil", "--proxy"], text=True, timeout=2)
+    except Exception:
+        return ""
+
+    values = {}
+    for raw in output.splitlines():
+        if ":" not in raw:
+            continue
+        key, value = raw.split(":", 1)
+        values[key.strip()] = value.strip()
+
+    if values.get("HTTPSEnable") == "1" and values.get("HTTPSProxy") and values.get("HTTPSPort"):
+        return f"http://{values['HTTPSProxy']}:{values['HTTPSPort']}"
+    if values.get("HTTPEnable") == "1" and values.get("HTTPProxy") and values.get("HTTPPort"):
+        return f"http://{values['HTTPProxy']}:{values['HTTPPort']}"
+    if values.get("SOCKSEnable") == "1" and values.get("SOCKSProxy") and values.get("SOCKSPort"):
+        return f"socks5://{values['SOCKSProxy']}:{values['SOCKSPort']}"
+    return ""

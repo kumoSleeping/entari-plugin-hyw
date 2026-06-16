@@ -15,5 +15,4 @@ plugins:
     api_key: "..."
     base_url: "https://llm.hyw.mom/v1"
     model_name: "gemini-3.5-flash"
-    jina_key: "..."
 ```

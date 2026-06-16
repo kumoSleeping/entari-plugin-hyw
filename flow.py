@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from .agent import HywAgent, AgentSession
 from .models import Message
 from .tool_registry import ToolRegistry
-from .search_jina import reset_search_index
 
 # 基础策略类型: 返回 None 继续, 返回 False 停止
 FlowPolicy = Callable[[AgentSession], Awaitable[Union[None, bool]]]
@@ -99,9 +98,6 @@ class FlowRunner:
         start_turn: int = 0,
         continuation: bool = False
     ) -> FlowResult:
-        # 重置搜索序号计数器，确保每次新对话从 1 开始
-        reset_search_index()
-
         target_registry = self.registry
         policy_func = None
 
@@ -163,7 +159,8 @@ class FlowRunner:
                     final_only=True,
                     temp_prompt=(
                         "搜索轮次已经用完，现在必须进入最终收束阶段。\n"
-                        "本轮禁止继续调用任何工具，只允许输出最终答案正文。\n"
+                        "本轮工具已经不可用，禁止输出 <tool_call>、<progress_hint> 或新的检索计划。\n"
+                        "只允许输出一个 <final_response>...</final_response>，标签内直接写最终答案正文。\n"
                         f"你必须在 {stop_within} 轮以内停止并给出可用结果；"
                         "如果证据不足，也要简短说明已知信息、未确认点和无法确定的原因。"
                     ),
