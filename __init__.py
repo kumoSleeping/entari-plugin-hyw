@@ -95,7 +95,7 @@ try:
 
     __version__ = get_version("entari_plugin_hyw")
 except Exception:
-    __version__ = "6.0.3"
+    __version__ = "6.0.5"
 
 
 @dataclass
