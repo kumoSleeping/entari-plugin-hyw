@@ -27,8 +27,8 @@ from arclet.entari.event.lifespan import Cleanup, Startup
 from loguru import logger
 
 from .agent import HywAgent
-from .browser.manager import close_shared_browser
 from .browser.renderer import get_content_renderer
+from .browser_action import close_browser_action_tabs
 from .config import HywConfigData
 from .flow import FlowRunner
 from .prompts import chat_flow
@@ -95,7 +95,7 @@ try:
 
     __version__ = get_version("entari_plugin_hyw")
 except Exception:
-    __version__ = "6.0.2"
+    __version__ = "6.0.3"
 
 
 @dataclass
@@ -106,13 +106,11 @@ class HywConfig(BasicConfModel):
     base_url: str = "https://openrouter.ai/api/v1"
     model_name: str = "gpt-4o"
     temperature: float = 0.5
-
     question_command: str = "/q"
     web_command: str = "/w"
     headless: bool = False
     quote: bool = False
     theme_color: str = "#ef4444"
-    jina_key: str = ""
     show_progress: bool = True
 
     def to_core_config(self) -> HywConfigData:
@@ -122,7 +120,6 @@ class HywConfig(BasicConfModel):
             model_name=os.path.expandvars(str(self.model_name)).strip(),
             temperature=self.temperature,
             headless=self.headless,
-            jina_key=os.path.expandvars(str(self.jina_key)).strip(),
         )
 
 
@@ -138,8 +135,6 @@ def get_agent():
     if not _core_agent:
         logger.info("Initializing HYW Agent...")
         core_config = conf.to_core_config()
-        if core_config.jina_key:
-            os.environ["JINA_API_KEY"] = os.path.expandvars(str(core_config.jina_key)).strip()
         _core_agent = HywAgent(core_config)
 
         try:
@@ -343,6 +338,7 @@ async def handle_question(session: Session[MessageCreatedEvent], result: Arparma
             prepared_tab_task = None
 
         await _reload_and_close_render_tab(conf.headless, prepared_tab_id)
+        close_browser_action_tabs()
 
 
 @listen(Startup)
@@ -361,7 +357,7 @@ async def on_startup():
 @listen(Cleanup)
 async def cleanup_resources():
     logger.info("Cleaning up HYW resources...")
-    close_shared_browser()
+    close_browser_action_tabs()
 
     global _core_agent
     if _core_agent:

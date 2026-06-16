@@ -352,23 +352,23 @@ const processedHtml = computed(() => {
 
 /* Code line numbers - Modern minimalist style */
 .code-with-lines {
-  overflow-x: auto;
-  overflow-y: hidden;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
 }
 .code-with-lines code {
   display: block;
-  width: max-content;
-  min-width: 100%;
+  width: 100%;
   padding: 1.25em 0;
   background: white;
 }
 .code-with-lines .code-line {
-  display: flex;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
   align-items: stretch;
-  min-width: max-content;
+  width: 100%;
 }
 .code-with-lines .line-number {
-  flex-shrink: 0;
   width: 36px;
   padding: 0.1em 8px 0.1em 4px;
   text-align: right;
@@ -380,14 +380,14 @@ const processedHtml = computed(() => {
   display: flex;
   align-items: flex-start;
   justify-content: flex-end;
+  white-space: nowrap;
 }
 .code-with-lines .line-content {
-  flex: 0 0 auto;
-  min-width: max-content;
   padding: 0.1em 1.25em 0.1em 1em;
-  white-space: pre;
-  word-break: normal;
-  overflow-wrap: normal;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   background: white;
 }
 </style>

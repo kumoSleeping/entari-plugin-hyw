@@ -349,10 +349,9 @@ const parsedSections = computed(() => {
   
   const sections: Array<{ type: 'markdown' | 'card', content: string, title?: string, contentType?: 'table' | 'code' | 'summary', language?: string }> = []
   
-  // Combine regex involves complexity, so we'll use a tokenizer approach
-  // split tokens by Code Block or Table
-  // split tokens by Code Block or Table or Summary
-  const combinedRegex = /(```[\s\S]*?```|((?:^|\n)\|[^\n]*\|(?:\n\|[^\n]*\|)*)|<summary>[\s\S]*?<\/summary>)/
+  // Split only structural block tokens. Fenced code must start at a line
+  // boundary so inline backticks or copied snippets do not become code cards.
+  const combinedRegex = /((?:^|\n)```[^\n]*\n[\s\S]*?(?:\n```(?=\n|$)|$)|((?:^|\n)\|[^\n]*\|(?:\n\|[^\n]*\|)*)|<summary>[\s\S]*?<\/summary>)/
   
   let remaining = content
   
@@ -374,7 +373,7 @@ const parsedSections = computed(() => {
     }
     
     // Determine type
-    const isCode = matchedStr.startsWith('```')
+    const isCode = matchedStr.trimStart().startsWith('```')
     const isSummary = matchedStr.startsWith('<summary>')
     // Tables might match with a leading newline, trim it for checking but render carefully
     const isTable = !isCode && !isSummary && matchedStr.trim().startsWith('|')
@@ -384,7 +383,7 @@ const parsedSections = computed(() => {
         let content = matchedStr.trim()
         
         if (isCode) {
-            const match = matchedStr.match(/^```(\w+)/)
+            const match = matchedStr.trimStart().match(/^```([\w-]+)/)
             if (match && match[1]) language = match[1]
         } else if (isSummary) {
             // Strip tags
